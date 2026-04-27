@@ -23,32 +23,60 @@ export class ForecastEdgePipeline {
 
   async runOnce() {
     for (const location of this.store.locations) {
-      const previous = this.store.latestSnapshot(location.id, "open_meteo");
-      const latest = await fetchOpenMeteoForecast(location);
-      this.store.forecastSnapshots.unshift(latest);
-      this.audit.record({ actor: "system", type: "forecast_snapshot", message: `Stored ${latest.provider} snapshot for ${location.city}`, metadata: { snapshotId: latest.id } });
+      let latest = null;
+      try {
+        const previous = this.store.latestSnapshot(location.id, "open_meteo");
+        latest = await fetchOpenMeteoForecast(location);
+        this.store.forecastSnapshots.unshift(latest);
+        this.audit.record({ actor: "system", type: "forecast_snapshot", message: `Stored ${latest.provider} snapshot for ${location.city}`, metadata: { snapshotId: latest.id } });
 
-      const stationObservation = await fetchNwsLatestStationObservation(location);
-      if (stationObservation) {
-        this.store.stationObservations.unshift(stationObservation);
+        const deltas = detectForecastDeltas(previous, latest);
+        this.store.forecastDeltas.unshift(...deltas);
+        for (const delta of deltas) {
+          this.audit.record({ actor: "system", type: "forecast_delta", message: delta.reason, metadata: delta });
+        }
+      } catch (error) {
         this.audit.record({
           actor: "system",
-          type: "station_observation",
-          message: `Stored ${stationObservation.stationId} observation at ${stationObservation.observedAt}`,
-          metadata: stationObservation
+          type: "error",
+          message: `Open-Meteo forecast failed for ${location.city}: ${errorMessage(error)}`,
+          metadata: { locationId: location.id }
         });
       }
 
-      const accuweather = await fetchAccuWeatherDailyForecast(location);
-      if (accuweather) {
-        this.store.forecastSnapshots.unshift(accuweather);
-        this.audit.record({ actor: "system", type: "forecast_snapshot", message: `Stored AccuWeather snapshot for ${location.city}`, metadata: { snapshotId: accuweather.id } });
+      try {
+        const stationObservation = await fetchNwsLatestStationObservation(location);
+        if (stationObservation) {
+          this.store.stationObservations.unshift(stationObservation);
+          this.audit.record({
+            actor: "system",
+            type: "station_observation",
+            message: `Stored ${stationObservation.stationId} observation at ${stationObservation.observedAt}`,
+            metadata: stationObservation
+          });
+        }
+      } catch (error) {
+        this.audit.record({
+          actor: "system",
+          type: "error",
+          message: `NWS station observation failed for ${location.city}: ${errorMessage(error)}`,
+          metadata: { locationId: location.id, stationId: location.stationId }
+        });
       }
 
-      const deltas = detectForecastDeltas(previous, latest);
-      this.store.forecastDeltas.unshift(...deltas);
-      for (const delta of deltas) {
-        this.audit.record({ actor: "system", type: "forecast_delta", message: delta.reason, metadata: delta });
+      try {
+        const accuweather = await fetchAccuWeatherDailyForecast(location);
+        if (accuweather) {
+          this.store.forecastSnapshots.unshift(accuweather);
+          this.audit.record({ actor: "system", type: "forecast_snapshot", message: `Stored AccuWeather snapshot for ${location.city}`, metadata: { snapshotId: accuweather.id } });
+        }
+      } catch (error) {
+        this.audit.record({
+          actor: "system",
+          type: "error",
+          message: `AccuWeather forecast failed for ${location.city}: ${errorMessage(error)}`,
+          metadata: { locationId: location.id }
+        });
       }
     }
 
@@ -126,4 +154,8 @@ export class ForecastEdgePipeline {
       performance: summarizePaperOrders(this.store.paperOrders)
     };
   }
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Unknown error";
 }
