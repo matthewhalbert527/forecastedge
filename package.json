@@ -1,0 +1,26 @@
+{
+  "name": "forecastedge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Weather forecast delta monitoring and staged Kalshi trading assistant.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @forecastedge/api & npm run dev --workspace @forecastedge/web",
+    "dev:api": "npm run dev --workspace @forecastedge/api",
+    "dev:web": "npm run dev --workspace @forecastedge/web",
+    "build:api": "npm run build --workspace @forecastedge/core && npm run build --workspace @forecastedge/api",
+    "build:web": "npm run build --workspace @forecastedge/core && npm run build --workspace @forecastedge/web",
+    "start:api": "npm run start --workspace @forecastedge/api",
+    "start:web": "npm run start --workspace @forecastedge/web",
+    "typecheck": "npm run typecheck --workspaces",
+    "lint": "npm run lint --workspaces",
+    "test": "npm run test --workspaces --if-present",
+    "smoke": "npm run smoke --workspace @forecastedge/api"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  }
+}

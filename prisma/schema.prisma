@@ -1,0 +1,290 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AppMode {
+  watch
+  paper
+  demo
+  live
+}
+
+enum Confidence {
+  low
+  medium
+  high
+}
+
+enum WeatherVariable {
+  high_temp
+  low_temp
+  rainfall
+  snowfall
+  wind_gust
+  humidity
+  hurricane
+  unknown
+}
+
+enum SignalStatus {
+  FIRED
+  SKIPPED
+}
+
+enum OrderStatus {
+  FILLED
+  PARTIAL
+  REJECTED
+  CANCELLED
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Location {
+  id                     String             @id @default(cuid())
+  city                   String
+  state                  String
+  latitude               Float
+  longitude              Float
+  timezone               String
+  stationId              String?
+  stationName            String?
+  settlementSource       String?
+  accuweatherLocationKey String?
+  pollingIntervalMinutes Int                @default(30)
+  active                 Boolean            @default(true)
+  createdAt              DateTime           @default(now())
+  forecastSnapshots      ForecastSnapshot[]
+}
+
+model ForecastSnapshot {
+  id            String          @id @default(cuid())
+  provider      String
+  locationId    String
+  location      Location        @relation(fields: [locationId], references: [id])
+  forecastRunAt DateTime
+  targetDays    Json
+  hourly        Json
+  rawPayload    Json
+  createdAt     DateTime        @default(now())
+  deltas        ForecastDelta[]
+
+  @@index([locationId, provider, forecastRunAt])
+}
+
+model StationObservation {
+  id           String   @id @default(cuid())
+  stationId    String
+  stationName  String
+  observedAt   DateTime
+  temperatureF Float?
+  rawPayload   Json
+  createdAt    DateTime @default(now())
+
+  @@index([stationId, observedAt])
+}
+
+model ForecastDelta {
+  id                String           @id @default(cuid())
+  snapshotId        String
+  snapshot          ForecastSnapshot @relation(fields: [snapshotId], references: [id])
+  locationId        String
+  variable          WeatherVariable
+  targetDate        DateTime
+  oldValue          Float
+  newValue          Float
+  absoluteChange    Float
+  probabilityChange Float?
+  timeHorizonHours  Int
+  confidence        Confidence
+  reason            String
+  createdAt         DateTime         @default(now())
+  signals           Signal[]
+
+  @@index([locationId, variable, targetDate])
+}
+
+model KalshiMarket {
+  ticker         String          @id
+  eventTicker    String
+  title          String
+  subtitle       String?
+  closeTime      DateTime?
+  settlementTime DateTime?
+  yesBid         Float?
+  yesAsk         Float?
+  noBid          Float?
+  noAsk          Float?
+  lastPrice      Float?
+  volume         Float?
+  openInterest   Float?
+  liquidityScore Float           @default(0)
+  rawPayload     Json
+  updatedAt      DateTime        @updatedAt
+  mappings       MarketMapping[]
+  signals        Signal[]
+}
+
+model MarketMapping {
+  id                String          @id @default(cuid())
+  marketTicker      String
+  market            KalshiMarket    @relation(fields: [marketTicker], references: [ticker])
+  city              String?
+  state             String?
+  stationId         String?
+  stationName       String?
+  settlementSource  String?
+  variable          WeatherVariable
+  threshold         Float?
+  thresholdOperator String
+  targetDate        DateTime?
+  confidence        Confidence
+  accepted          Boolean
+  reviewReason      String?
+  rawPayload        Json
+  createdAt         DateTime        @default(now())
+}
+
+model Signal {
+  id                 String        @id @default(cuid())
+  marketTicker       String
+  market             KalshiMarket  @relation(fields: [marketTicker], references: [ticker])
+  forecastDeltaId    String
+  forecastDelta      ForecastDelta @relation(fields: [forecastDeltaId], references: [id])
+  side               String
+  action             String
+  contracts          Int
+  limitPrice         Float
+  maxCost            Float
+  modelProbability   Float
+  impliedProbability Float
+  edge               Float
+  confidence         Confidence
+  explanation        String
+  status             SignalStatus
+  skipReason         String?
+  createdAt          DateTime      @default(now())
+  riskChecks         RiskCheck[]
+  paperOrders        PaperOrder[]
+}
+
+model RiskCheck {
+  id        String   @id @default(cuid())
+  signalId  String
+  signal    Signal   @relation(fields: [signalId], references: [id])
+  allowed   Boolean
+  reasons   Json
+  createdAt DateTime @default(now())
+}
+
+model PaperOrder {
+  id                     String      @id
+  signalId               String
+  signal                 Signal      @relation(fields: [signalId], references: [id])
+  timestamp              DateTime
+  marketTicker           String
+  side                   String
+  action                 String
+  requestedContracts     Int
+  limitPrice             Float
+  simulatedAvgFillPrice  Float?
+  filledContracts        Int
+  unfilledContracts      Int
+  status                 OrderStatus
+  reason                 String
+  positionId             String?
+  position               PaperPosition? @relation(fields: [positionId], references: [id])
+}
+
+model PaperPosition {
+  id            String       @id @default(cuid())
+  marketTicker  String
+  side          String
+  contracts     Int
+  avgEntryPrice Float
+  markPrice     Float?
+  realizedPnl   Float        @default(0)
+  openedAt      DateTime     @default(now())
+  closedAt      DateTime?
+  orders        PaperOrder[]
+}
+
+model DemoOrder {
+  id           String   @id @default(cuid())
+  kalshiOrderId String?
+  marketTicker String
+  request      Json
+  response     Json?
+  status       String
+  createdAt    DateTime @default(now())
+}
+
+model LiveOrderIntent {
+  id          String   @id @default(cuid())
+  marketTicker String
+  request     Json
+  riskSnapshot Json
+  uiConfirmed Boolean  @default(false)
+  approved    Boolean  @default(false)
+  blockedReason Json?
+  createdAt   DateTime @default(now())
+}
+
+model LiveOrder {
+  id            String   @id @default(cuid())
+  intentId      String   @unique
+  kalshiOrderId String?
+  status        String
+  request       Json
+  response      Json?
+  createdAt     DateTime @default(now())
+}
+
+model Settlement {
+  id           String   @id @default(cuid())
+  marketTicker String
+  result       String
+  settledPrice Float
+  source       String
+  rawPayload   Json
+  createdAt    DateTime @default(now())
+}
+
+model StrategyRun {
+  id          String   @id @default(cuid())
+  mode        AppMode
+  parameters  Json
+  startedAt   DateTime @default(now())
+  completedAt DateTime?
+  summary     Json?
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actor     String
+  type      String
+  message   String
+  metadata  Json
+  createdAt DateTime @default(now())
+
+  @@index([type, createdAt])
+}
+
+model SystemEvent {
+  id        String   @id @default(cuid())
+  severity  String
+  source    String
+  message   String
+  metadata  Json
+  createdAt DateTime @default(now())
+}

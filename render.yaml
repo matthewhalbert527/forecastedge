@@ -1,0 +1,54 @@
+services:
+  - type: web
+    name: forecastedge-api
+    runtime: node
+    plan: starter
+    buildCommand: npm install && npm run build:api
+    startCommand: npm run start:api
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_MODE
+        value: paper
+      - key: LIVE_TRADING_ENABLED
+        value: "false"
+      - key: REQUIRE_MANUAL_CONFIRMATION
+        value: "true"
+      - key: KILL_SWITCH_ENABLED
+        value: "true"
+      - key: RUN_BACKGROUND_WORKER
+        value: "true"
+      - key: RUN_ON_STARTUP
+        value: "true"
+      - key: BACKGROUND_POLL_INTERVAL_MINUTES
+        value: "30"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: forecastedge-db
+          property: connectionString
+      - key: OPEN_METEO_BASE_URL
+        value: https://api.open-meteo.com/v1
+      - key: NWS_BASE_URL
+        value: https://api.weather.gov
+      - key: NWS_USER_AGENT
+        value: ForecastEdge/0.1 contact@example.com
+      - key: KALSHI_PROD_BASE_URL
+        value: https://api.elections.kalshi.com/trade-api/v2
+      - key: KALSHI_DEMO_BASE_URL
+        value: https://demo-api.kalshi.co/trade-api/v2
+
+  - type: web
+    name: forecastedge-web
+    runtime: node
+    plan: starter
+    buildCommand: npm install && npm run build:web
+    startCommand: npm run start:web
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+
+databases:
+  - name: forecastedge-db
+    plan: free
