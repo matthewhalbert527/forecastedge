@@ -43,6 +43,7 @@ export function buildServer() {
     const summary = await pipeline.persistedSummary();
     return {
       ...summary,
+      mode: env.APP_MODE,
       auditLogs: "auditLogs" in summary ? summary.auditLogs : audit.list(100),
       safety: {
         liveTradingEnabled: env.LIVE_TRADING_ENABLED,
