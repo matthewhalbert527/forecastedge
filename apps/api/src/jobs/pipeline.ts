@@ -27,26 +27,38 @@ export class ForecastEdgePipeline {
       let latest = null;
       try {
         const previous = this.store.latestSnapshot(location.id, "open_meteo");
-        latest = await fetchOpenMeteoForecast(location);
-        this.store.forecastSnapshots.unshift(latest);
-        report.counts.forecastSnapshots += 1;
-        report.providerResults.push({ provider: "open_meteo", locationId: location.id, status: "ok", message: `Stored forecast snapshot ${latest.id}` });
-        this.audit.record({ actor: "system", type: "forecast_snapshot", message: `Stored ${latest.provider} snapshot for ${location.city}`, metadata: { snapshotId: latest.id } });
+        const cached = previous && minutesSince(previous.createdAt) < env.FORECAST_CACHE_MINUTES;
+        if (cached) {
+          report.providerResults.push({ provider: "open_meteo", locationId: location.id, status: "skipped", message: `Using cached snapshot ${previous.id}; age ${Math.round(minutesSince(previous.createdAt))} minutes` });
+        } else if (!this.store.providerAvailable("open_meteo", location.id)) {
+          report.providerResults.push({ provider: "open_meteo", locationId: location.id, status: "skipped", message: "Provider cooldown active after recent rate limit" });
+        } else {
+          latest = await fetchOpenMeteoForecast(location);
+          this.store.forecastSnapshots.unshift(latest);
+          report.counts.forecastSnapshots += 1;
+          report.providerResults.push({ provider: "open_meteo", locationId: location.id, status: "ok", message: `Stored forecast snapshot ${latest.id}` });
+          this.audit.record({ actor: "system", type: "forecast_snapshot", message: `Stored ${latest.provider} snapshot for ${location.city}`, metadata: { snapshotId: latest.id } });
 
-        const deltas = detectForecastDeltas(previous, latest);
-        this.store.forecastDeltas.unshift(...deltas);
-        report.counts.forecastDeltas += deltas.length;
-        for (const delta of deltas) {
-          this.audit.record({ actor: "system", type: "forecast_delta", message: delta.reason, metadata: delta });
+          const deltas = detectForecastDeltas(previous, latest);
+          this.store.forecastDeltas.unshift(...deltas);
+          report.counts.forecastDeltas += deltas.length;
+          for (const delta of deltas) {
+            this.audit.record({ actor: "system", type: "forecast_delta", message: delta.reason, metadata: delta });
+          }
         }
       } catch (error) {
-        report.providerResults.push({ provider: "open_meteo", locationId: location.id, status: "error", message: errorMessage(error) });
-        report.decisions.push({ stage: "provider", itemId: `${location.id}:open_meteo`, status: "error", reason: errorMessage(error), metadata: { locationId: location.id } });
+        const message = errorMessage(error);
+        const metadata: Record<string, string> = { locationId: location.id };
+        if (message.includes("429")) {
+          metadata.cooldownUntil = this.store.coolDownProvider("open_meteo", location.id, env.OPEN_METEO_COOLDOWN_MINUTES);
+        }
+        report.providerResults.push({ provider: "open_meteo", locationId: location.id, status: "error", message });
+        report.decisions.push({ stage: "provider", itemId: `${location.id}:open_meteo`, status: "error", reason: message, metadata });
         this.audit.record({
           actor: "system",
           type: "error",
-          message: `Open-Meteo forecast failed for ${location.city}: ${errorMessage(error)}`,
-          metadata: { locationId: location.id }
+          message: `Open-Meteo forecast failed for ${location.city}: ${message}`,
+          metadata
         });
       }
 
@@ -220,4 +232,8 @@ export class ForecastEdgePipeline {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unknown error";
+}
+
+function minutesSince(iso: string) {
+  return Math.max(0, (Date.now() - new Date(iso).getTime()) / 60_000);
 }

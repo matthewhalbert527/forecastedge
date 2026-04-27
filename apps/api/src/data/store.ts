@@ -65,9 +65,21 @@ export class MemoryStore {
   paperOrders: PaperOrder[] = [];
   stationObservations: StationObservation[] = [];
   scanReports: ScanReport[] = [];
+  providerCooldowns: Record<string, string> = {};
 
   latestSnapshot(locationId: string, provider: string) {
     return this.forecastSnapshots.find((snapshot) => snapshot.location.id === locationId && snapshot.provider === provider) ?? null;
+  }
+
+  providerAvailable(provider: string, locationId: string, now = new Date()) {
+    const until = this.providerCooldowns[`${provider}:${locationId}`];
+    return !until || new Date(until).getTime() <= now.getTime();
+  }
+
+  coolDownProvider(provider: string, locationId: string, minutes: number, now = new Date()) {
+    const until = new Date(now.getTime() + minutes * 60_000).toISOString();
+    this.providerCooldowns[`${provider}:${locationId}`] = until;
+    return until;
   }
 
   startScan(trigger: ScanReport["trigger"]) {

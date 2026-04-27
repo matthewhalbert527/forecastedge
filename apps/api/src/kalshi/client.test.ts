@@ -32,4 +32,15 @@ describe("Kalshi weather discovery filter", () => {
       })
     ).toBe(true);
   });
+
+  it("keeps Kalshi documented weather series tickers even when title is terse", () => {
+    expect(
+      isPlausibleWeatherMarket({
+        ticker: "KXHIGHNY-26APR27-T80",
+        eventTicker: "KXHIGHNY-26APR27",
+        title: "Above 80",
+        subtitle: undefined
+      })
+    ).toBe(true);
+  });
 });
