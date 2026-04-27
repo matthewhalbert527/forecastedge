@@ -56,7 +56,7 @@ export interface ScanReport {
 }
 
 export class MemoryStore {
-  locations: LocationConfig[] = [defaultLocation];
+  locations: LocationConfig[] = KALSHI_SETTLEMENT_STATIONS.map((station) => stationToLocationConfig(station, 30));
   forecastSnapshots: NormalizedForecastSnapshot[] = [];
   forecastDeltas: ForecastDelta[] = [];
   markets: KalshiMarketCandidate[] = [];

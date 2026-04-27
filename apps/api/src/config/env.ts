@@ -23,7 +23,7 @@ const schema = z.object({
   NWS_USER_AGENT: z.string().default("ForecastEdge/0.1 contact@example.com"),
   KALSHI_PROD_BASE_URL: z.string().url().default("https://api.elections.kalshi.com/trade-api/v2"),
   KALSHI_DEMO_BASE_URL: z.string().url().default("https://demo-api.kalshi.co/trade-api/v2"),
-  KALSHI_WEATHER_SERIES_TICKERS: z.string().default("KXHIGHNY,KXHIGHMIA,KXHIGHCHI,KXHIGHAUS,KXHIGHLAX,KXHIGHOKC"),
+  KALSHI_WEATHER_SERIES_TICKERS: z.string().default("KXHIGHNY,KXHIGHMIA,KXHIGHCHI,KXHIGHAUS,KXHIGHLAX,KXHIGHOKC,KXHIGHBOS,KXHIGHPHIL,KXHIGHDEN,KXHIGHPHX,KXHIGHLAS,KXHIGHSEA,KXHIGHATL,KXHIGHDC,KXHIGHDAL,KXHIGHHOU"),
   ACCUWEATHER_BASE_URL: z.string().url().default("https://dataservice.accuweather.com"),
   ACCUWEATHER_API_KEY: z.string().optional(),
   NOAA_CDO_TOKEN: z.string().optional(),

@@ -108,6 +108,19 @@ describe("Kalshi market parsing", () => {
     expect(mapping.thresholdOperator).toBe("above");
     expect(mapping.station?.stationId).toBe("KNYC");
   });
+
+  it("maps expanded settlement station aliases for likely weather locations", () => {
+    const mapping = parseKalshiWeatherMarket({
+      ...market,
+      ticker: "KXHIGHPHX-26APR28-T99",
+      eventTicker: "KXHIGHPHX-26APR28",
+      title: "Will the high temp in Phoenix be >99° on Apr 28, 2026?",
+      subtitle: "100° or above"
+    });
+    expect(mapping.accepted).toBe(true);
+    expect(mapping.station?.stationId).toBe("KPHX");
+    expect(mapping.threshold).toBe(99);
+  });
 });
 
 describe("probability and signal engine", () => {
