@@ -84,6 +84,10 @@ export default function Page() {
   }, []);
 
   const acceptedMappings = useMemo(() => data?.mappings.filter((mapping) => mapping.accepted).length ?? 0, [data]);
+  const latestScan = data?.scanReports[0] ?? null;
+  const scanVerdict = latestScan ? scanHealth(latestScan) : { label: "Waiting for first scan", tone: "warn" as const, detail: "Run a scan to check providers, market discovery, parser decisions, and signal generation." };
+  const firedSignals = data?.signals.filter((signal) => signal.status === "FIRED").length ?? 0;
+  const skippedSignals = data?.signals.filter((signal) => signal.status !== "FIRED").length ?? 0;
 
   return (
     <main className="app-shell">
@@ -125,20 +129,45 @@ export default function Page() {
 
         {data && tab === "overview" ? (
           <section className="grid">
-            <Metric title="Active locations" value={data.locations.length} detail={data.locations.map((loc) => `${loc.city}, ${loc.state}`).join(", ")} />
-            <Metric title="Recent deltas" value={data.forecastDeltas.length} detail="Meaningful changes retained with audit trail" />
-            <Metric title="Accepted mappings" value={acceptedMappings} detail={`${data.mappings.length - acceptedMappings} queued for manual review`} />
-            <Metric title="Paper P/L" value="$0.00" detail={`${data.performance.totalTrades} simulated trades, settlement pending`} />
+            <Guidance
+              title="What to look for"
+              items={[
+                "Scan health should be OK. Provider failures, rejected mappings, or zero discovered markets mean the system is not ready to trust signals.",
+                "Forecast changes are the trigger. No delta usually means no new trade decision, even if markets exist.",
+                "Tradable mappings are markets the parser tied to a known settlement station, date, variable, and threshold.",
+                "Paper orders only appear after a fired signal passes risk and the simulated order book fill rules."
+              ]}
+            />
             <div className="panel">
-              <h2>Settlement station</h2>
+              <h2>Latest scan health</h2>
+              <Badge tone={scanVerdict.tone}>{scanVerdict.label}</Badge>
+              <p className="decision-note">{scanVerdict.detail}</p>
+              {latestScan ? (
+                <div className="summary-strip">
+                  <SummaryItem label="Markets" value={latestScan.counts.marketsDiscovered} />
+                  <SummaryItem label="Accepted" value={latestScan.counts.mappingsAccepted} />
+                  <SummaryItem label="Rejected" value={latestScan.counts.mappingsRejected} />
+                  <SummaryItem label="Signals" value={latestScan.counts.signalsFired} />
+                </div>
+              ) : null}
+            </div>
+            <Metric title="Stations monitored" value={data.locations.length} detail={data.locations.map((loc) => `${loc.city}, ${loc.state}`).join(", ")} />
+            <Metric title="Forecast changes" value={data.forecastDeltas.length} detail="Meaningful provider changes that can trigger decisions" />
+            <Metric title="Tradable mappings" value={acceptedMappings} detail={`${data.mappings.length - acceptedMappings} rejected or queued for manual review`} />
+            <Metric title="Paper trading" value="$0.00" detail={`${data.performance.totalTrades} simulated trades, settlement pending`} />
+            <div className="panel">
+              <h2>Settlement station readings</h2>
+              <p className="muted">These are the weather stations ForecastEdge is using to mirror Kalshi settlement locations when available.</p>
               <Rows rows={data.stationObservations.slice(0, 3).map((obs) => [obs.stationId, obs.stationName, obs.temperatureF === null ? "n/a" : `${obs.temperatureF} F`, time(obs.observedAt)])} empty="No station observations yet" />
             </div>
             <div className="panel wide">
               <h2>Recent audit trail</h2>
+              <p className="muted">This is the chronological record of scans, rejected markets, generated signals, paper orders, errors, and mode changes.</p>
               <Rows rows={data.auditLogs.slice(0, 8).map((log) => [time(log.timestamp), log.type, log.message])} empty="No audit entries yet" />
             </div>
             <div className="panel">
               <h2>System safety</h2>
+              <p className="muted">Live trading must stay disabled unless you deliberately enable every required backend and UI gate.</p>
               <StatusLine label="Live trading" value={data.safety.liveTradingEnabled ? "enabled" : "disabled"} danger={data.safety.liveTradingEnabled} />
               <StatusLine label="Manual confirmation" value={data.safety.requireManualConfirmation ? "required" : "not required"} />
               <StatusLine label="Production credentials" value={data.safety.prodCredentialConfigured ? "configured" : "not configured"} />
@@ -149,24 +178,37 @@ export default function Page() {
 
         {data && tab === "forecast deltas" ? (
           <Panel title="Forecast deltas">
+            <p className="muted">A delta is a meaningful forecast move, such as a high/low temperature shift large enough to matter for a Kalshi threshold. Deltas are the main reason the signal engine wakes up.</p>
             <Rows rows={data.forecastDeltas.map((delta) => [`${delta.city}, ${delta.state}`, delta.variable, `${delta.oldValue} -> ${delta.newValue}`, `${delta.absoluteChange}`, delta.targetDate, delta.confidence])} empty="No meaningful deltas yet" />
           </Panel>
         ) : null}
 
         {data && tab === "markets" ? (
           <Panel title="Kalshi weather markets">
+            <div className="explain-bar">
+              <Badge tone="ok">accepted = eligible for signals</Badge>
+              <Badge tone="warn">review/rejected = no trading</Badge>
+              <span>Look for high-confidence rows with a known station, settlement source, threshold, date, and enough liquidity.</span>
+            </div>
             <Rows rows={data.mappings.map((mapping) => [mapping.marketTicker, mapping.station ? `${mapping.station.stationId} ${mapping.station.stationName}` : "review", mapping.settlementSource, mapping.variable, mapping.threshold ?? "n/a", mapping.targetDate ?? "n/a", mapping.accepted ? "accepted" : mapping.reviewReason ?? "review", mapping.liquidityScore])} empty="No markets discovered yet" />
           </Panel>
         ) : null}
 
         {data && tab === "signals" ? (
           <Panel title="Signals">
+            <div className="summary-strip inline">
+              <SummaryItem label="Fired" value={firedSignals} />
+              <SummaryItem label="Skipped" value={skippedSignals} />
+              <SummaryItem label="Min edge" value="8 pp" />
+            </div>
+            <p className="muted">A fired signal means mapping, forecast movement, model edge, liquidity, spread, stale-data checks, and risk limits passed. Skipped signals are useful too: they explain why the system refused to trade.</p>
             <Rows rows={data.signals.map((signal) => [time(signal.createdAt), signal.marketTicker, signal.status, `${(signal.edge * 100).toFixed(1)} pp`, `$${signal.limitPrice.toFixed(2)}`, signal.explanation])} empty="No signals yet" />
           </Panel>
         ) : null}
 
         {data && tab === "paper trades" ? (
           <Panel title="Paper trades">
+            <p className="muted">Paper trades are simulated against market prices and liquidity rules. Filled contracts are tracked separately from unfilled contracts so this does not assume perfect fills.</p>
             <Rows rows={data.paperOrders.map((order) => [time(order.timestamp), order.marketTicker, order.status, order.filledContracts, order.unfilledContracts, order.simulatedAvgFillPrice ? `$${order.simulatedAvgFillPrice.toFixed(2)}` : "n/a", order.reason])} empty="No paper orders yet" />
           </Panel>
         ) : null}
@@ -186,6 +228,14 @@ export default function Page() {
 
         {data && tab === "audit" ? (
           <section className="grid">
+            <Guidance
+              title="How to audit a scan"
+              items={[
+                "Start with Scan reports. A clean scan should discover markets, accept known weather mappings, and show zero unexpected rejections.",
+                "Provider status tells you whether weather and station data were fresh or degraded.",
+                "Decision log is the review trail: every accepted, rejected, skipped, or fired decision includes a reason."
+              ]}
+            />
             <div className="panel wide">
               <h2>Scan reports</h2>
               <Rows rows={data.scanReports.slice(0, 10).map((scan) => [time(scan.startedAt), scan.trigger, scan.status, `${scan.counts.marketsDiscovered} markets`, `${scan.counts.mappingsAccepted}/${scan.counts.mappingsRejected} mappings`, `${scan.counts.signalsFired}/${scan.counts.signalsSkipped} signals`, `${scan.counts.stationObservations} station obs`])} empty="No scans recorded yet" />
@@ -205,10 +255,12 @@ export default function Page() {
           <section className="grid">
             <div className="panel">
               <h2>Locations</h2>
+              <p className="muted">These are the monitored Kalshi-style settlement locations. More locations broaden market coverage but also require strict station/date parsing.</p>
               <Rows rows={data.locations.map((loc) => [`${loc.city}, ${loc.state}`, "settlement station", `${loc.pollingIntervalMinutes} min`])} empty="No locations configured" />
             </div>
             <div className="panel">
               <h2>Mode controls</h2>
+              <p className="muted">This MVP is intended for watch and paper operation. Live execution remains blocked by backend safety gates.</p>
               <StatusLine label="Current mode" value={data.mode} />
               <StatusLine label="Live orders" value="blocked by default" />
               <StatusLine label="Kill switch" value={data.safety.killSwitchEnabled ? "enabled" : "disabled"} danger={data.safety.killSwitchEnabled} />
@@ -240,6 +292,32 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
+function Guidance({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="panel guidance wide">
+      <h2>{title}</h2>
+      <ul>
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function Badge({ tone, children }: { tone: "ok" | "warn" | "danger" | "neutral"; children: React.ReactNode }) {
+  return <span className={`badge ${tone}`}>{children}</span>;
+}
+
+function SummaryItem({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="summary-item">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
 function Rows({ rows, empty }: { rows: Array<Array<React.ReactNode>>; empty: string }) {
   if (rows.length === 0) return <p className="muted">{empty}</p>;
   return (
@@ -266,4 +344,21 @@ function StatusLine({ label, value, danger = false }: { label: string; value: st
 
 function time(iso: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
+}
+
+function scanHealth(scan: DashboardData["scanReports"][number]) {
+  const failedProviders = scan.providerResults.filter((result) => result.status !== "ok").length;
+  if (scan.status.includes("error")) {
+    return { label: "Scan has errors", tone: "danger" as const, detail: "Open Provider status and Decision log before trusting any signal from this run." };
+  }
+  if (failedProviders > 0) {
+    return { label: "Provider degraded", tone: "warn" as const, detail: `${failedProviders} provider check failed or degraded. Signals may be skipped because data freshness is uncertain.` };
+  }
+  if (scan.counts.marketsDiscovered === 0) {
+    return { label: "No markets found", tone: "warn" as const, detail: "Kalshi discovery returned no markets, so the scanner has nothing to map or trade." };
+  }
+  if (scan.counts.mappingsRejected > 0) {
+    return { label: "Review rejected mappings", tone: "warn" as const, detail: `${scan.counts.mappingsRejected} markets were rejected. This is safe behavior, but review the reasons before expanding trading.` };
+  }
+  return { label: "Scan OK", tone: "ok" as const, detail: "Providers responded, weather markets were discovered, and mappings were accepted without parser rejects." };
 }
