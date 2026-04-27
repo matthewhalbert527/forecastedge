@@ -51,7 +51,13 @@ export function buildServer() {
   app.get("/api/settlement-stations", async () => KALSHI_SETTLEMENT_STATIONS);
   app.get("/api/data-sources", async () => WEATHER_DATASET_REFERENCES);
 
-  app.post("/api/run-once", async () => pipeline.runOnce());
+  app.get("/api/audit/scans", async () => store.scanReports.slice(0, 50));
+  app.get("/api/audit/latest", async () => ({
+    latestScan: store.scanReports[0] ?? null,
+    auditLogs: audit.list(250)
+  }));
+
+  app.post("/api/run-once", async () => pipeline.runOnce("manual"));
   app.post("/api/demo/dry-run-order", async (request) => demoBroker.dryRunOrder(request.body));
   app.post("/api/live/dry-run-order", async (request) => {
     const body = request.body as { order?: unknown; uiConfirmed?: boolean } | undefined;

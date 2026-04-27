@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, AlertTriangle, BarChart3, CloudSun, Gauge, LineChart, LockKeyhole, Play, Power, Radar, Settings, ShieldCheck, WalletCards } from "lucide-react";
+import { Activity, AlertTriangle, BarChart3, ClipboardList, CloudSun, Gauge, LineChart, LockKeyhole, Play, Power, Radar, Settings, ShieldCheck, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 type DashboardData = {
@@ -15,6 +15,26 @@ type DashboardData = {
   paperOrders: Array<{ id: string; marketTicker: string; status: string; filledContracts: number; unfilledContracts: number; simulatedAvgFillPrice: number | null; reason: string; timestamp: string }>;
   performance: { totalTrades: number; simulatedContracts: number; averageEntryPrice: number; totalCost: number; rejectedOrders: number };
   auditLogs: Array<{ id: string; timestamp: string; type: string; message: string }>;
+  scanReports: Array<{
+    id: string;
+    startedAt: string;
+    completedAt: string | null;
+    status: string;
+    trigger: string;
+    providerResults: Array<{ provider: string; status: string; message: string; stationId?: string }>;
+    counts: {
+      forecastSnapshots: number;
+      stationObservations: number;
+      forecastDeltas: number;
+      marketsDiscovered: number;
+      mappingsAccepted: number;
+      mappingsRejected: number;
+      signalsFired: number;
+      signalsSkipped: number;
+      paperOrders: number;
+    };
+    decisions: Array<{ stage: string; itemId: string; status: string; reason: string }>;
+  }>;
   safety: { liveTradingEnabled: boolean; killSwitchEnabled: boolean; requireManualConfirmation: boolean; demoConfigured: boolean; prodCredentialConfigured: boolean };
 };
 
@@ -25,6 +45,7 @@ const tabs = [
   ["signals", LineChart],
   ["paper trades", WalletCards],
   ["performance", BarChart3],
+  ["audit", ClipboardList],
   ["settings", Settings]
 ] as const;
 
@@ -159,6 +180,23 @@ export default function Page() {
             <div className="panel wide">
               <h2>Calibration queue</h2>
               <p className="muted">Estimated probability vs actual outcome will populate after settled markets are ingested.</p>
+            </div>
+          </section>
+        ) : null}
+
+        {data && tab === "audit" ? (
+          <section className="grid">
+            <div className="panel wide">
+              <h2>Scan reports</h2>
+              <Rows rows={data.scanReports.slice(0, 10).map((scan) => [time(scan.startedAt), scan.trigger, scan.status, `${scan.counts.marketsDiscovered} markets`, `${scan.counts.mappingsAccepted}/${scan.counts.mappingsRejected} mappings`, `${scan.counts.signalsFired}/${scan.counts.signalsSkipped} signals`, `${scan.counts.stationObservations} station obs`])} empty="No scans recorded yet" />
+            </div>
+            <div className="panel">
+              <h2>Provider status</h2>
+              <Rows rows={(data.scanReports[0]?.providerResults ?? []).map((result) => [result.provider, result.stationId ?? "", result.status, result.message])} empty="No provider checks yet" />
+            </div>
+            <div className="panel wide">
+              <h2>Decision log</h2>
+              <Rows rows={(data.scanReports[0]?.decisions ?? []).slice(0, 50).map((decision) => [decision.stage, decision.status, decision.itemId, decision.reason])} empty="No decisions recorded for latest scan" />
             </div>
           </section>
         ) : null}

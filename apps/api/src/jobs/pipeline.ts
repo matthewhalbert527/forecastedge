@@ -21,21 +21,27 @@ export class ForecastEdgePipeline {
     private readonly audit: AuditLog
   ) {}
 
-  async runOnce() {
+  async runOnce(trigger: "manual" | "scheduled" | "startup" = "manual") {
+    const report = this.store.startScan(trigger);
     for (const location of this.store.locations) {
       let latest = null;
       try {
         const previous = this.store.latestSnapshot(location.id, "open_meteo");
         latest = await fetchOpenMeteoForecast(location);
         this.store.forecastSnapshots.unshift(latest);
+        report.counts.forecastSnapshots += 1;
+        report.providerResults.push({ provider: "open_meteo", locationId: location.id, status: "ok", message: `Stored forecast snapshot ${latest.id}` });
         this.audit.record({ actor: "system", type: "forecast_snapshot", message: `Stored ${latest.provider} snapshot for ${location.city}`, metadata: { snapshotId: latest.id } });
 
         const deltas = detectForecastDeltas(previous, latest);
         this.store.forecastDeltas.unshift(...deltas);
+        report.counts.forecastDeltas += deltas.length;
         for (const delta of deltas) {
           this.audit.record({ actor: "system", type: "forecast_delta", message: delta.reason, metadata: delta });
         }
       } catch (error) {
+        report.providerResults.push({ provider: "open_meteo", locationId: location.id, status: "error", message: errorMessage(error) });
+        report.decisions.push({ stage: "provider", itemId: `${location.id}:open_meteo`, status: "error", reason: errorMessage(error), metadata: { locationId: location.id } });
         this.audit.record({
           actor: "system",
           type: "error",
@@ -48,6 +54,8 @@ export class ForecastEdgePipeline {
         const stationObservation = await fetchNwsLatestStationObservation(location);
         if (stationObservation) {
           this.store.stationObservations.unshift(stationObservation);
+          report.counts.stationObservations += 1;
+          report.providerResults.push({ provider: "nws_station", locationId: location.id, stationId: location.stationId, status: "ok", message: `Stored ${stationObservation.stationId} observation at ${stationObservation.observedAt}` });
           this.audit.record({
             actor: "system",
             type: "station_observation",
@@ -56,6 +64,8 @@ export class ForecastEdgePipeline {
           });
         }
       } catch (error) {
+        report.providerResults.push({ provider: "nws_station", locationId: location.id, stationId: location.stationId, status: "error", message: errorMessage(error) });
+        report.decisions.push({ stage: "provider", itemId: `${location.id}:nws_station`, status: "error", reason: errorMessage(error), metadata: { locationId: location.id, stationId: location.stationId } });
         this.audit.record({
           actor: "system",
           type: "error",
@@ -68,9 +78,15 @@ export class ForecastEdgePipeline {
         const accuweather = await fetchAccuWeatherDailyForecast(location);
         if (accuweather) {
           this.store.forecastSnapshots.unshift(accuweather);
+          report.counts.forecastSnapshots += 1;
+          report.providerResults.push({ provider: "accuweather", locationId: location.id, status: "ok", message: `Stored AccuWeather snapshot ${accuweather.id}` });
           this.audit.record({ actor: "system", type: "forecast_snapshot", message: `Stored AccuWeather snapshot for ${location.city}`, metadata: { snapshotId: accuweather.id } });
+        } else {
+          report.providerResults.push({ provider: "accuweather", locationId: location.id, status: "skipped", message: "AccuWeather API key or location key not configured" });
         }
       } catch (error) {
+        report.providerResults.push({ provider: "accuweather", locationId: location.id, status: "error", message: errorMessage(error) });
+        report.decisions.push({ stage: "provider", itemId: `${location.id}:accuweather`, status: "error", reason: errorMessage(error), metadata: { locationId: location.id } });
         this.audit.record({
           actor: "system",
           type: "error",
@@ -81,8 +97,21 @@ export class ForecastEdgePipeline {
     }
 
     this.store.markets = await discoverWeatherMarkets();
+    report.counts.marketsDiscovered = this.store.markets.length;
     this.store.mappings = this.store.markets.map((market) => parseKalshiWeatherMarket(market));
     for (const mapping of this.store.mappings) {
+      if (mapping.accepted) {
+        report.counts.mappingsAccepted += 1;
+      } else {
+        report.counts.mappingsRejected += 1;
+      }
+      report.decisions.push({
+        stage: "market_mapping",
+        itemId: mapping.marketTicker,
+        status: mapping.accepted ? "accepted" : "rejected",
+        reason: mapping.accepted ? `Mapped to ${mapping.station?.stationId ?? "unknown station"} ${mapping.variable} ${mapping.thresholdOperator} ${mapping.threshold}` : mapping.reviewReason ?? "Mapping rejected",
+        metadata: mapping
+      });
       this.audit.record({
         actor: "system",
         type: mapping.accepted ? "market_accepted" : "market_rejected",
@@ -127,16 +156,37 @@ export class ForecastEdgePipeline {
       );
       const signal = generateSignal(delta, market, mapping, estimate, risk, { minEdge: env.MIN_EDGE_PERCENTAGE_POINTS / 100, maxStake: env.MAX_STAKE_PER_TRADE_PAPER, maxLongshotPrice: 0.15 }, now);
       this.store.signals.unshift(signal);
+      if (signal.status === "FIRED") {
+        report.counts.signalsFired += 1;
+      } else {
+        report.counts.signalsSkipped += 1;
+      }
+      report.decisions.push({
+        stage: "signal",
+        itemId: signal.id,
+        status: signal.status === "FIRED" ? "fired" : "skipped",
+        reason: signal.skipReason ?? signal.explanation,
+        metadata: { signal, probability: estimate, risk }
+      });
       this.audit.record({ actor: "system", type: signal.status === "FIRED" ? "signal_fired" : "signal_skipped", message: signal.explanation, metadata: signal });
 
       if (env.APP_MODE === "paper" && signal.status === "FIRED") {
         const orderBook = await getOrderBook(signal.marketTicker);
         const order = simulatePaperOrder(signal, orderBook, undefined, now);
         this.store.paperOrders.unshift(order);
+        report.counts.paperOrders += 1;
+        report.decisions.push({
+          stage: "paper_order",
+          itemId: order.id,
+          status: order.status === "FILLED" ? "filled" : order.status === "PARTIAL" ? "partial" : "rejected",
+          reason: order.reason,
+          metadata: order
+        });
         this.audit.record({ actor: "system", type: "paper_order", message: `${order.status}: ${order.reason}`, metadata: order });
       }
     }
 
+    this.finishReport(report);
     return this.summary();
   }
 
@@ -144,6 +194,7 @@ export class ForecastEdgePipeline {
     return {
       mode: env.APP_MODE,
       locations: this.store.locations,
+      scanReports: this.store.scanReports.slice(0, 20),
       forecastSnapshots: this.store.forecastSnapshots.slice(0, 10),
       stationObservations: this.store.stationObservations.slice(0, 20),
       forecastDeltas: this.store.forecastDeltas.slice(0, 50),
@@ -153,6 +204,17 @@ export class ForecastEdgePipeline {
       paperOrders: this.store.paperOrders.slice(0, 100),
       performance: summarizePaperOrders(this.store.paperOrders)
     };
+  }
+
+  private finishReport(report: ReturnType<MemoryStore["startScan"]>) {
+    report.completedAt = new Date().toISOString();
+    report.status = report.decisions.some((decision) => decision.status === "error") ? "completed_with_errors" : "completed";
+    this.audit.record({
+      actor: "system",
+      type: "scan_completed",
+      message: `Scan ${report.id} completed: ${report.counts.marketsDiscovered} markets, ${report.counts.mappingsAccepted} accepted mappings, ${report.counts.signalsFired} fired signals`,
+      metadata: report
+    });
   }
 }
 

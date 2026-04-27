@@ -6,6 +6,7 @@ export interface AuditEntry {
     | "forecast_snapshot"
     | "station_observation"
     | "forecast_delta"
+    | "scan_completed"
     | "market_accepted"
     | "market_rejected"
     | "signal_fired"

@@ -57,7 +57,7 @@ export class BackgroundWorker {
     if (this.running) return;
     this.running = true;
     try {
-      await this.pipeline.runOnce();
+      await this.pipeline.runOnce(trigger);
       this.lastRunAt = new Date().toISOString();
       this.lastError = null;
       this.runs += 1;
