@@ -6,6 +6,8 @@ import { KalshiDemoBroker } from "./brokers/demo-broker.js";
 import { LiveBrokerSafetyShell } from "./brokers/live-broker.js";
 import { env, listenPort } from "./config/env.js";
 import { MemoryStore } from "./data/store.js";
+import { PersistentStore } from "./data/persistent-store.js";
+import { getPrisma } from "./db/prisma.js";
 import { BackgroundWorker } from "./jobs/background-worker.js";
 import { ForecastEdgePipeline } from "./jobs/pipeline.js";
 
@@ -13,7 +15,9 @@ export function buildServer() {
   const app = Fastify({ logger: true });
   const store = new MemoryStore();
   const audit = new AuditLog();
-  const pipeline = new ForecastEdgePipeline(store, audit);
+  const prisma = getPrisma();
+  const persistentStore = prisma ? new PersistentStore(prisma) : null;
+  const pipeline = new ForecastEdgePipeline(store, audit, persistentStore);
   const worker = new BackgroundWorker(pipeline, {
     enabled: env.RUN_BACKGROUND_WORKER,
     runOnStartup: env.RUN_ON_STARTUP,
@@ -35,18 +39,21 @@ export function buildServer() {
     timestamp: new Date().toISOString()
   }));
 
-  app.get("/api/dashboard", async () => ({
-    ...pipeline.summary(),
-    auditLogs: audit.list(100),
-    safety: {
-      liveTradingEnabled: env.LIVE_TRADING_ENABLED,
-      killSwitchEnabled: env.KILL_SWITCH_ENABLED,
-      requireManualConfirmation: env.REQUIRE_MANUAL_CONFIRMATION,
-      demoConfigured: demoBroker.isConfigured(),
-      prodCredentialConfigured: Boolean(env.KALSHI_PROD_ACCESS_KEY)
-    },
-    backgroundWorker: worker.status()
-  }));
+  app.get("/api/dashboard", async () => {
+    const summary = await pipeline.persistedSummary();
+    return {
+      ...summary,
+      auditLogs: "auditLogs" in summary ? summary.auditLogs : audit.list(100),
+      safety: {
+        liveTradingEnabled: env.LIVE_TRADING_ENABLED,
+        killSwitchEnabled: env.KILL_SWITCH_ENABLED,
+        requireManualConfirmation: env.REQUIRE_MANUAL_CONFIRMATION,
+        demoConfigured: demoBroker.isConfigured(),
+        prodCredentialConfigured: Boolean(env.KALSHI_PROD_ACCESS_KEY)
+      },
+      backgroundWorker: worker.status()
+    };
+  });
 
   app.get("/api/settlement-stations", async () => KALSHI_SETTLEMENT_STATIONS);
   app.get("/api/data-sources", async () => WEATHER_DATASET_REFERENCES);
@@ -58,6 +65,7 @@ export function buildServer() {
   }));
 
   app.post("/api/run-once", async () => pipeline.runOnce("manual"));
+  app.post("/api/settlements/run-once", async () => pipeline.runSettlementsOnly());
   app.post("/api/demo/dry-run-order", async (request) => demoBroker.dryRunOrder(request.body));
   app.post("/api/live/dry-run-order", async (request) => {
     const body = request.body as { order?: unknown; uiConfirmed?: boolean } | undefined;
@@ -67,11 +75,16 @@ export function buildServer() {
   });
 
   app.addHook("onReady", async () => {
+    if (persistentStore) {
+      await persistentStore.hydrateMemory(store);
+      app.log.info("Hydrated ForecastEdge memory from Postgres");
+    }
     worker.start();
   });
 
   app.addHook("onClose", async () => {
     worker.stop();
+    await prisma?.$disconnect();
   });
 
   return app;

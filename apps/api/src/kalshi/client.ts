@@ -1,9 +1,13 @@
-import type { KalshiMarketCandidate, NormalizedOrderBook } from "@forecastedge/core";
+import type { KalshiMarketCandidate, KalshiMarketDetails, NormalizedOrderBook } from "@forecastedge/core";
 import { env } from "../config/env.js";
 
 interface KalshiMarketsResponse {
   markets?: Array<Record<string, unknown>>;
   cursor?: string;
+}
+
+interface KalshiMarketResponse {
+  market?: Record<string, unknown>;
 }
 
 interface KalshiOrderBookResponse {
@@ -70,6 +74,26 @@ export async function getOrderBook(marketTicker: string): Promise<NormalizedOrde
   };
 }
 
+export async function getMarketDetails(marketTicker: string): Promise<KalshiMarketDetails | null> {
+  const url = new URL(`${env.KALSHI_PROD_BASE_URL}/markets/${marketTicker}`);
+  const response = await fetch(url);
+  if (!response.ok) return null;
+  const payload = (await response.json()) as KalshiMarketResponse;
+  const raw = payload.market;
+  if (!raw) return null;
+  const normalized = normalizeMarket(raw);
+  if (!normalized) return null;
+  const status = stringValue(raw.status);
+  const rawResult = stringValue(raw.result) ?? stringValue(raw.market_result) ?? stringValue(raw.settlement_value);
+  const result = normalizeResult(rawResult);
+  return {
+    ...normalized,
+    status,
+    result,
+    canSettle: Boolean(result === "yes" || result === "no") && Boolean(status && ["closed", "settled", "determined"].includes(status))
+  };
+}
+
 function normalizeMarket(raw: Record<string, unknown>): KalshiMarketCandidate | null {
   const ticker = stringValue(raw.ticker);
   const title = stringValue(raw.title);
@@ -112,6 +136,13 @@ function configuredWeatherSeries() {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function normalizeResult(value: string | null): KalshiMarketDetails["result"] {
+  if (!value) return null;
+  const normalized = value.toLowerCase();
+  if (normalized === "yes" || normalized === "no" || normalized === "scalar") return normalized;
+  return "";
 }
 
 function numeric(value: unknown): number | null {

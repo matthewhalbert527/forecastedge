@@ -47,7 +47,7 @@ export interface ScanReport {
     paperOrders: number;
   };
   decisions: Array<{
-    stage: "provider" | "market_mapping" | "signal" | "paper_order";
+    stage: "provider" | "market_mapping" | "signal" | "paper_order" | "settlement";
     itemId: string;
     status: "accepted" | "rejected" | "fired" | "skipped" | "filled" | "partial" | "error";
     reason: string;

@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { isPlausibleWeatherMarket } from "./client.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { getMarketDetails, isPlausibleWeatherMarket } from "./client.js";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("Kalshi weather discovery filter", () => {
   it("filters esports and cross-category market leakage from Kalshi search", () => {
@@ -42,5 +46,31 @@ describe("Kalshi weather discovery filter", () => {
         subtitle: undefined
       })
     ).toBe(true);
+  });
+
+  it("normalizes settled market result from Kalshi market details", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          market: {
+            ticker: "KXHIGHCHI-26MAY02-B85",
+            event_ticker: "KXHIGHCHI-26MAY02",
+            title: "Will the high temperature in Chicago be above 85°F?",
+            status: "settled",
+            result: "yes",
+            yes_bid: 100,
+            yes_ask: 100,
+            no_bid: 0,
+            no_ask: 0,
+            last_price: 100
+          }
+        })
+      }))
+    );
+    const market = await getMarketDetails("KXHIGHCHI-26MAY02-B85");
+    expect(market?.canSettle).toBe(true);
+    expect(market?.result).toBe("yes");
   });
 });

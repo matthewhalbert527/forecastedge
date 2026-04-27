@@ -12,6 +12,8 @@ export interface AuditEntry {
     | "signal_fired"
     | "signal_skipped"
     | "paper_order"
+    | "settlement"
+    | "settlement_skipped"
     | "demo_order"
     | "live_order_blocked"
     | "mode_change"

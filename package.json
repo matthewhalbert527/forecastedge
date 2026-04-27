@@ -18,9 +18,17 @@
     "typecheck": "npm run typecheck --workspaces",
     "lint": "npm run lint --workspaces",
     "test": "npm run test --workspaces --if-present",
-    "smoke": "npm run smoke --workspace @forecastedge/api"
+    "smoke": "npm run smoke --workspace @forecastedge/api",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push"
   },
   "engines": {
     "node": ">=20.11.0"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.19.0"
   }
 }

@@ -13,7 +13,9 @@ type DashboardData = {
   mappings: Array<{ marketTicker: string; title: string; variable: string; threshold: number | null; targetDate: string | null; confidence: string; accepted: boolean; reviewReason: string | null; liquidityScore: number; location: { city: string; state?: string } | null; station: { stationId: string; stationName: string } | null; settlementSource: string }>;
   signals: Array<{ id: string; marketTicker: string; status: string; edge: number; limitPrice: number; contracts: number; explanation: string; skipReason: string | null; createdAt: string }>;
   paperOrders: Array<{ id: string; marketTicker: string; status: string; filledContracts: number; unfilledContracts: number; simulatedAvgFillPrice: number | null; reason: string; timestamp: string }>;
-  performance: { totalTrades: number; simulatedContracts: number; averageEntryPrice: number; totalCost: number; rejectedOrders: number };
+  paperPositions: Array<{ id: string; marketTicker: string; side: string; contracts: number; avgEntryPrice: number; realizedPnl: number; markPrice: number | null; openedAt: string; closedAt: string | null; settlementId: string | null }>;
+  settlements: Array<{ id: string; marketTicker: string; result: string; settledPrice: number; source: string; createdAt: string }>;
+  performance: { totalTrades: number; simulatedContracts: number; averageEntryPrice: number; totalCost: number; rejectedOrders: number; realizedPnl: number; unrealizedExposure: number; winRate: number; roi: number; maxDrawdown: number; longestLosingStreak: number; settledTrades: number; openPositions: number };
   auditLogs: Array<{ id: string; timestamp: string; type: string; message: string }>;
   scanReports: Array<{
     id: string;
@@ -77,6 +79,20 @@ export default function Page() {
     }
   }
 
+  async function runSettlements() {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiUrl}/api/settlements/run-once`, { method: "POST" });
+      if (!response.ok) throw new Error(`Settlement run failed with ${response.status}`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown settlement error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
     refresh().catch((err: unknown) => setError(err instanceof Error ? err.message : "Unable to load dashboard"));
     const timer = window.setInterval(() => refresh().catch(() => undefined), 15000);
@@ -122,6 +138,9 @@ export default function Page() {
             <Play size={16} />
             {loading ? "Running" : "Run scan"}
           </button>
+          <button className="secondary" onClick={runSettlements} disabled={loading}>
+            Reconcile settlements
+          </button>
         </header>
 
         {error ? <div className="alert"><AlertTriangle size={18} /> {error}</div> : null}
@@ -154,7 +173,8 @@ export default function Page() {
             <Metric title="Stations monitored" value={data.locations.length} detail={data.locations.map((loc) => `${loc.city}, ${loc.state}`).join(", ")} />
             <Metric title="Forecast changes" value={data.forecastDeltas.length} detail="Meaningful provider changes that can trigger decisions" />
             <Metric title="Tradable mappings" value={acceptedMappings} detail={`${data.mappings.length - acceptedMappings} rejected or queued for manual review`} />
-            <Metric title="Paper trading" value="$0.00" detail={`${data.performance.totalTrades} simulated trades, settlement pending`} />
+            <Metric title="Realized paper P/L" value={money(data.performance.realizedPnl)} detail={`${data.performance.settledTrades} settled positions, ${data.performance.openPositions} open`} />
+            <Metric title="Open exposure" value={money(data.performance.unrealizedExposure)} detail="Capital still at risk in unsettled paper positions" />
             <div className="panel">
               <h2>Settlement station readings</h2>
               <p className="muted">These are the weather stations ForecastEdge is using to mirror Kalshi settlement locations when available.</p>
@@ -210,6 +230,10 @@ export default function Page() {
           <Panel title="Paper trades">
             <p className="muted">Paper trades are simulated against market prices and liquidity rules. Filled contracts are tracked separately from unfilled contracts so this does not assume perfect fills.</p>
             <Rows rows={data.paperOrders.map((order) => [time(order.timestamp), order.marketTicker, order.status, order.filledContracts, order.unfilledContracts, order.simulatedAvgFillPrice ? `$${order.simulatedAvgFillPrice.toFixed(2)}` : "n/a", order.reason])} empty="No paper orders yet" />
+            <h2 className="subhead">Paper positions</h2>
+            <Rows rows={data.paperPositions.map((position) => [position.marketTicker, position.side, position.contracts, `$${position.avgEntryPrice.toFixed(2)}`, position.closedAt ? "settled" : "open", money(position.realizedPnl), position.settlementId ?? "pending"])} empty="No paper positions yet" />
+            <h2 className="subhead">Settlements</h2>
+            <Rows rows={data.settlements.map((settlement) => [time(settlement.createdAt), settlement.marketTicker, settlement.result.toUpperCase(), settlement.source])} empty="No settled markets yet" />
           </Panel>
         ) : null}
 
@@ -218,7 +242,11 @@ export default function Page() {
             <Metric title="Total trades" value={data.performance.totalTrades} detail={`${data.performance.rejectedOrders} rejected orders`} />
             <Metric title="Contracts" value={data.performance.simulatedContracts} detail="Filled simulated contracts" />
             <Metric title="Average entry" value={`$${data.performance.averageEntryPrice.toFixed(2)}`} detail="Weighted by contracts" />
-            <Metric title="Capital deployed" value={`$${data.performance.totalCost.toFixed(2)}`} detail="Settlement not reconciled yet" />
+            <Metric title="Capital deployed" value={money(data.performance.totalCost)} detail="Total simulated entry cost" />
+            <Metric title="Realized P/L" value={money(data.performance.realizedPnl)} detail={`${data.performance.settledTrades} settled positions`} />
+            <Metric title="Win rate" value={`${(data.performance.winRate * 100).toFixed(1)}%`} detail="Closed winning positions / closed positions" />
+            <Metric title="ROI" value={`${(data.performance.roi * 100).toFixed(1)}%`} detail="Realized P/L / settled entry cost" />
+            <Metric title="Max drawdown" value={money(data.performance.maxDrawdown)} detail={`${data.performance.longestLosingStreak} longest losing streak`} />
             <div className="panel wide">
               <h2>Calibration queue</h2>
               <p className="muted">Estimated probability vs actual outcome will populate after settled markets are ingested.</p>
@@ -344,6 +372,10 @@ function StatusLine({ label, value, danger = false }: { label: string; value: st
 
 function time(iso: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
+}
+
+function money(value: number) {
+  return `${value < 0 ? "-" : ""}$${Math.abs(value).toFixed(2)}`;
 }
 
 function scanHealth(scan: DashboardData["scanReports"][number]) {

@@ -101,6 +101,12 @@ export interface KalshiMarketCandidate {
   rawPayload: unknown;
 }
 
+export interface KalshiMarketDetails extends KalshiMarketCandidate {
+  status: string | null;
+  result: "yes" | "no" | "scalar" | "" | null;
+  canSettle: boolean;
+}
+
 export interface MarketMapping {
   marketTicker: string;
   eventTicker: string;
@@ -206,10 +212,40 @@ export interface PaperOrder {
 }
 
 export interface PaperPosition {
+  id?: string;
   marketTicker: string;
   side: OrderSide;
   contracts: number;
   avgEntryPrice: number;
   realizedPnl: number;
   markPrice: number | null;
+  openedAt?: string;
+  closedAt?: string | null;
+  settlementId?: string | null;
+}
+
+export interface Settlement {
+  id: string;
+  marketTicker: string;
+  result: "yes" | "no";
+  settledPrice: number;
+  source: string;
+  rawPayload: unknown;
+  createdAt: string;
+}
+
+export interface PaperPerformanceSummary {
+  totalTrades: number;
+  simulatedContracts: number;
+  averageEntryPrice: number;
+  totalCost: number;
+  rejectedOrders: number;
+  realizedPnl: number;
+  unrealizedExposure: number;
+  winRate: number;
+  roi: number;
+  maxDrawdown: number;
+  longestLosingStreak: number;
+  settledTrades: number;
+  openPositions: number;
 }

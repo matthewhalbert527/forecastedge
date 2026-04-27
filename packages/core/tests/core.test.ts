@@ -6,6 +6,8 @@ import {
   estimateMarketProbability,
   generateSignal,
   parseKalshiWeatherMarket,
+  buildPaperPositionsFromOrders,
+  summarizePaperOrders,
   simulatePaperOrder
 } from "../src/index.js";
 import type { KalshiMarketCandidate, NormalizedForecastSnapshot, NormalizedOrderBook, RiskState } from "../src/index.js";
@@ -182,5 +184,96 @@ describe("paper broker", () => {
     expect(order.status).toBe("PARTIAL");
     expect(order.filledContracts).toBe(2);
     expect(order.unfilledContracts).toBeGreaterThan(0);
+  });
+});
+
+describe("paper settlement performance", () => {
+  it("aggregates filled paper orders into open positions", () => {
+    const orders = [
+      {
+        id: "paper_1",
+        timestamp: "2026-05-01T12:00:00Z",
+        marketTicker: "KXHIGHCHI-26MAY02-B85",
+        side: "YES" as const,
+        action: "BUY" as const,
+        requestedContracts: 5,
+        limitPrice: 0.1,
+        simulatedAvgFillPrice: 0.11,
+        filledContracts: 2,
+        unfilledContracts: 3,
+        status: "PARTIAL" as const,
+        reason: "partial fill",
+        linkedSignalId: "signal_1"
+      }
+    ];
+    const positions = buildPaperPositionsFromOrders(orders);
+    expect(positions).toHaveLength(1);
+    expect(positions[0]?.contracts).toBe(2);
+    expect(positions[0]?.closedAt).toBeNull();
+  });
+
+  it("settles YES winners and losers with realized P/L", () => {
+    const baseOrder = {
+      timestamp: "2026-05-01T12:00:00Z",
+      marketTicker: "KXHIGHCHI-26MAY02-B85",
+      action: "BUY" as const,
+      requestedContracts: 2,
+      limitPrice: 0.25,
+      simulatedAvgFillPrice: 0.25,
+      filledContracts: 2,
+      unfilledContracts: 0,
+      status: "FILLED" as const,
+      reason: "filled",
+      linkedSignalId: "signal_1"
+    };
+    const winner = buildPaperPositionsFromOrders([{ ...baseOrder, id: "paper_yes", side: "YES" as const }], [{ id: "settlement_1", marketTicker: baseOrder.marketTicker, result: "yes", settledPrice: 1, source: "kalshi_market_result", rawPayload: {}, createdAt: "2026-05-03T00:00:00Z" }]);
+    const loser = buildPaperPositionsFromOrders([{ ...baseOrder, id: "paper_no", side: "NO" as const }], [{ id: "settlement_1", marketTicker: baseOrder.marketTicker, result: "yes", settledPrice: 1, source: "kalshi_market_result", rawPayload: {}, createdAt: "2026-05-03T00:00:00Z" }]);
+    expect(winner[0]?.realizedPnl).toBe(1.5);
+    expect(loser[0]?.realizedPnl).toBe(-0.5);
+  });
+
+  it("computes realized performance, drawdown, and losing streak", () => {
+    const orders = [
+      {
+        id: "paper_1",
+        timestamp: "2026-05-01T12:00:00Z",
+        marketTicker: "KXHIGHCHI-26MAY02-B85",
+        side: "YES" as const,
+        action: "BUY" as const,
+        requestedContracts: 1,
+        limitPrice: 0.2,
+        simulatedAvgFillPrice: 0.2,
+        filledContracts: 1,
+        unfilledContracts: 0,
+        status: "FILLED" as const,
+        reason: "filled",
+        linkedSignalId: "signal_1"
+      },
+      {
+        id: "paper_2",
+        timestamp: "2026-05-01T13:00:00Z",
+        marketTicker: "KXHIGHCHI-26MAY03-B85",
+        side: "YES" as const,
+        action: "BUY" as const,
+        requestedContracts: 1,
+        limitPrice: 0.4,
+        simulatedAvgFillPrice: 0.4,
+        filledContracts: 1,
+        unfilledContracts: 0,
+        status: "FILLED" as const,
+        reason: "filled",
+        linkedSignalId: "signal_2"
+      }
+    ];
+    const settlements = [
+      { id: "settlement_1", marketTicker: "KXHIGHCHI-26MAY02-B85", result: "yes" as const, settledPrice: 1, source: "kalshi_market_result", rawPayload: {}, createdAt: "2026-05-03T00:00:00Z" },
+      { id: "settlement_2", marketTicker: "KXHIGHCHI-26MAY03-B85", result: "no" as const, settledPrice: 0, source: "kalshi_market_result", rawPayload: {}, createdAt: "2026-05-04T00:00:00Z" }
+    ];
+    const positions = buildPaperPositionsFromOrders(orders, settlements);
+    const summary = summarizePaperOrders(orders, positions, settlements);
+    expect(summary.realizedPnl).toBe(0.4);
+    expect(summary.winRate).toBe(0.5);
+    expect(summary.maxDrawdown).toBe(0.4);
+    expect(summary.longestLosingStreak).toBe(1);
   });
 });

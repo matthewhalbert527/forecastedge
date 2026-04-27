@@ -9,8 +9,10 @@ import {
 } from "@forecastedge/core";
 import { AuditLog } from "../audit/audit-log.js";
 import { activeRiskLimits, env } from "../config/env.js";
+import type { PersistentStore } from "../data/persistent-store.js";
 import { MemoryStore } from "../data/store.js";
 import { discoverWeatherMarkets, getOrderBook } from "../kalshi/client.js";
+import { reconcilePaperSettlements } from "./settlements.js";
 import { fetchAccuWeatherDailyForecast } from "../weather/accuweather.js";
 import { fetchNwsLatestStationObservation } from "../weather/nws-station.js";
 import { fetchOpenMeteoForecast } from "../weather/open-meteo.js";
@@ -18,7 +20,8 @@ import { fetchOpenMeteoForecast } from "../weather/open-meteo.js";
 export class ForecastEdgePipeline {
   constructor(
     private readonly store: MemoryStore,
-    private readonly audit: AuditLog
+    private readonly audit: AuditLog,
+    private readonly persistentStore: PersistentStore | null = null
   ) {}
 
   async runOnce(trigger: "manual" | "scheduled" | "startup" = "manual") {
@@ -132,7 +135,11 @@ export class ForecastEdgePipeline {
       });
     }
 
-    if (env.APP_MODE === "watch") return this.summary();
+    if (env.APP_MODE === "watch") {
+      this.finishReport(report);
+      await this.persist(report);
+      return this.summary();
+    }
 
     for (const delta of this.store.forecastDeltas.slice(0, 20)) {
       const mapping = this.store.mappings.find(
@@ -198,7 +205,19 @@ export class ForecastEdgePipeline {
       }
     }
 
+    await this.persist(report);
+    if (env.APP_MODE === "paper" && this.persistentStore) {
+      const settlementResult = await reconcilePaperSettlements(this.persistentStore, this.audit, report);
+      report.decisions.push({
+        stage: "settlement",
+        itemId: "paper_settlement_run",
+        status: settlementResult.errors > 0 ? "error" : "accepted",
+        reason: `Settlement reconciliation checked ${settlementResult.checked}, settled ${settlementResult.settled}, skipped ${settlementResult.skipped}, errors ${settlementResult.errors}`,
+        metadata: settlementResult
+      });
+    }
     this.finishReport(report);
+    await this.persist(report);
     return this.summary();
   }
 
@@ -214,8 +233,21 @@ export class ForecastEdgePipeline {
       mappings: this.store.mappings.slice(0, 100),
       signals: this.store.signals.slice(0, 100),
       paperOrders: this.store.paperOrders.slice(0, 100),
+      paperPositions: [],
+      settlements: [],
       performance: summarizePaperOrders(this.store.paperOrders)
     };
+  }
+
+  async persistedSummary() {
+    return this.persistentStore ? this.persistentStore.dashboardSummary(this.store) : this.summary();
+  }
+
+  async runSettlementsOnly() {
+    if (!this.persistentStore) return { checked: 0, settled: 0, skipped: 0, errors: 1, reason: "DATABASE_URL is not configured" };
+    const result = await reconcilePaperSettlements(this.persistentStore, this.audit);
+    await this.persistentStore.persistAudit(this.audit.list(250));
+    return result;
   }
 
   private finishReport(report: ReturnType<MemoryStore["startScan"]>) {
@@ -227,6 +259,20 @@ export class ForecastEdgePipeline {
       message: `Scan ${report.id} completed: ${report.counts.marketsDiscovered} markets, ${report.counts.mappingsAccepted} accepted mappings, ${report.counts.signalsFired} fired signals`,
       metadata: report
     });
+  }
+
+  private async persist(report: ReturnType<MemoryStore["startScan"]>) {
+    if (!this.persistentStore) return;
+    try {
+      await this.persistentStore.persistScanState(this.store, report, this.audit.list(500));
+    } catch (error) {
+      this.audit.record({
+        actor: "system",
+        type: "error",
+        message: `Postgres persistence failed: ${errorMessage(error)}`,
+        metadata: { reportId: report.id }
+      });
+    }
   }
 }
 

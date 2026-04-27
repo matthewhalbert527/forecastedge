@@ -96,8 +96,8 @@ model StationObservation {
 
 model ForecastDelta {
   id                String           @id @default(cuid())
-  snapshotId        String
-  snapshot          ForecastSnapshot @relation(fields: [snapshotId], references: [id])
+  snapshotId        String?
+  snapshot          ForecastSnapshot? @relation(fields: [snapshotId], references: [id])
   locationId        String
   variable          WeatherVariable
   targetDate        DateTime
@@ -159,8 +159,8 @@ model Signal {
   id                 String        @id @default(cuid())
   marketTicker       String
   market             KalshiMarket  @relation(fields: [marketTicker], references: [ticker])
-  forecastDeltaId    String
-  forecastDelta      ForecastDelta @relation(fields: [forecastDeltaId], references: [id])
+  forecastDeltaId    String?
+  forecastDelta      ForecastDelta? @relation(fields: [forecastDeltaId], references: [id])
   side               String
   action             String
   contracts          Int
@@ -216,7 +216,10 @@ model PaperPosition {
   realizedPnl   Float        @default(0)
   openedAt      DateTime     @default(now())
   closedAt      DateTime?
+  settlementId  String?
   orders        PaperOrder[]
+
+  @@unique([marketTicker, side])
 }
 
 model DemoOrder {
@@ -252,12 +255,26 @@ model LiveOrder {
 
 model Settlement {
   id           String   @id @default(cuid())
-  marketTicker String
+  marketTicker String   @unique
   result       String
   settledPrice Float
   source       String
   rawPayload   Json
   createdAt    DateTime @default(now())
+}
+
+model ScanReport {
+  id              String   @id
+  startedAt       DateTime
+  completedAt     DateTime?
+  status          String
+  trigger         String
+  providerResults Json
+  counts          Json
+  decisions       Json
+  createdAt       DateTime @default(now())
+
+  @@index([startedAt])
 }
 
 model StrategyRun {

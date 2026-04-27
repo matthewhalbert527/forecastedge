@@ -95,19 +95,32 @@ The current tests cover forecast delta detection, Kalshi title parsing, uncertai
 
 ## Database
 
-`prisma/schema.prisma` defines the production-shaped tables:
+`prisma/schema.prisma` defines and now backs the paper-trading records in Postgres:
 
 - locations
 - forecast snapshots and deltas
 - Kalshi markets and mappings
 - signals and risk checks
 - paper/demo/live order records
-- settlements
+- paper positions and settlements
 - strategy runs
 - audit logs
 - system events
 
-The MVP API uses an in-memory store so the local app runs without migrations. The schema is ready for the next persistence pass.
+When `DATABASE_URL` is configured, the API hydrates from Postgres on startup, persists scan artifacts, stores paper orders/positions, and reconciles paper settlement from Kalshi official market results. Without `DATABASE_URL`, the app falls back to the in-memory MVP path for local smoke testing.
+
+Useful database commands:
+
+```bash
+npm run db:generate
+npm run db:push
+```
+
+Manual paper settlement reconciliation:
+
+```bash
+curl -X POST http://localhost:4000/api/settlements/run-once
+```
 
 ## Live Trading Safety
 
@@ -125,7 +138,8 @@ The frontend never receives private keys.
 
 - Open-Meteo is implemented first; NWS alerts are available as an adapter but not yet merged into provider agreement logic.
 - Market title parsing is intentionally conservative and only recognizes a small city alias set.
-- Paper settlement and mark-to-market reconciliation are not complete.
+- Paper settlement uses Kalshi official binary market results when available; unresolved or scalar/ambiguous results are skipped and audited.
+- Mark-to-market for open paper positions is still limited; open exposure is based on entry cost.
 - Demo broker currently includes credential detection, request signing, and dry-run order preview; real demo order submission/reconciliation is the next step.
 - Redis/BullMQ scheduling is not wired yet; the MVP uses manual `run-once` scans.
 - Temperature markets target specific settlement stations such as `KMIA`, `KMDW`, `KNYC`, and `KATT`; market rules remain authoritative and uncertain station mappings are rejected for review.

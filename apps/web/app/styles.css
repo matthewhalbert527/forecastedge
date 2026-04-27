@@ -77,7 +77,8 @@ button {
 }
 
 .nav button,
-.primary {
+.primary,
+.secondary {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -175,7 +176,19 @@ button {
   border-color: rgba(255, 255, 255, 0.12);
 }
 
+.secondary {
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 800;
+  border-color: var(--border);
+}
+
 .primary:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.secondary:disabled {
   opacity: 0.6;
   cursor: wait;
 }
@@ -220,6 +233,13 @@ button {
   margin: 0 0 14px;
   font-size: 17px;
   line-height: 1.25;
+}
+
+.panel h2.subhead {
+  margin-top: 18px;
+  font-size: 14px;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .guidance ul {
