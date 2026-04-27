@@ -7,7 +7,7 @@ import { LiveBrokerSafetyShell } from "./brokers/live-broker.js";
 import { env, listenPort } from "./config/env.js";
 import { MemoryStore } from "./data/store.js";
 import { PersistentStore } from "./data/persistent-store.js";
-import { getPrisma } from "./db/prisma.js";
+import { ensureDatabaseSchema, getPrisma } from "./db/prisma.js";
 import { BackgroundWorker } from "./jobs/background-worker.js";
 import { ForecastEdgePipeline } from "./jobs/pipeline.js";
 
@@ -76,6 +76,7 @@ export function buildServer() {
 
   app.addHook("onReady", async () => {
     if (persistentStore) {
+      await ensureDatabaseSchema();
       await persistentStore.hydrateMemory(store);
       app.log.info("Hydrated ForecastEdge memory from Postgres");
     }
