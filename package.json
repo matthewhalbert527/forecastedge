@@ -11,7 +11,7 @@
     "dev": "npm run dev --workspace @forecastedge/api & npm run dev --workspace @forecastedge/web",
     "dev:api": "npm run dev --workspace @forecastedge/api",
     "dev:web": "npm run dev --workspace @forecastedge/web",
-    "build:api": "npm run build --workspace @forecastedge/core && npm run build --workspace @forecastedge/api",
+    "build:api": "npm run db:generate && npm run build --workspace @forecastedge/core && npm run build --workspace @forecastedge/api",
     "build:web": "npm run build --workspace @forecastedge/core && npm run build --workspace @forecastedge/web",
     "start:api": "npm run start --workspace @forecastedge/api",
     "start:web": "npm run start --workspace @forecastedge/web",
