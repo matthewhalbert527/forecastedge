@@ -82,6 +82,52 @@ model ForecastSnapshot {
   @@index([locationId, provider, forecastRunAt])
 }
 
+model ModelForecast {
+  id                          String   @id
+  locationId                  String
+  city                        String
+  state                       String
+  stationId                   String?
+  model                       String
+  modelRunAt                  DateTime
+  forecastValidAt             DateTime
+  targetDate                  DateTime
+  horizonHours                Int
+  highTempF                   Float?
+  lowTempF                    Float?
+  precipitationAmountIn       Float?
+  precipitationProbabilityPct Float?
+  windGustMph                 Float?
+  uncertaintyStdDevF          Float?
+  freshnessMinutes            Float
+  confidence                  Confidence
+  rawPayload                  Json
+  createdAt                   DateTime @default(now())
+
+  @@index([locationId, model, targetDate])
+  @@index([stationId, targetDate])
+}
+
+model EnsembleForecast {
+  id                 String   @id
+  locationId         String
+  city               String
+  state              String
+  stationId          String?
+  targetDate         DateTime
+  variable           WeatherVariable
+  prediction         Float?
+  uncertaintyStdDev  Float?
+  confidence         Confidence
+  contributingModels Json
+  disagreement       Float?
+  reason             String
+  createdAt          DateTime @default(now())
+
+  @@index([locationId, targetDate, variable])
+  @@index([stationId, targetDate])
+}
+
 model StationObservation {
   id           String   @id @default(cuid())
   stationId    String

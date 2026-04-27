@@ -4,6 +4,7 @@ export type Confidence = "low" | "medium" | "high";
 export type OrderSide = "YES" | "NO";
 export type OrderAction = "BUY" | "SELL";
 export type SettlementSource = "nws_daily_climate_report" | "nws_asos" | "accuweather" | "unknown";
+export type ForecastModelSource = "open_meteo_global" | "ecmwf_ifs" | "hrrr" | "meteomatics_us1k" | "graphcast" | "gencast" | "weathermesh4" | "earth2" | "icon";
 
 export interface SettlementStation {
   id: string;
@@ -231,6 +232,46 @@ export interface Settlement {
   settledPrice: number;
   source: string;
   rawPayload: unknown;
+  createdAt: string;
+}
+
+export interface ModelForecastPoint {
+  id: string;
+  locationId: string;
+  city: string;
+  state: string;
+  stationId: string | null;
+  model: ForecastModelSource;
+  modelRunAt: string;
+  forecastValidAt: string;
+  targetDate: string;
+  horizonHours: number;
+  highTempF: number | null;
+  lowTempF: number | null;
+  precipitationAmountIn: number | null;
+  precipitationProbabilityPct: number | null;
+  windGustMph: number | null;
+  uncertaintyStdDevF: number | null;
+  freshnessMinutes: number;
+  confidence: Confidence;
+  rawPayload: unknown;
+  createdAt: string;
+}
+
+export interface EnsembleForecast {
+  id: string;
+  locationId: string;
+  city: string;
+  state: string;
+  stationId: string | null;
+  targetDate: string;
+  variable: Extract<WeatherVariable, "high_temp" | "low_temp" | "rainfall" | "wind_gust">;
+  prediction: number | null;
+  uncertaintyStdDev: number | null;
+  confidence: Confidence;
+  contributingModels: string[];
+  disagreement: number | null;
+  reason: string;
   createdAt: string;
 }
 

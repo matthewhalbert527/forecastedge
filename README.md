@@ -7,6 +7,7 @@ ForecastEdge monitors weather forecast changes, maps those changes to Kalshi wea
 ```text
 Kalshi rules / Open-Meteo / NWS station observations / optional AccuWeather
   -> apps/api weather adapters
+  -> model forecast stack / station-date ensembles
   -> settlement-station mapping
   -> normalized forecast snapshots and station observations
   -> forecast delta engine
@@ -46,6 +47,8 @@ Important defaults:
 - `KILL_SWITCH_ENABLED=true`
 - `RUN_BACKGROUND_WORKER=false` locally, `true` on Render
 - `BACKGROUND_POLL_INTERVAL_MINUTES=30`
+- `ENABLE_MODEL_STACK=true`
+- `OPEN_METEO_ECMWF_MODEL=ecmwf_ifs025`
 - `KALSHI_PROD_BASE_URL=https://api.elections.kalshi.com/trade-api/v2`
 - `KALSHI_DEMO_BASE_URL=https://demo-api.kalshi.co/trade-api/v2`
 
@@ -103,6 +106,7 @@ The current tests cover forecast delta detection, Kalshi title parsing, uncertai
 - signals and risk checks
 - paper/demo/live order records
 - paper positions and settlements
+- model forecasts and ensembles
 - strategy runs
 - audit logs
 - system events
@@ -137,6 +141,7 @@ The frontend never receives private keys.
 ## Known Limitations
 
 - Open-Meteo is implemented first; NWS alerts are available as an adapter but not yet merged into provider agreement logic.
+- The model stack currently persists ECMWF-style Open-Meteo model runs and builds weighted station ensembles. HRRR, Meteomatics US1k, GraphCast, GenCast, WeatherMesh-4, Earth-2, and ICON are represented in the model architecture but require real data adapters and calibration before they can affect trading decisions.
 - Market title parsing is intentionally conservative and only recognizes a small city alias set.
 - Paper settlement uses Kalshi official binary market results when available; unresolved or scalar/ambiguous results are skipped and audited.
 - Mark-to-market for open paper positions is still limited; open exposure is based on entry cost.
@@ -154,11 +159,14 @@ After several days of paper data:
 2. Persist NWS Daily Climate Report settlement values by station.
 3. Build station-specific calibration buckets by horizon, station, season, and market type.
 4. Estimate forecast error standard deviations from observed station outcomes instead of defaults.
-5. Tune edge thresholds against drawdown, not just win rate.
-6. Expand conservative market parsing with reviewed examples and fixture tests.
-7. Add provider disagreement logic using NWS model forecasts, Open-Meteo, and optional AccuWeather.
-8. Move polling and market scans into Redis-backed scheduled jobs.
-9. Run demo-mode order creation/cancel/reconcile tests before considering any live-mode work.
+5. Add HRRR same-day ingestion for 0-18 hour airport high/low edge detection.
+6. Add commercial Meteomatics US1k behind optional credentials for hyper-local settlement station forecasts.
+7. Add AI-model forecast adapters when real GraphCast/GenCast/WeatherNext feeds are available.
+8. Tune edge thresholds against drawdown, not just win rate.
+9. Expand conservative market parsing with reviewed examples and fixture tests.
+10. Add provider disagreement logic using NWS model forecasts, Open-Meteo, and optional AccuWeather.
+11. Move polling and market scans into Redis-backed scheduled jobs.
+12. Run demo-mode order creation/cancel/reconcile tests before considering any live-mode work.
 
 ## Risk Disclaimer
 

@@ -8,3 +8,4 @@ export * from "./risk/risk-manager.js";
 export * from "./signals/signal-engine.js";
 export * from "./paper/broker.js";
 export * from "./performance/metrics.js";
+export * from "./models/ensemble.js";

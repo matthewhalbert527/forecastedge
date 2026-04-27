@@ -4,6 +4,8 @@ export interface AuditEntry {
   actor: "system" | "user";
   type:
     | "forecast_snapshot"
+    | "model_forecast"
+    | "model_ensemble"
     | "station_observation"
     | "forecast_delta"
     | "scan_completed"

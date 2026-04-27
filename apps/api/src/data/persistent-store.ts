@@ -2,9 +2,11 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   buildPaperPositionsFromOrders,
   summarizePaperOrders,
+  type EnsembleForecast,
   type ForecastDelta,
   type KalshiMarketCandidate,
   type MarketMapping,
+  type ModelForecastPoint,
   type NormalizedForecastSnapshot,
   type PaperOrder,
   type Settlement,
@@ -19,7 +21,7 @@ export class PersistentStore {
   constructor(private readonly prisma: PrismaClient) {}
 
   async hydrateMemory(store: MemoryStore) {
-    const [snapshots, deltas, markets, mappings, signals, orders, stationObservations, scanReports] = await Promise.all([
+    const [snapshots, deltas, markets, mappings, signals, orders, stationObservations, scanReports, modelForecasts, ensembles] = await Promise.all([
       this.prisma.forecastSnapshot.findMany({ include: { location: true }, orderBy: { createdAt: "desc" }, take: 200 }),
       this.prisma.forecastDelta.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
       this.prisma.kalshiMarket.findMany({ orderBy: { updatedAt: "desc" }, take: 200 }),
@@ -27,7 +29,9 @@ export class PersistentStore {
       this.prisma.signal.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
       this.prisma.paperOrder.findMany({ orderBy: { timestamp: "desc" }, take: 200 }),
       this.prisma.stationObservation.findMany({ orderBy: { observedAt: "desc" }, take: 100 }),
-      this.prisma.scanReport.findMany({ orderBy: { startedAt: "desc" }, take: 50 })
+      this.prisma.scanReport.findMany({ orderBy: { startedAt: "desc" }, take: 50 }),
+      this.prisma.modelForecast.findMany({ orderBy: { createdAt: "desc" }, take: 500 }),
+      this.prisma.ensembleForecast.findMany({ orderBy: { createdAt: "desc" }, take: 500 })
     ]);
 
     store.forecastSnapshots = snapshots.map((snapshot) => ({
@@ -74,12 +78,16 @@ export class PersistentStore {
       counts: scan.counts as unknown as ScanReport["counts"],
       decisions: scan.decisions as unknown as ScanReport["decisions"]
     }));
+    store.modelForecasts = modelForecasts.map(fromPrismaModelForecast);
+    store.ensembles = ensembles.map(fromPrismaEnsemble);
   }
 
   async persistScanState(store: MemoryStore, report: ScanReport, auditEntries: AuditEntry[]) {
     await this.persistLocations(store);
     await this.persistForecastSnapshots(store.forecastSnapshots);
     await this.persistStationObservations(store.stationObservations);
+    await this.persistModelForecasts(store.modelForecasts);
+    await this.persistEnsembles(store.ensembles);
     await this.persistForecastDeltas(store.forecastDeltas);
     await this.persistMarkets(store.markets);
     await this.persistMappings(store.mappings);
@@ -91,7 +99,7 @@ export class PersistentStore {
   }
 
   async dashboardSummary(fallback: MemoryStore) {
-    const [scanReports, snapshots, stationObservations, deltas, markets, mappings, signals, paperOrders, positions, settlements, auditLogs] = await Promise.all([
+    const [scanReports, snapshots, stationObservations, deltas, markets, mappings, signals, paperOrders, positions, settlements, auditLogs, modelForecasts, ensembles] = await Promise.all([
       this.prisma.scanReport.findMany({ orderBy: { startedAt: "desc" }, take: 20 }),
       this.prisma.forecastSnapshot.findMany({ include: { location: true }, orderBy: { createdAt: "desc" }, take: 10 }),
       this.prisma.stationObservation.findMany({ orderBy: { observedAt: "desc" }, take: 20 }),
@@ -102,7 +110,9 @@ export class PersistentStore {
       this.prisma.paperOrder.findMany({ orderBy: { timestamp: "desc" }, take: 100 }),
       this.prisma.paperPosition.findMany({ orderBy: { openedAt: "desc" }, take: 100 }),
       this.prisma.settlement.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
-      this.prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 100 })
+      this.prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
+      this.prisma.modelForecast.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
+      this.prisma.ensembleForecast.findMany({ orderBy: { createdAt: "desc" }, take: 100 })
     ]);
 
     const typedOrders = paperOrders.map(fromPrismaPaperOrder);
@@ -151,6 +161,8 @@ export class PersistentStore {
       paperOrders: typedOrders,
       paperPositions: typedPositions,
       settlements: typedSettlements,
+      modelForecasts: modelForecasts.map(fromPrismaModelForecast),
+      ensembles: ensembles.map(fromPrismaEnsemble),
       performance: summarizePaperOrders(typedOrders, typedPositions, typedSettlements),
       auditLogs: auditLogs.map((log) => ({
         id: log.id,
@@ -269,6 +281,26 @@ export class PersistentStore {
           rawPayload: toJson(obs.rawPayload)
         },
         update: {}
+      });
+    }
+  }
+
+  private async persistModelForecasts(points: ModelForecastPoint[]) {
+    for (const point of points.slice(0, 1000)) {
+      await this.prisma.modelForecast.upsert({
+        where: { id: point.id },
+        create: modelForecastWrite(point),
+        update: modelForecastWrite(point)
+      });
+    }
+  }
+
+  private async persistEnsembles(ensembles: EnsembleForecast[]) {
+    for (const ensemble of ensembles.slice(0, 1000)) {
+      await this.prisma.ensembleForecast.upsert({
+        where: { id: ensemble.id },
+        create: ensembleWrite(ensemble),
+        update: ensembleWrite(ensemble)
       });
     }
   }
@@ -468,6 +500,50 @@ function scanReportWrite(report: ScanReport) {
   };
 }
 
+function modelForecastWrite(point: ModelForecastPoint) {
+  return {
+    id: point.id,
+    locationId: point.locationId,
+    city: point.city,
+    state: point.state,
+    stationId: point.stationId,
+    model: point.model,
+    modelRunAt: new Date(point.modelRunAt),
+    forecastValidAt: new Date(point.forecastValidAt),
+    targetDate: new Date(`${point.targetDate}T00:00:00Z`),
+    horizonHours: point.horizonHours,
+    highTempF: point.highTempF,
+    lowTempF: point.lowTempF,
+    precipitationAmountIn: point.precipitationAmountIn,
+    precipitationProbabilityPct: point.precipitationProbabilityPct,
+    windGustMph: point.windGustMph,
+    uncertaintyStdDevF: point.uncertaintyStdDevF,
+    freshnessMinutes: point.freshnessMinutes,
+    confidence: point.confidence,
+    rawPayload: toJson(point.rawPayload),
+    createdAt: new Date(point.createdAt)
+  };
+}
+
+function ensembleWrite(ensemble: EnsembleForecast) {
+  return {
+    id: ensemble.id,
+    locationId: ensemble.locationId,
+    city: ensemble.city,
+    state: ensemble.state,
+    stationId: ensemble.stationId,
+    targetDate: new Date(`${ensemble.targetDate}T00:00:00Z`),
+    variable: ensemble.variable,
+    prediction: ensemble.prediction,
+    uncertaintyStdDev: ensemble.uncertaintyStdDev,
+    confidence: ensemble.confidence,
+    contributingModels: toJson(ensemble.contributingModels),
+    disagreement: ensemble.disagreement,
+    reason: ensemble.reason,
+    createdAt: new Date(ensemble.createdAt)
+  };
+}
+
 function fromPrismaDelta(delta: {
   id: string;
   locationId: string;
@@ -654,6 +730,86 @@ function fromPrismaSettlement(settlement: {
     source: settlement.source,
     rawPayload: settlement.rawPayload,
     createdAt: settlement.createdAt.toISOString()
+  };
+}
+
+function fromPrismaModelForecast(point: {
+  id: string;
+  locationId: string;
+  city: string;
+  state: string;
+  stationId: string | null;
+  model: string;
+  modelRunAt: Date;
+  forecastValidAt: Date;
+  targetDate: Date;
+  horizonHours: number;
+  highTempF: number | null;
+  lowTempF: number | null;
+  precipitationAmountIn: number | null;
+  precipitationProbabilityPct: number | null;
+  windGustMph: number | null;
+  uncertaintyStdDevF: number | null;
+  freshnessMinutes: number;
+  confidence: string;
+  rawPayload: Prisma.JsonValue;
+  createdAt: Date;
+}): ModelForecastPoint {
+  return {
+    id: point.id,
+    locationId: point.locationId,
+    city: point.city,
+    state: point.state,
+    stationId: point.stationId,
+    model: point.model as ModelForecastPoint["model"],
+    modelRunAt: point.modelRunAt.toISOString(),
+    forecastValidAt: point.forecastValidAt.toISOString(),
+    targetDate: point.targetDate.toISOString().slice(0, 10),
+    horizonHours: point.horizonHours,
+    highTempF: point.highTempF,
+    lowTempF: point.lowTempF,
+    precipitationAmountIn: point.precipitationAmountIn,
+    precipitationProbabilityPct: point.precipitationProbabilityPct,
+    windGustMph: point.windGustMph,
+    uncertaintyStdDevF: point.uncertaintyStdDevF,
+    freshnessMinutes: point.freshnessMinutes,
+    confidence: point.confidence as ModelForecastPoint["confidence"],
+    rawPayload: point.rawPayload,
+    createdAt: point.createdAt.toISOString()
+  };
+}
+
+function fromPrismaEnsemble(ensemble: {
+  id: string;
+  locationId: string;
+  city: string;
+  state: string;
+  stationId: string | null;
+  targetDate: Date;
+  variable: string;
+  prediction: number | null;
+  uncertaintyStdDev: number | null;
+  confidence: string;
+  contributingModels: Prisma.JsonValue;
+  disagreement: number | null;
+  reason: string;
+  createdAt: Date;
+}): EnsembleForecast {
+  return {
+    id: ensemble.id,
+    locationId: ensemble.locationId,
+    city: ensemble.city,
+    state: ensemble.state,
+    stationId: ensemble.stationId,
+    targetDate: ensemble.targetDate.toISOString().slice(0, 10),
+    variable: ensemble.variable as EnsembleForecast["variable"],
+    prediction: ensemble.prediction,
+    uncertaintyStdDev: ensemble.uncertaintyStdDev,
+    confidence: ensemble.confidence as EnsembleForecast["confidence"],
+    contributingModels: Array.isArray(ensemble.contributingModels) ? ensemble.contributingModels.map(String) : [],
+    disagreement: ensemble.disagreement,
+    reason: ensemble.reason,
+    createdAt: ensemble.createdAt.toISOString()
   };
 }
 

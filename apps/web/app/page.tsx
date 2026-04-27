@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, AlertTriangle, BarChart3, ClipboardList, CloudSun, Gauge, LineChart, LockKeyhole, Play, Power, Radar, Settings, ShieldCheck, WalletCards } from "lucide-react";
+import { Activity, AlertTriangle, BarChart3, BrainCircuit, ClipboardList, CloudSun, Gauge, LineChart, LockKeyhole, Play, Power, Radar, Settings, ShieldCheck, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 type DashboardData = {
@@ -15,6 +15,8 @@ type DashboardData = {
   paperOrders: Array<{ id: string; marketTicker: string; status: string; filledContracts: number; unfilledContracts: number; simulatedAvgFillPrice: number | null; reason: string; timestamp: string }>;
   paperPositions: Array<{ id: string; marketTicker: string; side: string; contracts: number; avgEntryPrice: number; realizedPnl: number; markPrice: number | null; openedAt: string; closedAt: string | null; settlementId: string | null }>;
   settlements: Array<{ id: string; marketTicker: string; result: string; settledPrice: number; source: string; createdAt: string }>;
+  modelForecasts: Array<{ id: string; city: string; state: string; stationId: string | null; model: string; targetDate: string; horizonHours: number; highTempF: number | null; lowTempF: number | null; precipitationAmountIn: number | null; windGustMph: number | null; confidence: string; createdAt: string }>;
+  ensembles: Array<{ id: string; city: string; state: string; stationId: string | null; targetDate: string; variable: string; prediction: number | null; uncertaintyStdDev: number | null; confidence: string; contributingModels: string[]; disagreement: number | null; reason: string; createdAt: string }>;
   performance: { totalTrades: number; simulatedContracts: number; averageEntryPrice: number; totalCost: number; rejectedOrders: number; realizedPnl: number; unrealizedExposure: number; winRate: number; roi: number; maxDrawdown: number; longestLosingStreak: number; settledTrades: number; openPositions: number };
   auditLogs: Array<{ id: string; timestamp: string; type: string; message: string }>;
   scanReports: Array<{
@@ -34,6 +36,8 @@ type DashboardData = {
       signalsFired: number;
       signalsSkipped: number;
       paperOrders: number;
+      modelForecasts: number;
+      ensembles: number;
     };
     decisions: Array<{ stage: string; itemId: string; status: string; reason: string }>;
   }>;
@@ -43,6 +47,7 @@ type DashboardData = {
 const tabs = [
   ["overview", Activity],
   ["forecast deltas", CloudSun],
+  ["model stack", BrainCircuit],
   ["markets", Radar],
   ["signals", LineChart],
   ["paper trades", WalletCards],
@@ -172,6 +177,7 @@ export default function Page() {
             </div>
             <Metric title="Stations monitored" value={data.locations.length} detail={data.locations.map((loc) => `${loc.city}, ${loc.state}`).join(", ")} />
             <Metric title="Forecast changes" value={data.forecastDeltas.length} detail="Meaningful provider changes that can trigger decisions" />
+            <Metric title="Model ensembles" value={data.ensembles.length} detail="Weighted station forecasts used for calibration and future signal scoring" />
             <Metric title="Tradable mappings" value={acceptedMappings} detail={`${data.mappings.length - acceptedMappings} rejected or queued for manual review`} />
             <Metric title="Realized paper P/L" value={money(data.performance.realizedPnl)} detail={`${data.performance.settledTrades} settled positions, ${data.performance.openPositions} open`} />
             <Metric title="Open exposure" value={money(data.performance.unrealizedExposure)} detail="Capital still at risk in unsettled paper positions" />
@@ -192,6 +198,27 @@ export default function Page() {
               <StatusLine label="Manual confirmation" value={data.safety.requireManualConfirmation ? "required" : "not required"} />
               <StatusLine label="Production credentials" value={data.safety.prodCredentialConfigured ? "configured" : "not configured"} />
               <StatusLine label="Demo credentials" value={data.safety.demoConfigured ? "configured" : "not configured"} />
+            </div>
+          </section>
+        ) : null}
+
+        {data && tab === "model stack" ? (
+          <section className="grid">
+            <Guidance
+              title="How to read model stack"
+              items={[
+                "ECMWF is the medium-range anchor. It is useful for spotting market consensus and 1-10 day directional shifts.",
+                "HRRR, Meteomatics, GraphCast, GenCast, WeatherMesh, Earth-2, and ICON are represented in the adapter architecture; unavailable sources are not traded from until real data and calibration exist.",
+                "The ensemble row is the station/date/variable blend. Look for low disagreement, fresh runs, and high confidence before trusting an edge."
+              ]}
+            />
+            <div className="panel wide">
+              <h2>Ensemble forecasts</h2>
+              <Rows rows={data.ensembles.slice(0, 40).map((ensemble) => [`${ensemble.city}, ${ensemble.state}`, ensemble.stationId ?? "n/a", ensemble.targetDate, ensemble.variable, ensemble.prediction === null ? "n/a" : valueForVariable(ensemble.variable, ensemble.prediction), ensemble.uncertaintyStdDev === null ? "n/a" : `${ensemble.uncertaintyStdDev.toFixed(2)}`, ensemble.confidence, ensemble.contributingModels.join(", "), ensemble.reason])} empty="No model ensembles yet" />
+            </div>
+            <div className="panel wide">
+              <h2>Model forecast inputs</h2>
+              <Rows rows={data.modelForecasts.slice(0, 50).map((point) => [`${point.city}, ${point.state}`, point.stationId ?? "n/a", point.model, point.targetDate, `${point.horizonHours}h`, point.highTempF === null ? "n/a" : `${point.highTempF} F`, point.lowTempF === null ? "n/a" : `${point.lowTempF} F`, point.confidence, time(point.createdAt)])} empty="No model forecast inputs yet" />
             </div>
           </section>
         ) : null}
@@ -266,7 +293,7 @@ export default function Page() {
             />
             <div className="panel wide">
               <h2>Scan reports</h2>
-              <Rows rows={data.scanReports.slice(0, 10).map((scan) => [time(scan.startedAt), scan.trigger, scan.status, `${scan.counts.marketsDiscovered} markets`, `${scan.counts.mappingsAccepted}/${scan.counts.mappingsRejected} mappings`, `${scan.counts.signalsFired}/${scan.counts.signalsSkipped} signals`, `${scan.counts.stationObservations} station obs`])} empty="No scans recorded yet" />
+              <Rows rows={data.scanReports.slice(0, 10).map((scan) => [time(scan.startedAt), scan.trigger, scan.status, `${scan.counts.marketsDiscovered} markets`, `${scan.counts.mappingsAccepted}/${scan.counts.mappingsRejected} mappings`, `${scan.counts.signalsFired}/${scan.counts.signalsSkipped} signals`, `${scan.counts.stationObservations} station obs`, `${scan.counts.ensembles ?? 0} ensembles`])} empty="No scans recorded yet" />
             </div>
             <div className="panel">
               <h2>Provider status</h2>
@@ -376,6 +403,13 @@ function time(iso: string) {
 
 function money(value: number) {
   return `${value < 0 ? "-" : ""}$${Math.abs(value).toFixed(2)}`;
+}
+
+function valueForVariable(variable: string, value: number) {
+  if (variable.includes("temp")) return `${value.toFixed(1)} F`;
+  if (variable === "rainfall") return `${value.toFixed(2)} in`;
+  if (variable === "wind_gust") return `${value.toFixed(1)} mph`;
+  return value.toFixed(2);
 }
 
 function scanHealth(scan: DashboardData["scanReports"][number]) {

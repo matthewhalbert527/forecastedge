@@ -19,6 +19,8 @@ const schema = z.object({
   FORECAST_CACHE_MINUTES: z.coerce.number().default(45),
   OPEN_METEO_COOLDOWN_MINUTES: z.coerce.number().default(60),
   OPEN_METEO_BASE_URL: z.string().url().default("https://api.open-meteo.com/v1"),
+  ENABLE_MODEL_STACK: booleanFromEnv.default(true),
+  OPEN_METEO_ECMWF_MODEL: z.string().default("ecmwf_ifs025"),
   NWS_BASE_URL: z.string().url().default("https://api.weather.gov"),
   NWS_USER_AGENT: z.string().default("ForecastEdge/0.1 contact@example.com"),
   KALSHI_PROD_BASE_URL: z.string().url().default("https://api.elections.kalshi.com/trade-api/v2"),

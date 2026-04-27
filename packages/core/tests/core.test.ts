@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   checkRisk,
+  buildEnsembles,
   defaultRiskLimits,
   detectForecastDeltas,
   estimateMarketProbability,
@@ -275,5 +276,39 @@ describe("paper settlement performance", () => {
     expect(summary.winRate).toBe(0.5);
     expect(summary.maxDrawdown).toBe(0.4);
     expect(summary.longestLosingStreak).toBe(1);
+  });
+});
+
+describe("model ensemble", () => {
+  it("weights short-range HRRR above ECMWF for same-day temperature", () => {
+    const now = new Date("2026-05-01T12:00:00Z");
+    const common = {
+      id: "model_1",
+      locationId: "chicago",
+      city: "Chicago",
+      state: "IL",
+      stationId: "KMDW",
+      modelRunAt: now.toISOString(),
+      forecastValidAt: "2026-05-01T18:00:00Z",
+      targetDate: "2026-05-01",
+      horizonHours: 6,
+      lowTempF: 60,
+      precipitationAmountIn: 0,
+      precipitationProbabilityPct: 0,
+      windGustMph: 15,
+      uncertaintyStdDevF: 2,
+      freshnessMinutes: 0,
+      confidence: "medium" as const,
+      rawPayload: {},
+      createdAt: now.toISOString()
+    };
+    const ensembles = buildEnsembles([
+      { ...common, id: "hrrr", model: "hrrr", highTempF: 90 },
+      { ...common, id: "ecmwf", model: "ecmwf_ifs", highTempF: 84 }
+    ]);
+    const high = ensembles.find((ensemble) => ensemble.variable === "high_temp");
+    expect(high?.prediction).toBeGreaterThan(87);
+    expect(high?.contributingModels).toEqual(expect.arrayContaining(["hrrr", "ecmwf_ifs"]));
+    expect(high?.confidence).toBe("high");
   });
 });

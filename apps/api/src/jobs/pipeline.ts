@@ -1,5 +1,6 @@
 import {
   checkRisk,
+  buildEnsembles,
   detectForecastDeltas,
   estimateMarketProbability,
   generateSignal,
@@ -16,6 +17,7 @@ import { reconcilePaperSettlements } from "./settlements.js";
 import { fetchAccuWeatherDailyForecast } from "../weather/accuweather.js";
 import { fetchNwsLatestStationObservation } from "../weather/nws-station.js";
 import { fetchOpenMeteoForecast } from "../weather/open-meteo.js";
+import { fetchModelForecasts, unavailableModelPoint } from "../weather/model-stack.js";
 
 export class ForecastEdgePipeline {
   constructor(
@@ -109,6 +111,44 @@ export class ForecastEdgePipeline {
           metadata: { locationId: location.id }
         });
       }
+
+      if (env.ENABLE_MODEL_STACK) {
+        try {
+          const modelForecasts = await fetchModelForecasts(location);
+          this.store.modelForecasts.unshift(...modelForecasts);
+          report.counts.modelForecasts += modelForecasts.length;
+          report.providerResults.push({ provider: "model_stack", locationId: location.id, stationId: location.stationId, status: "ok", message: `Stored ${modelForecasts.length} model forecast points` });
+          report.decisions.push({
+            stage: "model_forecast",
+            itemId: location.id,
+            status: "accepted",
+            reason: `Stored ECMWF model forecasts for ${location.city}`,
+            metadata: { count: modelForecasts.length, models: [...new Set(modelForecasts.map((point) => point.model))] }
+          });
+          this.audit.record({ actor: "system", type: "model_forecast", message: `Stored ${modelForecasts.length} model forecast points for ${location.city}`, metadata: { count: modelForecasts.length } });
+        } catch (error) {
+          const unavailable = unavailableModelPoint(location, "ecmwf_ifs", errorMessage(error));
+          this.store.modelForecasts.unshift(unavailable);
+          report.providerResults.push({ provider: "model_stack", locationId: location.id, stationId: location.stationId, status: "error", message: errorMessage(error) });
+          report.decisions.push({ stage: "model_forecast", itemId: location.id, status: "error", reason: errorMessage(error), metadata: unavailable });
+          this.audit.record({ actor: "system", type: "error", message: `Model forecast failed for ${location.city}: ${errorMessage(error)}`, metadata: unavailable });
+        }
+      }
+    }
+
+    if (env.ENABLE_MODEL_STACK) {
+      this.store.ensembles = buildEnsembles(this.store.modelForecasts.filter((point) => !isUnavailable(point.rawPayload))).slice(0, 500);
+      report.counts.ensembles = this.store.ensembles.length;
+      for (const ensemble of this.store.ensembles.slice(0, 50)) {
+        report.decisions.push({
+          stage: "model_ensemble",
+          itemId: ensemble.id,
+          status: ensemble.confidence === "low" ? "skipped" : "accepted",
+          reason: ensemble.reason,
+          metadata: ensemble
+        });
+      }
+      this.audit.record({ actor: "system", type: "model_ensemble", message: `Built ${this.store.ensembles.length} ensemble forecasts`, metadata: { count: this.store.ensembles.length } });
     }
 
     this.store.markets = await discoverWeatherMarkets();
@@ -235,6 +275,8 @@ export class ForecastEdgePipeline {
       paperOrders: this.store.paperOrders.slice(0, 100),
       paperPositions: [],
       settlements: [],
+      modelForecasts: this.store.modelForecasts.slice(0, 100),
+      ensembles: this.store.ensembles.slice(0, 100),
       performance: summarizePaperOrders(this.store.paperOrders)
     };
   }
@@ -282,4 +324,8 @@ function errorMessage(error: unknown) {
 
 function minutesSince(iso: string) {
   return Math.max(0, (Date.now() - new Date(iso).getTime()) / 60_000);
+}
+
+function isUnavailable(rawPayload: unknown) {
+  return Boolean(rawPayload && typeof rawPayload === "object" && "unavailable" in rawPayload);
 }
