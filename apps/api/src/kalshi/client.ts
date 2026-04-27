@@ -23,7 +23,7 @@ export async function discoverWeatherMarkets(): Promise<KalshiMarketCandidate[]>
     const payload = (await response.json()) as KalshiMarketsResponse;
     for (const item of payload.markets ?? []) {
       const candidate = normalizeMarket(item);
-      if (candidate) seen.set(candidate.ticker, candidate);
+      if (candidate && isPlausibleWeatherMarket(candidate)) seen.set(candidate.ticker, candidate);
     }
   }
   return [...seen.values()];
@@ -70,6 +70,12 @@ function normalizeMarket(raw: Record<string, unknown>): KalshiMarketCandidate | 
     openInterest: numeric(raw.open_interest),
     rawPayload: raw
   };
+}
+
+export function isPlausibleWeatherMarket(market: Pick<KalshiMarketCandidate, "ticker" | "eventTicker" | "title" | "subtitle">) {
+  const text = `${market.ticker} ${market.eventTicker} ${market.title} ${market.subtitle ?? ""}`.toLowerCase();
+  if (/(esports|sports|multigame|crosscategory|crypto|bitcoin|ethereum|stock|earnings|fed|election|movie|box office)/.test(text)) return false;
+  return /(weather|temperature|temp|high temperature|low temperature|rain|rainfall|precip|precipitation|snow|snowfall|wind|gust|hurricane|tornado|airport|climate|heat|cold|degrees|°f|\bf\b)/.test(text);
 }
 
 function stringValue(value: unknown): string | null {
