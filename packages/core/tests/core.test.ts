@@ -94,6 +94,20 @@ describe("Kalshi market parsing", () => {
     expect(mapping.accepted).toBe(false);
     expect(mapping.reviewReason).toContain("location");
   });
+
+  it("parses Kalshi threshold values encoded in temperature market tickers", () => {
+    const mapping = parseKalshiWeatherMarket({
+      ...market,
+      ticker: "KXHIGHNY-26APR28-B65.5",
+      eventTicker: "KXHIGHNY-26APR28",
+      title: "Will the high temperature in New York be above 65.5?",
+      subtitle: "New York City weather"
+    });
+    expect(mapping.accepted).toBe(true);
+    expect(mapping.threshold).toBe(65.5);
+    expect(mapping.thresholdOperator).toBe("above");
+    expect(mapping.station?.stationId).toBe("KNYC");
+  });
 });
 
 describe("probability and signal engine", () => {

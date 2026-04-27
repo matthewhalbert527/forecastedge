@@ -51,6 +51,8 @@ function parseVariable(text: string): MarketMapping["variable"] {
 }
 
 function parseThreshold(text: string, variable: WeatherVariable | "hurricane" | "unknown"): number | null {
+  const tickerThreshold = text.match(/-(?:t|b)(\d{2,3}(?:\.\d+)?)\b/);
+  if (tickerThreshold?.[1]) return Number(tickerThreshold[1]);
   if (variable === "rainfall" || variable === "snowfall") {
     const inchMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:inches|inch|in\b|")/);
     return inchMatch?.[1] ? Number(inchMatch[1]) : null;
@@ -58,13 +60,15 @@ function parseThreshold(text: string, variable: WeatherVariable | "hurricane" | 
   const degreeMatch = text.match(/(?:above|over|exceed|at least|reach|under|below|less than)\s*(\d{2,3})(?:\s*°?\s*f)?/);
   if (degreeMatch?.[1]) return Number(degreeMatch[1]);
   const generic = text.match(/(\d{2,3})\s*°?\s*f/);
-  return generic?.[1] ? Number(generic[1]) : null;
+  if (generic?.[1]) return Number(generic[1]);
+  return null;
 }
 
 function parseOperator(text: string): MarketMapping["thresholdOperator"] {
   if (/(above|over|exceed|at least|reach|greater than|more than)/.test(text)) return "above";
   if (/(below|under|less than|fewer than)/.test(text)) return "below";
   if (/(between)/.test(text)) return "between";
+  if (/-(?:t|b)\d{2,3}(?:\.\d+)?\b/.test(text)) return "above";
   return "unknown";
 }
 
