@@ -225,6 +225,22 @@ button {
   grid-column: span 3;
 }
 
+.overview-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.overview-hero h2 {
+  margin-bottom: 8px;
+  font-size: 26px;
+}
+
+.overview-status {
+  align-self: start;
+}
+
 .guidance {
   background: linear-gradient(180deg, rgba(121, 184, 255, 0.1), rgba(30, 36, 38, 1));
 }
@@ -335,6 +351,84 @@ button {
   line-height: 1.1;
 }
 
+.trade-list {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.panel-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.panel-heading svg {
+  color: var(--accent);
+}
+
+.panel-heading h2 {
+  margin: 0;
+}
+
+.decision-list,
+.holding-list {
+  display: grid;
+  gap: 10px;
+}
+
+.trade-card,
+.empty-state {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  background: var(--panel-2);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+}
+
+.trade-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.trade-title strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.trade-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.trade-facts span {
+  min-width: 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(16, 19, 20, 0.55);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.empty-state strong {
+  font-size: 14px;
+}
+
+.empty-state span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .explain-bar {
   display: flex;
   flex-wrap: wrap;
@@ -425,6 +519,10 @@ button {
     grid-column: span 2;
   }
 
+  .trade-facts {
+    grid-template-columns: 1fr;
+  }
+
   .summary-strip {
     grid-template-columns: 1fr 1fr;
   }
@@ -446,6 +544,10 @@ button {
 
   .panel.wide {
     grid-column: span 1;
+  }
+
+  .overview-hero {
+    display: grid;
   }
 
   .summary-strip {

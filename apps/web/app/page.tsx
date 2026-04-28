@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, AlertTriangle, BarChart3, BrainCircuit, ClipboardList, CloudSun, Gauge, LineChart, LockKeyhole, Play, Power, Radar, Settings, ShieldCheck, WalletCards } from "lucide-react";
+import { Activity, AlertTriangle, BarChart3, BrainCircuit, BriefcaseBusiness, ClipboardList, CloudSun, Gauge, LineChart, LockKeyhole, Play, Power, Radar, Settings, ShieldCheck, ShoppingCart, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 type DashboardData = {
@@ -12,7 +12,7 @@ type DashboardData = {
   markets: Array<{ ticker: string; title: string; yesBid: number | null; yesAsk: number | null; volume: number | null; openInterest: number | null }>;
   mappings: Array<{ marketTicker: string; title: string; variable: string; threshold: number | null; targetDate: string | null; confidence: string; accepted: boolean; reviewReason: string | null; liquidityScore: number; location: { city: string; state?: string } | null; station: { stationId: string; stationName: string } | null; settlementSource: string }>;
   signals: Array<{ id: string; marketTicker: string; status: string; edge: number; limitPrice: number; contracts: number; explanation: string; skipReason: string | null; createdAt: string }>;
-  paperOrders: Array<{ id: string; marketTicker: string; status: string; filledContracts: number; unfilledContracts: number; simulatedAvgFillPrice: number | null; reason: string; timestamp: string }>;
+  paperOrders: Array<{ id: string; marketTicker: string; side: string; action: string; requestedContracts: number; limitPrice: number; status: string; filledContracts: number; unfilledContracts: number; simulatedAvgFillPrice: number | null; reason: string; timestamp: string }>;
   paperPositions: Array<{ id: string; marketTicker: string; side: string; contracts: number; avgEntryPrice: number; realizedPnl: number; markPrice: number | null; openedAt: string; closedAt: string | null; settlementId: string | null }>;
   settlements: Array<{ id: string; marketTicker: string; result: string; settledPrice: number; source: string; createdAt: string }>;
   modelForecasts: Array<{ id: string; city: string; state: string; stationId: string | null; model: string; targetDate: string; horizonHours: number; highTempF: number | null; lowTempF: number | null; precipitationAmountIn: number | null; windGustMph: number | null; confidence: string; createdAt: string }>;
@@ -109,6 +109,16 @@ export default function Page() {
   const scanVerdict = latestScan ? scanHealth(latestScan) : { label: "Waiting for first scan", tone: "warn" as const, detail: "Run a scan to check providers, market discovery, parser decisions, and signal generation." };
   const firedSignals = data?.signals.filter((signal) => signal.status === "FIRED").length ?? 0;
   const skippedSignals = data?.signals.filter((signal) => signal.status !== "FIRED").length ?? 0;
+  const latestRunOrderIds = new Set((latestScan?.decisions ?? []).filter((decision) => decision.stage === "paper_order").map((decision) => decision.itemId));
+  const paperOrders = data?.paperOrders ?? [];
+  const paperPositions = data?.paperPositions ?? [];
+  const latestRunBuyOrders = paperOrders.filter((order) => {
+    if (latestRunOrderIds.size > 0) return latestRunOrderIds.has(order.id);
+    if (!latestScan) return false;
+    const completedAt = latestScan.completedAt ?? new Date().toISOString();
+    return order.timestamp >= latestScan.startedAt && order.timestamp <= completedAt;
+  });
+  const openPaperPositions = paperPositions.filter((position) => !position.closedAt);
 
   return (
     <main className="app-shell">
@@ -153,51 +163,65 @@ export default function Page() {
 
         {data && tab === "overview" ? (
           <section className="grid">
-            <Guidance
-              title="What to look for"
-              items={[
-                "Scan health should be OK. Provider failures, rejected mappings, or zero discovered markets mean the system is not ready to trust signals.",
-                "Forecast changes are the trigger. No delta usually means no new trade decision, even if markets exist.",
-                "Tradable mappings are markets the parser tied to a known settlement station, date, variable, and threshold.",
-                "Paper orders only appear after a fired signal passes risk and the simulated order book fill rules."
-              ]}
-            />
-            <div className="panel">
-              <h2>Latest scan health</h2>
+            <div className="panel overview-hero wide">
+              <div>
+                <p className="section-label">Latest run</p>
+                <h2>{latestScan ? `${latestRunBuyOrders.length} buy decision${latestRunBuyOrders.length === 1 ? "" : "s"}` : "No scan run yet"}</h2>
+                <p className="muted">{latestScan ? `Last scan ${time(latestScan.startedAt)}. ${scanVerdict.detail}` : "Run a scan to let ForecastEdge evaluate markets and create paper orders."}</p>
+              </div>
               <Badge tone={scanVerdict.tone}>{scanVerdict.label}</Badge>
-              <p className="decision-note">{scanVerdict.detail}</p>
-              {latestScan ? (
-                <div className="summary-strip">
-                  <SummaryItem label="Markets" value={latestScan.counts.marketsDiscovered} />
-                  <SummaryItem label="Accepted" value={latestScan.counts.mappingsAccepted} />
-                  <SummaryItem label="Rejected" value={latestScan.counts.mappingsRejected} />
-                  <SummaryItem label="Signals" value={latestScan.counts.signalsFired} />
+            </div>
+            <Metric title="Currently held" value={openPaperPositions.length} detail={`${data.performance.simulatedContracts} simulated contracts, ${money(data.performance.unrealizedExposure)} open exposure`} />
+            <Metric title="Paper P/L" value={money(data.performance.realizedPnl)} detail={`${data.performance.settledTrades} settled, ${data.performance.openPositions} open`} />
+            <div className="panel trade-list wide">
+              <div className="panel-heading">
+                <ShoppingCart size={18} />
+                <h2>Bought on last run</h2>
+              </div>
+              {latestRunBuyOrders.length === 0 ? (
+                <EmptyState title="No buy orders on the last run" detail="A scan can finish cleanly without buying when no signal passes edge, liquidity, price, and risk checks." />
+              ) : (
+                <div className="decision-list">
+                  {latestRunBuyOrders.map((order) => (
+                    <OrderCard key={order.id} order={order} />
+                  ))}
                 </div>
-              ) : null}
+              )}
             </div>
-            <Metric title="Stations monitored" value={data.locations.length} detail={data.locations.map((loc) => `${loc.city}, ${loc.state}`).join(", ")} />
-            <Metric title="Forecast changes" value={data.forecastDeltas.length} detail="Meaningful provider changes that can trigger decisions" />
-            <Metric title="Model ensembles" value={data.ensembles.length} detail="Weighted station forecasts used for calibration and future signal scoring" />
-            <Metric title="Tradable mappings" value={acceptedMappings} detail={`${data.mappings.length - acceptedMappings} rejected or queued for manual review`} />
-            <Metric title="Realized paper P/L" value={money(data.performance.realizedPnl)} detail={`${data.performance.settledTrades} settled positions, ${data.performance.openPositions} open`} />
-            <Metric title="Open exposure" value={money(data.performance.unrealizedExposure)} detail="Capital still at risk in unsettled paper positions" />
-            <div className="panel">
-              <h2>Settlement station readings</h2>
-              <p className="muted">These are the weather stations ForecastEdge is using to mirror Kalshi settlement locations when available.</p>
-              <Rows rows={data.stationObservations.slice(0, 3).map((obs) => [obs.stationId, obs.stationName, obs.temperatureF === null ? "n/a" : `${obs.temperatureF} F`, time(obs.observedAt)])} empty="No station observations yet" />
+            <div className="panel trade-list wide">
+              <div className="panel-heading">
+                <BriefcaseBusiness size={18} />
+                <h2>Currently held</h2>
+              </div>
+              {openPaperPositions.length === 0 ? (
+                <EmptyState title="No open paper positions" detail="Filled paper orders will appear here as hypothetical holdings until settlement reconciliation closes them." />
+              ) : (
+                <div className="holding-list">
+                  {openPaperPositions.map((position) => (
+                    <HoldingCard key={position.id} position={position} />
+                  ))}
+                </div>
+              )}
             </div>
-            <div className="panel wide">
-              <h2>Recent audit trail</h2>
-              <p className="muted">This is the chronological record of scans, rejected markets, generated signals, paper orders, errors, and mode changes.</p>
-              <Rows rows={data.auditLogs.slice(0, 8).map((log) => [time(log.timestamp), log.type, log.message])} empty="No audit entries yet" />
+            <div className="panel overview-status">
+              <h2>Run summary</h2>
+              {latestScan ? (
+                <>
+                  <StatusLine label="Fired signals" value={`${latestScan.counts.signalsFired}`} />
+                  <StatusLine label="Paper orders" value={`${latestScan.counts.paperOrders}`} />
+                  <StatusLine label="Accepted mappings" value={`${latestScan.counts.mappingsAccepted}`} />
+                  <StatusLine label="Rejected mappings" value={`${latestScan.counts.mappingsRejected}`} danger={latestScan.counts.mappingsRejected > 0} />
+                </>
+              ) : (
+                <p className="muted">No scan report is available yet.</p>
+              )}
             </div>
-            <div className="panel">
-              <h2>System safety</h2>
-              <p className="muted">Live trading must stay disabled unless you deliberately enable every required backend and UI gate.</p>
+            <div className="panel overview-status">
+              <h2>Paper readiness</h2>
+              <StatusLine label="Mode" value={data.mode} />
+              <StatusLine label="Tradable mappings" value={`${acceptedMappings}`} />
               <StatusLine label="Live trading" value={data.safety.liveTradingEnabled ? "enabled" : "disabled"} danger={data.safety.liveTradingEnabled} />
-              <StatusLine label="Manual confirmation" value={data.safety.requireManualConfirmation ? "required" : "not required"} />
-              <StatusLine label="Production credentials" value={data.safety.prodCredentialConfigured ? "configured" : "not configured"} />
-              <StatusLine label="Demo credentials" value={data.safety.demoConfigured ? "configured" : "not configured"} />
+              <StatusLine label="Kill switch" value={data.safety.killSwitchEnabled ? "enabled" : "disabled"} danger={data.safety.killSwitchEnabled} />
             </div>
           </section>
         ) : null}
@@ -370,6 +394,55 @@ function SummaryItem({ label, value }: { label: string; value: React.ReactNode }
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  );
+}
+
+function EmptyState({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="empty-state">
+      <strong>{title}</strong>
+      <span>{detail}</span>
+    </div>
+  );
+}
+
+function OrderCard({ order }: { order: DashboardData["paperOrders"][number] }) {
+  const filledCost = (order.simulatedAvgFillPrice ?? order.limitPrice) * order.filledContracts;
+  return (
+    <article className="trade-card">
+      <div>
+        <div className="trade-title">
+          <strong>{order.marketTicker}</strong>
+          <Badge tone={order.status === "FILLED" ? "ok" : order.status === "PARTIAL" ? "warn" : "neutral"}>{order.status}</Badge>
+        </div>
+        <p className="muted">{order.reason}</p>
+      </div>
+      <div className="trade-facts">
+        <span>{order.side} {order.action}</span>
+        <span>{order.filledContracts}/{order.requestedContracts} filled</span>
+        <span>{order.simulatedAvgFillPrice === null ? `limit $${order.limitPrice.toFixed(2)}` : `${money(filledCost)} at $${order.simulatedAvgFillPrice.toFixed(2)}`}</span>
+      </div>
+    </article>
+  );
+}
+
+function HoldingCard({ position }: { position: DashboardData["paperPositions"][number] }) {
+  const exposure = position.avgEntryPrice * position.contracts;
+  return (
+    <article className="trade-card holding-card">
+      <div>
+        <div className="trade-title">
+          <strong>{position.marketTicker}</strong>
+          <Badge tone="ok">Open</Badge>
+        </div>
+        <p className="muted">Opened {time(position.openedAt)}. Settlement pending.</p>
+      </div>
+      <div className="trade-facts">
+        <span>{position.side}</span>
+        <span>{position.contracts} contracts</span>
+        <span>{money(exposure)} at ${position.avgEntryPrice.toFixed(2)}</span>
+      </div>
+    </article>
   );
 }
 
