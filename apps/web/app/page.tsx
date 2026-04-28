@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   BriefcaseBusiness,
   ChevronDown,
+  CircleHelp,
   Clock3,
   Database,
   Gauge,
@@ -19,7 +20,7 @@ type DashboardData = {
   mode: "watch" | "paper" | "demo" | "live";
   locations: Array<{ id: string; city: string; state: string; pollingIntervalMinutes: number }>;
   forecastDeltas: Array<{ id: string; city: string; state: string; variable: string; targetDate: string; oldValue: number; newValue: number; absoluteChange: number; confidence: string; reason: string; createdAt: string }>;
-  markets: Array<{ ticker: string; title: string; yesBid: number | null; yesAsk: number | null; volume: number | null; openInterest: number | null }>;
+  markets: Array<{ ticker: string; eventTicker: string; title: string; subtitle?: string | null; closeTime?: string | null; settlementTime?: string | null; yesBid: number | null; yesAsk: number | null; noBid?: number | null; noAsk?: number | null; lastPrice?: number | null; volume: number | null; openInterest: number | null; rawPayload?: unknown }>;
   mappings: Array<{ marketTicker: string; title: string; variable: string; threshold: number | null; thresholdOperator: string; targetDate: string | null; confidence: string; accepted: boolean; reviewReason: string | null; liquidityScore: number; location: { city: string; state?: string } | null; station: { stationId: string; stationName: string } | null; settlementSource: string }>;
   signals: Array<{ id: string; marketTicker: string; status: string; edge: number; limitPrice: number; contracts: number; explanation: string; skipReason: string | null; createdAt: string }>;
   paperOrders: Array<{ id: string; marketTicker: string; side: string; action: string; requestedContracts: number; limitPrice: number; status: string; filledContracts: number; unfilledContracts: number; simulatedAvgFillPrice: number | null; reason: string; timestamp: string }>;
@@ -95,6 +96,8 @@ export default function Page() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [view, setView] = useState<View>("cockpit");
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const [buyingTicker, setBuyingTicker] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
@@ -106,6 +109,7 @@ export default function Page() {
   async function runAction(action: BusyAction, endpoint: string) {
     setBusyAction(action);
     setError(null);
+    setNotice(null);
     try {
       const response = await fetch(`${apiUrl}${endpoint}`, { method: "POST" });
       if (!response.ok) throw new Error(`Request failed with ${response.status}`);
@@ -117,6 +121,36 @@ export default function Page() {
       setError(err instanceof Error ? err.message : "Unknown request error");
     } finally {
       setBusyAction(null);
+    }
+  }
+
+  async function buyOne(marketTicker: string) {
+    setBuyingTicker(marketTicker);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch(`${apiUrl}/api/quotes/buy-one`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ marketTicker })
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        const apiError = body && typeof body === "object" && "error" in body ? String((body as { error: unknown }).error) : `Request failed with ${response.status}`;
+        throw new Error(apiError);
+      }
+      await refresh();
+      if (body && typeof body === "object" && "bought" in body && (body as { bought?: boolean }).bought) {
+        setNotice(`Bought ${marketTicker} in paper mode.`);
+        setView("holdings");
+      } else {
+        const reason = body && typeof body === "object" && "reason" in body ? String((body as { reason?: unknown }).reason) : "No paper order was created.";
+        setNotice(reason);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown request error");
+    } finally {
+      setBuyingTicker(null);
     }
   }
 
@@ -179,6 +213,7 @@ export default function Page() {
         </header>
 
         {error ? <div className="alert"><AlertTriangle size={18} /> {error}</div> : null}
+        {notice ? <div className="notice">{notice}</div> : null}
         {!data ? <div className="loading">Loading ForecastEdge from {apiUrl}</div> : null}
 
         {data ? (
@@ -199,7 +234,7 @@ export default function Page() {
               />
             ) : null}
 
-            {view === "buy" ? <BuyView candidates={model.strong} watch={model.watch} buyAction={() => runAction("buy", "/api/quotes/refresh-once")} busy={busyAction === "buy"} /> : null}
+            {view === "buy" ? <BuyView candidates={model.strong} watch={model.watch} buyAction={() => runAction("buy", "/api/quotes/refresh-once")} buyOne={buyOne} busy={busyAction === "buy"} buyingTicker={buyingTicker} /> : null}
             {view === "holdings" ? <HoldingsView positions={model.openPositions} /> : null}
             {view === "results" ? <ResultsView results={model.results} performance={performance} settleAction={() => runAction("settle", "/api/settlements/run-once")} busy={busyAction === "settle"} /> : null}
             {view === "details" ? <DetailsView data={data} model={model} /> : null}
@@ -242,7 +277,7 @@ function CockpitView({ model, performance, buyAction, buyBusy }: { model: Dashbo
   );
 }
 
-function BuyView({ candidates, watch, buyAction, busy }: { candidates: CandidateView[]; watch: CandidateView[]; buyAction: () => void; busy: boolean }) {
+function BuyView({ candidates, watch, buyAction, buyOne, busy, buyingTicker }: { candidates: CandidateView[]; watch: CandidateView[]; buyAction: () => void; buyOne: (marketTicker: string) => void; busy: boolean; buyingTicker: string | null }) {
   return (
     <section className="stack">
       <div className="section-head">
@@ -255,7 +290,8 @@ function BuyView({ candidates, watch, buyAction, busy }: { candidates: Candidate
           {busy ? "Buying" : "Buy strongest paper bets"}
         </button>
       </div>
-      <CandidateList candidates={candidates} empty="No strong buys right now" expanded />
+      <StrategyPanel />
+      <CandidateList candidates={candidates} empty="No strong buys right now" expanded onBuy={buyOne} buyingTicker={buyingTicker} />
       <Disclosure title={`Watch list (${watch.length})`}>
         <CandidateList candidates={watch} empty="No positive-edge watch items" compact />
       </Disclosure>
@@ -357,7 +393,26 @@ function DetailsView({ data, model }: { data: DashboardData; model: DashboardMod
   );
 }
 
-function CandidateList({ candidates, empty, expanded = false, compact = false }: { candidates: CandidateView[]; empty: string; expanded?: boolean; compact?: boolean }) {
+function StrategyPanel() {
+  return (
+    <section className="strategy-panel" aria-label="Paper trading context">
+      <div>
+        <strong>Strong is a signal, not a guarantee.</strong>
+        <p>Use paper results to learn the hit rate before treating a model-approved bet as live-trade worthy.</p>
+      </div>
+      <div>
+        <strong>Size is capped by risk rules.</strong>
+        <p>The API sizes each paper order from the max paper stake and current ask, then caps it at the per-trade contract limit. Ten contracts is the cap, not always the target.</p>
+      </div>
+      <div>
+        <strong>Bulk or single bet.</strong>
+        <p>Bulk buy attempts the strongest candidates. Row-level Buy refreshes that market and only fills it if it still passes the model.</p>
+      </div>
+    </section>
+  );
+}
+
+function CandidateList({ candidates, empty, expanded = false, compact = false, onBuy, buyingTicker }: { candidates: CandidateView[]; empty: string; expanded?: boolean; compact?: boolean; onBuy?: (marketTicker: string) => void; buyingTicker?: string | null }) {
   if (candidates.length === 0) return <EmptyState>{empty}</EmptyState>;
   return (
     <div className={compact ? "candidate-list compact" : "candidate-list"}>
@@ -368,13 +423,23 @@ function CandidateList({ candidates, empty, expanded = false, compact = false }:
             <span>{candidate.marketTicker}</span>
           </div>
           <div className="bet-facts">
-            <Fact label="Forecast" value={candidate.forecast} />
-            <Fact label="Ask" value={price(candidate.entryPrice)} />
-            <Fact label="Edge" value={formatPct(candidate.edge)} good={candidate.status === "WOULD_BUY"} />
-            <Fact label="Model" value={formatPct(candidate.yesProbability)} />
-            {expanded ? <Fact label="Target" value={candidate.target} /> : null}
+            <Fact label="Forecast" value={candidate.forecast} help="The model forecast compared with the market line." />
+            <Fact label="Ask" value={price(candidate.entryPrice)} help="The current YES ask used as the simulated entry price." />
+            <Fact label="Edge" value={formatPct(candidate.edge)} good={candidate.status === "WOULD_BUY"} help="Model probability minus market-implied probability." />
+            <Fact label="Model" value={formatPct(candidate.yesProbability)} help="The model's estimated chance that YES wins." />
+            {expanded ? <Fact label="Target" value={candidate.target} help="The temperature line this market resolves against." /> : null}
+            {expanded ? <Fact label="Expires" value={candidate.expiresAt} help="Last trading time for this Kalshi market when available." /> : null}
+            {expanded ? <Fact label="Left" value={candidate.timeToExpiration} help="Approximate time until market close." /> : null}
           </div>
-          <StatusPill tone={candidate.status === "WOULD_BUY" ? "good" : candidate.status === "WATCH" ? "watch" : "neutral"}>{candidate.status === "WOULD_BUY" ? "Strong" : candidate.status === "WATCH" ? "Watch" : "Blocked"}</StatusPill>
+          <div className="bet-action">
+            <StatusPill tone={candidate.status === "WOULD_BUY" ? "good" : candidate.status === "WATCH" ? "watch" : "neutral"}>{candidate.status === "WOULD_BUY" ? "Strong" : candidate.status === "WATCH" ? "Watch" : "Blocked"}</StatusPill>
+            {onBuy ? (
+              <button className="mini-buy-button" onClick={() => onBuy(candidate.marketTicker)} disabled={buyingTicker !== null}>
+                <ShoppingCart size={14} />
+                {buyingTicker === candidate.marketTicker ? "Buying" : "Buy"}
+              </button>
+            ) : null}
+          </div>
         </article>
       ))}
     </div>
@@ -394,12 +459,16 @@ function HoldingList({ positions, expanded = false }: { positions: HoldingView[]
               <StatusPill tone="good">Held</StatusPill>
             </div>
             <div className="fact-grid">
-              <Fact label="Entry" value={price(position.avgEntryPrice)} />
-              <Fact label="Contracts" value={position.contracts} />
-              <Fact label="Cost" value={money(position.cost)} />
-              <Fact label="Max payout" value={money(position.maxPayout)} />
-              {expanded ? <Fact label="Target" value={position.target} /> : null}
-              {expanded ? <Fact label="Opened" value={dateTime(position.openedAt)} /> : null}
+              <Fact label="Entry" value={price(position.avgEntryPrice)} help="Average simulated fill price per YES contract." />
+              <Fact label="Current" value={moneyOrPending(position.currentValue)} help="Estimated exit value using the current YES bid when available." />
+              <Fact label="P/L" value={moneyOrPending(position.unrealizedPnl)} good={(position.unrealizedPnl ?? 0) > 0} danger={(position.unrealizedPnl ?? 0) < 0} help="Current value minus entry cost; unrealized until settlement." />
+              <Fact label="Expires" value={position.expiresAt} help="Last trading time for this market when available." />
+              <Fact label="Left" value={position.timeToExpiration} help="Approximate time until market close." />
+              {expanded ? <Fact label="Contracts" value={position.contracts} help="Number of paper YES contracts currently held." /> : null}
+              {expanded ? <Fact label="Cost" value={money(position.cost)} help="Entry price times filled contracts." /> : null}
+              {expanded ? <Fact label="Max payout" value={money(position.maxPayout)} help="Gross payout if every YES contract settles at $1." /> : null}
+              {expanded ? <Fact label="Target" value={position.target} help="The weather line this market resolves against." /> : null}
+              {expanded ? <Fact label="Opened" value={dateTime(position.openedAt)} help="When the paper order filled." /> : null}
             </div>
           </div>
         </article>
@@ -457,11 +526,22 @@ function Metric({ label, value, detail }: { label: string; value: ReactNode; det
   );
 }
 
-function Fact({ label, value, good = false, danger = false }: { label: string; value: ReactNode; good?: boolean; danger?: boolean }) {
+function Fact({ label, value, good = false, danger = false, help }: { label: string; value: ReactNode; good?: boolean; danger?: boolean; help?: string }) {
   return (
     <span className="fact">
-      <small>{label}</small>
+      <small>
+        {label}
+        {help ? <HelpTip text={help} /> : null}
+      </small>
       <b className={good ? "good-text" : danger ? "danger-text" : ""}>{value}</b>
+    </span>
+  );
+}
+
+function HelpTip({ text }: { text: string }) {
+  return (
+    <span className="help-tip" title={text} aria-label={text}>
+      <CircleHelp size={12} />
     </span>
   );
 }
@@ -512,6 +592,7 @@ function StatusPill({ tone, children }: { tone: "good" | "watch" | "danger" | "n
 }
 
 type DashboardModel = ReturnType<typeof buildDashboardModel>;
+type MarketView = DashboardData["markets"][number];
 type CandidateView = ReturnType<typeof candidateView>;
 type HoldingView = ReturnType<typeof holdingView>;
 type ResultView = ReturnType<typeof resultView>;
@@ -522,12 +603,13 @@ function useDashboardModel(data: DashboardData | null) {
 
 function buildDashboardModel(data: DashboardData | null) {
   const mappings = new Map((data?.mappings ?? []).map((mapping) => [mapping.marketTicker, mapping]));
+  const markets = new Map((data?.markets ?? []).map((market) => [market.ticker, market]));
   const candidates = [...(data?.trainingCandidates ?? [])].sort((a, b) => (b.edge ?? -1) - (a.edge ?? -1));
   const settlements = new Map((data?.settlements ?? []).map((settlement) => [settlement.marketTicker, settlement]));
   const positions = data ? paperPositions(data.paperPositions, data.paperOrders, settlements) : [];
-  const strong = candidates.filter((candidate) => candidate.status === "WOULD_BUY").map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker)));
-  const watch = candidates.filter((candidate) => candidate.status === "WATCH").map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker)));
-  const openPositions = positions.filter((position) => !position.closedAt).map((position) => holdingView(position, mappings.get(position.marketTicker)));
+  const strong = candidates.filter((candidate) => candidate.status === "WOULD_BUY").map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker), markets.get(candidate.marketTicker)));
+  const watch = candidates.filter((candidate) => candidate.status === "WATCH").map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker), markets.get(candidate.marketTicker)));
+  const openPositions = positions.filter((position) => !position.closedAt).map((position) => holdingView(position, mappings.get(position.marketTicker), markets.get(position.marketTicker)));
   const results = positions.filter((position) => position.closedAt).map((position) => resultView(position, mappings.get(position.marketTicker), settlements.get(position.marketTicker)));
   const openContracts = openPositions.reduce((sum, position) => sum + position.contracts, 0);
   const openCost = openPositions.reduce((sum, position) => sum + position.cost, 0);
@@ -573,26 +655,37 @@ function paperPositions(positions: DashboardData["paperPositions"], orders: Dash
   });
 }
 
-function candidateView(candidate: DashboardData["trainingCandidates"][number], mapping: DashboardData["mappings"][number] | undefined) {
+function candidateView(candidate: DashboardData["trainingCandidates"][number], mapping: DashboardData["mappings"][number] | undefined, market: MarketView | undefined) {
+  const expiry = expiryView(market, mapping?.targetDate ?? candidate.targetDate);
   return {
     ...candidate,
-    displayName: displayName(candidate.marketTicker, candidate.city, mapping?.location?.state),
+    displayName: displayName(candidate.marketTicker, candidate.city, mapping?.location?.state, market?.title ?? mapping?.title),
     forecast: forecastText(candidate),
-    target: mappingLine(mapping),
+    target: mappingLine(mapping ?? candidate, market),
+    expiresAt: expiry.label,
+    timeToExpiration: expiry.timeLeft,
     entryPrice: candidate.entryPrice,
     edge: candidate.edge,
     yesProbability: candidate.yesProbability
   };
 }
 
-function holdingView(position: DashboardData["paperPositions"][number], mapping: DashboardData["mappings"][number] | undefined) {
+function holdingView(position: DashboardData["paperPositions"][number], mapping: DashboardData["mappings"][number] | undefined, market: MarketView | undefined) {
   const cost = position.avgEntryPrice * position.contracts;
+  const markPrice = position.markPrice ?? market?.yesBid ?? market?.lastPrice ?? null;
+  const currentValue = markPrice === null ? null : markPrice * position.contracts;
+  const expiry = expiryView(market, mapping?.targetDate ?? null);
   return {
     ...position,
-    displayName: displayName(position.marketTicker, mapping?.location?.city ?? null, mapping?.location?.state),
-    target: mappingLine(mapping),
+    displayName: displayName(position.marketTicker, mapping?.location?.city ?? null, mapping?.location?.state, market?.title ?? mapping?.title),
+    target: mappingLine(mapping, market),
     cost,
-    maxPayout: position.contracts
+    markPrice,
+    currentValue,
+    unrealizedPnl: currentValue === null ? null : currentValue - cost,
+    maxPayout: position.contracts,
+    expiresAt: expiry.label,
+    timeToExpiration: expiry.timeLeft
   };
 }
 
@@ -602,7 +695,7 @@ function resultView(position: DashboardData["paperPositions"][number], mapping: 
   return {
     id: position.id,
     marketTicker: position.marketTicker,
-    displayName: displayName(position.marketTicker, mapping?.location?.city ?? null, mapping?.location?.state),
+    displayName: displayName(position.marketTicker, mapping?.location?.city ?? null, mapping?.location?.state, mapping?.title),
     result: settlement?.result ? settlement.result.toUpperCase() : "pending",
     finalTemperature: finalTemperature(settlement),
     cost,
@@ -612,8 +705,10 @@ function resultView(position: DashboardData["paperPositions"][number], mapping: 
   };
 }
 
-function displayName(ticker: string, city: string | null | undefined, state: string | undefined) {
+function displayName(ticker: string, city: string | null | undefined, state: string | undefined, title?: string | null) {
   if (city) return state ? `${city}, ${state}` : city;
+  const titleCity = cityFromTitle(title);
+  if (titleCity) return titleCity;
   return ticker.split("-")[0] ?? ticker;
 }
 
@@ -622,10 +717,48 @@ function forecastText(candidate: DashboardData["trainingCandidates"][number]) {
   return `${valueForVariable(candidate.variable, candidate.forecastValue)} vs ${mappingLine(candidate)}`;
 }
 
-function mappingLine(mapping: Pick<DashboardData["mappings"][number], "threshold" | "thresholdOperator" | "targetDate"> | Pick<DashboardData["trainingCandidates"][number], "threshold" | "thresholdOperator" | "targetDate"> | undefined) {
-  if (!mapping || mapping.threshold === null) return "Line pending";
+function mappingLine(mapping: Pick<DashboardData["mappings"][number], "threshold" | "thresholdOperator" | "targetDate"> | Pick<DashboardData["trainingCandidates"][number], "threshold" | "thresholdOperator" | "targetDate"> | undefined, market?: Pick<MarketView, "title">) {
+  if (!mapping || mapping.threshold === null) return market?.title ? compactMarketTitle(market.title) : "Target unavailable";
   const operator = mapping.thresholdOperator === "below" ? "below" : mapping.thresholdOperator === "above" ? "above" : mapping.thresholdOperator;
   return `${operator} ${mapping.threshold} F${mapping.targetDate ? ` on ${shortDate(mapping.targetDate)}` : ""}`;
+}
+
+function expiryView(market: MarketView | undefined, targetDate: string | null | undefined) {
+  const closeIso = market?.closeTime ?? market?.settlementTime ?? null;
+  if (closeIso) return { label: dateTime(closeIso), timeLeft: timeUntil(closeIso) };
+  if (targetDate) return { label: shortDate(targetDate), timeLeft: "Time pending" };
+  return { label: "Expiration pending", timeLeft: "Time pending" };
+}
+
+function timeUntil(iso: string) {
+  const expiresAt = new Date(iso).getTime();
+  if (!Number.isFinite(expiresAt)) return "Time pending";
+  const diff = expiresAt - Date.now();
+  if (diff <= 0) return "Closed";
+  const days = Math.floor(diff / 86_400_000);
+  const hours = Math.floor((diff % 86_400_000) / 3_600_000);
+  const minutes = Math.floor((diff % 3_600_000) / 60_000);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${Math.max(1, minutes)}m`;
+}
+
+function cityFromTitle(title?: string | null) {
+  if (!title) return null;
+  const clean = title.replaceAll("**", "");
+  const match = clean.match(/high temp in\s+(.+?)\s+be/i);
+  const rawCity = match?.[1]?.trim();
+  if (!rawCity) return null;
+  if (rawCity === "NYC") return "New York, NY";
+  if (rawCity === "LA") return "Los Angeles, CA";
+  return rawCity;
+}
+
+function compactMarketTitle(title: string) {
+  const clean = title.replaceAll("**", "").replace(/\?$/, "").trim();
+  const highTempMatch = clean.match(/high temp in\s+.+?\s+be\s+(.+)$/i);
+  if (highTempMatch?.[1]) return highTempMatch[1].trim();
+  return clean.replace(/^Will the\s+/i, "").replace(/\s+on\s+/i, " on ").trim();
 }
 
 function finalTemperature(settlement: DashboardData["settlements"][number] | undefined) {
@@ -685,6 +818,10 @@ function price(value: number | null) {
 
 function money(value: number) {
   return `${value < 0 ? "-" : ""}$${Math.abs(value).toFixed(2)}`;
+}
+
+function moneyOrPending(value: number | null) {
+  return value === null ? "pending" : money(value);
 }
 
 function time(iso: string) {

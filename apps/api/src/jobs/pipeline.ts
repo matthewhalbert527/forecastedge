@@ -296,8 +296,8 @@ export class ForecastEdgePipeline {
       forecastSnapshots: this.store.forecastSnapshots.slice(0, 10),
       stationObservations: this.store.stationObservations.slice(0, 20),
       forecastDeltas: this.store.forecastDeltas.slice(0, 50),
-      markets: this.store.markets.slice(0, 100),
-      mappings: this.store.mappings.slice(0, 100),
+      markets: this.store.markets.slice(0, 250),
+      mappings: this.store.mappings.slice(0, 250),
       signals: this.store.signals.slice(0, 100),
       paperOrders: this.store.paperOrders.slice(0, 100),
       paperPositions: [],
@@ -394,6 +394,75 @@ export class ForecastEdgePipeline {
     };
   }
 
+  async buyPaperCandidate(marketTicker: string) {
+    const ticker = marketTicker.trim().toUpperCase();
+    const report = this.store.startScan("quote_refresh");
+    let bought = false;
+    let reason = "No paper order was created";
+    let status = "UNAVAILABLE";
+
+    try {
+      const market = await getMarketDetails(ticker);
+      if (!market) {
+        reason = "Market details unavailable";
+        report.providerResults.push({ provider: "kalshi_quotes", locationId: ticker, status: "error", message: reason });
+        report.decisions.push({ stage: "paper_order", itemId: ticker, status: "skipped", reason, metadata: { marketTicker: ticker } });
+      } else {
+        this.mergeMarkets([market]);
+        const mapping = parseKalshiWeatherMarket(market);
+        this.mergeMappings([mapping]);
+        report.providerResults.push({ provider: "kalshi_quotes", locationId: ticker, status: "ok", message: `Refreshed quote for ${ticker}` });
+        report.counts.marketsDiscovered = 1;
+        report.counts.mappingsAccepted = mapping.accepted ? 1 : 0;
+        report.counts.mappingsRejected = mapping.accepted ? 0 : 1;
+
+        this.store.trainingCandidates = buildTrainingCandidates({
+          scanId: report.id,
+          markets: this.store.markets,
+          mappings: this.store.mappings,
+          ensembles: this.store.ensembles,
+          config: trainingCandidateConfig()
+        });
+        report.counts.trainingCandidates = this.store.trainingCandidates.length;
+
+        const candidate = this.store.trainingCandidates.find((item) => item.marketTicker === ticker);
+        status = candidate?.status ?? "UNAVAILABLE";
+        if (!candidate) {
+          reason = "The refreshed market did not match a model candidate";
+          report.decisions.push({ stage: "training_candidate", itemId: ticker, status: "skipped", reason, metadata: { market } });
+        } else if (candidate.status !== "WOULD_BUY") {
+          reason = candidate.reason;
+          report.decisions.push({ stage: "training_candidate", itemId: candidate.id, status: "skipped", reason, metadata: { trainingCandidate: candidate } });
+        } else if (env.APP_MODE !== "paper") {
+          reason = "Paper buying is only enabled while APP_MODE is paper";
+          report.decisions.push({ stage: "paper_order", itemId: ticker, status: "skipped", reason, metadata: { trainingCandidate: candidate } });
+        } else {
+          report.decisions.push({ stage: "training_candidate", itemId: candidate.id, status: "accepted", reason: candidate.reason, metadata: { trainingCandidate: candidate } });
+          const beforeOrders = report.counts.paperOrders;
+          await this.placePaperOrdersForCandidates([candidate], report, 1);
+          bought = report.counts.paperOrders > beforeOrders;
+          const lastDecision = [...report.decisions].reverse().find((decision) => decision.stage === "paper_order" || decision.stage === "signal");
+          reason = bought ? "Paper order created" : lastDecision?.reason ?? candidate.reason;
+        }
+      }
+    } catch (error) {
+      reason = errorMessage(error);
+      report.providerResults.push({ provider: "kalshi_quotes", locationId: ticker, status: "error", message: reason });
+      report.decisions.push({ stage: "paper_order", itemId: ticker, status: "error", reason, metadata: { marketTicker: ticker } });
+    }
+
+    this.finishReport(report);
+    await this.persist(report);
+    return {
+      marketTicker: ticker,
+      status,
+      bought,
+      paperOrders: report.counts.paperOrders,
+      reason,
+      summary: this.summary()
+    };
+  }
+
   async runSettlementsOnly() {
     if (!this.persistentStore) return { checked: 0, settled: 0, skipped: 0, errors: 1, reason: "DATABASE_URL is not configured" };
     const result = await reconcilePaperSettlements(this.persistentStore, this.audit);
@@ -413,14 +482,20 @@ export class ForecastEdgePipeline {
     this.store.mappings = [...byTicker.values()];
   }
 
-  private async placePaperOrdersForCandidates(candidates: TrainingCandidate[], report: ReturnType<MemoryStore["startScan"]>) {
+  private async placePaperOrdersForCandidates(candidates: TrainingCandidate[], report: ReturnType<MemoryStore["startScan"]>, maxOrders = env.QUOTE_REFRESH_MAX_PAPER_ORDERS) {
     let placed = 0;
     for (const candidate of candidates) {
-      if (placed >= env.QUOTE_REFRESH_MAX_PAPER_ORDERS) break;
-      if (this.hasPaperExposure(candidate.marketTicker)) continue;
+      if (placed >= maxOrders) break;
+      if (this.hasPaperExposure(candidate.marketTicker)) {
+        report.decisions.push({ stage: "paper_order", itemId: candidate.marketTicker, status: "skipped", reason: "Already holding a filled paper position for this market", metadata: { trainingCandidate: candidate } });
+        continue;
+      }
       const mapping = this.store.mappings.find((item) => item.marketTicker === candidate.marketTicker);
       const market = this.store.markets.find((item) => item.ticker === candidate.marketTicker);
-      if (!mapping || !market || candidate.entryPrice === null || candidate.edge === null) continue;
+      if (!mapping || !market || candidate.entryPrice === null || candidate.edge === null) {
+        report.decisions.push({ stage: "paper_order", itemId: candidate.marketTicker, status: "skipped", reason: "Incomplete candidate data; cannot size paper order", metadata: { trainingCandidate: candidate, mapping, market } });
+        continue;
+      }
 
       const now = new Date();
       const contracts = Math.max(1, Math.min(activeRiskLimits.maxContractsPerTrade, Math.floor(env.MAX_STAKE_PER_TRADE_PAPER / Math.max(candidate.entryPrice, 0.01))));

@@ -43,7 +43,7 @@ button {
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-columns: 216px minmax(0, 1fr);
 }
 
 .sidebar {
@@ -52,8 +52,8 @@ button {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  gap: 26px;
-  padding: 24px 18px;
+  gap: 20px;
+  padding: 20px 14px;
   background: #ebe5da;
   border-right: 1px solid var(--border);
 }
@@ -65,8 +65,8 @@ button {
 }
 
 .brand-mark {
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   display: grid;
   place-items: center;
   border-radius: 10px;
@@ -84,7 +84,7 @@ button {
 }
 
 .brand h1 {
-  font-size: 19px;
+  font-size: 17px;
   line-height: 1.1;
 }
 
@@ -116,7 +116,7 @@ button {
   color: var(--muted);
   padding: 0 11px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 750;
 }
 
@@ -131,7 +131,7 @@ button {
   margin-top: auto;
   display: grid;
   gap: 8px;
-  padding: 12px;
+  padding: 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: rgba(255, 253, 250, 0.62);
@@ -139,7 +139,7 @@ button {
 
 .workspace {
   min-width: 0;
-  padding: 24px;
+  padding: 18px;
 }
 
 .topbar {
@@ -147,7 +147,7 @@ button {
   justify-content: space-between;
   align-items: flex-start;
   gap: 18px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .eyebrow {
@@ -160,7 +160,7 @@ button {
 
 .topbar h2 {
   margin-top: 3px;
-  font-size: 28px;
+  font-size: 24px;
   line-height: 1.08;
 }
 
@@ -178,10 +178,10 @@ button {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 40px;
+  min-height: 36px;
   border-radius: 8px;
   border: 1px solid transparent;
-  padding: 0 13px;
+  padding: 0 12px;
   cursor: pointer;
   font-size: 13px;
   font-weight: 850;
@@ -195,8 +195,8 @@ button {
 }
 
 .buy-button.large {
-  min-height: 46px;
-  padding: 0 17px;
+  min-height: 40px;
+  padding: 0 14px;
   font-size: 14px;
 }
 
@@ -220,13 +220,14 @@ button {
 }
 
 .alert,
+.notice,
 .loading {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 44px;
-  padding: 12px 14px;
-  margin-bottom: 16px;
+  min-height: 40px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--watch-bg);
@@ -235,14 +236,19 @@ button {
   font-weight: 750;
 }
 
+.notice {
+  background: var(--good-bg);
+  color: var(--good);
+}
+
 .health-strip {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  min-height: 46px;
-  padding: 10px 12px;
-  margin-bottom: 14px;
+  min-height: 40px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: rgba(255, 253, 250, 0.7);
@@ -263,12 +269,12 @@ button {
 .page-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
+  gap: 10px;
 }
 
 .stack {
   display: grid;
-  gap: 14px;
+  gap: 10px;
 }
 
 .hero-panel,
@@ -287,18 +293,18 @@ button {
   justify-content: space-between;
   align-items: center;
   gap: 16px;
-  padding: 22px;
+  padding: 16px;
 }
 
 .hero-panel h3 {
-  margin: 0 0 7px;
-  font-size: 30px;
+  margin: 0 0 5px;
+  font-size: 24px;
   line-height: 1.06;
 }
 
 .metric {
-  min-height: 124px;
-  padding: 15px;
+  min-height: 92px;
+  padding: 12px;
 }
 
 .metric span {
@@ -312,8 +318,8 @@ button {
 
 .metric strong {
   display: block;
-  margin: 14px 0 8px;
-  font-size: 31px;
+  margin: 9px 0 5px;
+  font-size: 26px;
   line-height: 0.95;
 }
 
@@ -323,7 +329,7 @@ button {
 
 .panel {
   grid-column: span 2;
-  padding: 16px;
+  padding: 12px;
 }
 
 .panel:nth-of-type(6) {
@@ -335,8 +341,8 @@ button {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 14px;
-  margin-bottom: 13px;
+  gap: 12px;
+  margin-bottom: 10px;
 }
 
 .panel-head h3,
@@ -347,7 +353,7 @@ button {
 }
 
 .section-head {
-  padding: 16px;
+  padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -358,11 +364,11 @@ button {
 .timeline-list,
 .result-list {
   display: grid;
-  gap: 8px;
+  gap: 7px;
 }
 
 .candidate-list.compact .bet-row {
-  grid-template-columns: minmax(180px, 1.2fr) minmax(260px, 2fr) auto;
+  grid-template-columns: minmax(150px, 1fr) minmax(0, 2fr) auto;
 }
 
 .bet-row,
@@ -370,16 +376,17 @@ button {
 .result-row {
   display: grid;
   align-items: center;
-  gap: 12px;
+  gap: 9px;
   min-width: 0;
-  padding: 12px;
+  padding: 9px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #fbf8f2;
 }
 
 .bet-row {
-  grid-template-columns: minmax(190px, 1.1fr) minmax(360px, 2.4fr) auto;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(0, 2.2fr) minmax(70px, auto);
+  overflow: hidden;
 }
 
 .bet-main,
@@ -393,7 +400,7 @@ button {
   display: block;
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.25;
 }
 
@@ -409,27 +416,29 @@ button {
 .fact-grid,
 .result-facts {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: 6px;
 }
 
 .result-facts {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
 }
 
 .fact {
   min-width: 0;
-  padding: 8px 9px;
+  padding: 7px 8px;
   border: 1px solid #e7dfd3;
   border-radius: 7px;
   background: var(--surface);
 }
 
 .fact small {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   margin-bottom: 4px;
   color: var(--soft);
-  font-size: 10px;
+  font-size: 9px;
   line-height: 1;
   text-transform: uppercase;
   font-weight: 850;
@@ -440,7 +449,7 @@ button {
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--ink);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.2;
 }
 
@@ -481,10 +490,70 @@ button {
 
 .status-pill {
   justify-content: center;
-  min-height: 28px;
+  min-height: 26px;
   border-radius: 999px;
   padding: 0 10px;
   border: 1px solid transparent;
+}
+
+.help-tip {
+  display: inline-grid;
+  place-items: center;
+  color: var(--soft);
+  cursor: help;
+}
+
+.bet-action {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mini-buy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 28px;
+  border: 1px solid rgba(23, 134, 75, 0.28);
+  border-radius: 7px;
+  background: var(--good);
+  color: #ffffff;
+  padding: 0 9px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.mini-buy-button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.strategy-panel {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.strategy-panel strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.strategy-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .status-pill.good {
@@ -520,12 +589,12 @@ button {
 }
 
 .timeline-row {
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: 14px minmax(0, 1fr);
 }
 
 .timeline-dot {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   border-radius: 999px;
   background: var(--good);
   box-shadow: 0 0 0 5px var(--good-bg);
@@ -536,17 +605,17 @@ button {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .result-row {
-  grid-template-columns: minmax(210px, 1.1fr) minmax(420px, 2.3fr);
+  grid-template-columns: minmax(180px, 0.9fr) minmax(0, 2.3fr);
 }
 
 .empty-state {
   display: grid;
   place-items: center;
-  min-height: 74px;
+  min-height: 62px;
   border: 1px dashed var(--border-strong);
   border-radius: 8px;
   background: rgba(240, 236, 228, 0.55);
@@ -563,11 +632,11 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 52px;
-  padding: 0 16px;
+  min-height: 46px;
+  padding: 0 12px;
   cursor: pointer;
   list-style: none;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 850;
 }
 
@@ -580,7 +649,7 @@ button {
 }
 
 .disclosure-body {
-  padding: 0 16px 16px;
+  padding: 0 12px 12px;
 }
 
 .details-stack {
@@ -675,6 +744,14 @@ button {
 
   .bet-row,
   .result-row {
+    grid-template-columns: 1fr;
+  }
+
+  .bet-action {
+    justify-items: start;
+  }
+
+  .strategy-panel {
     grid-template-columns: 1fr;
   }
 }

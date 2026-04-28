@@ -77,6 +77,14 @@ export function buildServer() {
     const result = await pipeline.refreshQuoteCandidates("quote_refresh");
     return { ...result, summary: await dashboardResponse() };
   });
+  app.post("/api/quotes/buy-one", async (request, reply) => {
+    const body = request.body as { marketTicker?: unknown } | undefined;
+    if (typeof body?.marketTicker !== "string" || body.marketTicker.trim().length === 0) {
+      return reply.code(400).send({ error: "marketTicker is required" });
+    }
+    const result = await pipeline.buyPaperCandidate(body.marketTicker);
+    return { ...result, summary: await dashboardResponse() };
+  });
   app.post("/api/settlements/run-once", async () => {
     const result = await pipeline.runSettlementsOnly();
     return { ...result, summary: await dashboardResponse() };

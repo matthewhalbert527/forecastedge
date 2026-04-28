@@ -106,8 +106,8 @@ export class PersistentStore {
       this.prisma.forecastSnapshot.findMany({ include: { location: true }, orderBy: { createdAt: "desc" }, take: 10 }),
       this.prisma.stationObservation.findMany({ orderBy: { observedAt: "desc" }, take: 20 }),
       this.prisma.forecastDelta.findMany({ orderBy: { createdAt: "desc" }, take: 50 }),
-      this.prisma.kalshiMarket.findMany({ orderBy: { updatedAt: "desc" }, take: 100 }),
-      this.prisma.marketMapping.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
+      this.prisma.kalshiMarket.findMany({ orderBy: { updatedAt: "desc" }, take: 250 }),
+      this.prisma.marketMapping.findMany({ orderBy: { createdAt: "desc" }, take: 250 }),
       this.prisma.signal.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
       this.prisma.paperOrder.findMany({ orderBy: { timestamp: "desc" }, take: 100 }),
       this.prisma.paperPosition.findMany({ orderBy: { openedAt: "desc" }, take: 100 }),
@@ -116,6 +116,10 @@ export class PersistentStore {
       this.prisma.modelForecast.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
       this.prisma.ensembleForecast.findMany({ orderBy: { createdAt: "desc" }, take: 100 })
     ]);
+
+    const heldMarketTickers = [...new Set([...paperOrders.map((order) => order.marketTicker), ...positions.map((position) => position.marketTicker)])];
+    const heldMarkets = heldMarketTickers.length > 0 ? await this.prisma.kalshiMarket.findMany({ where: { ticker: { in: heldMarketTickers } } }) : [];
+    const heldMappings = heldMarketTickers.length > 0 ? await this.prisma.marketMapping.findMany({ where: { marketTicker: { in: heldMarketTickers } } }) : [];
 
     const typedOrders = paperOrders.map(fromPrismaPaperOrder);
     const typedPositions = positions.map((position) => ({
@@ -131,8 +135,8 @@ export class PersistentStore {
       settlementId: position.settlementId
     }));
     const typedSettlements = settlements.map(fromPrismaSettlement);
-    const typedMarkets = markets.map(fromPrismaMarket);
-    const typedMappings = mappings.map(fromPrismaMapping);
+    const typedMarkets = uniqueBy([...markets, ...heldMarkets], (market) => market.ticker).map(fromPrismaMarket);
+    const typedMappings = uniqueBy([...mappings, ...heldMappings], (mapping) => mapping.marketTicker).map(fromPrismaMapping);
     const typedEnsembles = ensembles.map(fromPrismaEnsemble);
     const trainingCandidates = buildTrainingCandidates({
       scanId: scanReports[0]?.id ?? "latest",
@@ -630,6 +634,12 @@ function fromPrismaMarket(market: {
     openInterest: market.openInterest,
     rawPayload: market.rawPayload
   };
+}
+
+function uniqueBy<T, K extends string>(items: T[], keyFor: (item: T) => K) {
+  const byKey = new Map<K, T>();
+  for (const item of items) byKey.set(keyFor(item), item);
+  return [...byKey.values()];
 }
 
 function fromPrismaMapping(mapping: {
