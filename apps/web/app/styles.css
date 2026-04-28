@@ -320,6 +320,36 @@ button {
   line-height: 1.45;
 }
 
+.decision-brief {
+  align-content: start;
+}
+
+.blocker-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.blocker {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 6px 9px;
+  border: 1px solid rgba(246, 173, 85, 0.28);
+  border-radius: 999px;
+  background: rgba(246, 173, 85, 0.1);
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 750;
+}
+
+.blocker.ok {
+  border-color: rgba(104, 211, 145, 0.28);
+  background: rgba(104, 211, 145, 0.1);
+  color: var(--accent);
+}
+
 .summary-strip {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

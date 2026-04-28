@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, AlertTriangle, BarChart3, BrainCircuit, BriefcaseBusiness, CircleHelp, ClipboardList, CloudSun, Gauge, LineChart, LockKeyhole, Play, Power, Radar, Settings, ShieldCheck, ShoppingCart, WalletCards } from "lucide-react";
+import { Activity, AlertTriangle, BarChart3, BriefcaseBusiness, CircleHelp, ClipboardList, Gauge, LineChart, Play, Power, ShieldCheck, ShoppingCart, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 type DashboardData = {
@@ -163,14 +163,10 @@ const locationHeaders: ColumnHeader[] = [
 
 const tabs = [
   ["overview", Activity],
-  ["forecast deltas", CloudSun],
-  ["model stack", BrainCircuit],
-  ["markets", Radar],
-  ["signals", LineChart],
-  ["paper trades", WalletCards],
+  ["decisions", LineChart],
+  ["paper", WalletCards],
   ["performance", BarChart3],
-  ["audit", ClipboardList],
-  ["settings", Settings]
+  ["data", ClipboardList]
 ] as const;
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? process.env.WEB_PUBLIC_API_URL ?? "http://localhost:4000";
@@ -261,6 +257,10 @@ export default function Page() {
     return order.timestamp >= latestScan.startedAt && order.timestamp <= completedAt;
   });
   const openPaperPositions = paperPositions.filter((position) => !position.closedAt);
+  const skippedSignalRows = signals.filter((signal) => signal.status !== "FIRED");
+  const nearMisses = [...skippedSignalRows].sort((a, b) => b.edge - a.edge).slice(0, 8);
+  const blockerCounts = summarizeBlockers(skippedSignalRows);
+  const latestRunSummary = latestScan ? summarizeLatestRun(latestScan) : "No scan has completed yet.";
 
   return (
     <main className="app-shell">
@@ -315,6 +315,19 @@ export default function Page() {
             </div>
             <Metric title="Currently held" value={openPaperPositions.length} detail={`${performance.simulatedContracts} simulated contracts, ${money(performance.unrealizedExposure)} open exposure`} />
             <Metric title="Paper P/L" value={money(performance.realizedPnl)} detail={`${performance.settledTrades} settled, ${performance.openPositions} open`} />
+            <div className="panel decision-brief wide">
+              <h2>Buy readiness</h2>
+              <p className="decision-note">{latestRunSummary}</p>
+              <div className="blocker-list">
+                {blockerCounts.length === 0 ? (
+                  <span className="blocker ok">No recent skipped-signal blockers</span>
+                ) : (
+                  blockerCounts.slice(0, 4).map((blocker) => (
+                    <span className="blocker" key={blocker.reason}>{blocker.reason}: {blocker.count}</span>
+                  ))
+                )}
+              </div>
+            </div>
             <div className="panel trade-list wide">
               <div className="panel-heading">
                 <ShoppingCart size={18} />
@@ -368,14 +381,14 @@ export default function Page() {
           </section>
         ) : null}
 
-        {data && tab === "model stack" ? (
+        {data && tab === "data" ? (
           <section className="grid">
             <Guidance
-              title="How to read model stack"
+              title="Data room"
               items={[
-                "ECMWF is the medium-range anchor. It is useful for spotting market consensus and 1-10 day directional shifts.",
-                "HRRR, Meteomatics, GraphCast, GenCast, WeatherMesh, Earth-2, and ICON are represented in the adapter architecture; unavailable sources are not traded from until real data and calibration exist.",
-                "The ensemble row is the station/date/variable blend. Look for low disagreement, fresh runs, and high confidence before trusting an edge."
+                "This area keeps the detailed model, market, scan, and configuration data available without crowding the daily trading view.",
+                "Use it when you need to diagnose stale data, mapping coverage, provider failures, or model inputs.",
+                "The Overview and Decisions tabs are the primary operating surfaces."
               ]}
             />
             <div className="panel wide">
@@ -386,29 +399,41 @@ export default function Page() {
               <h2>Model forecast inputs <HelpTip text="Raw model points that feed the ensemble before signals are generated." /></h2>
               <Rows headers={modelInputHeaders} rows={modelForecasts.slice(0, 50).map((point) => [`${point.city}, ${point.state}`, point.stationId ?? "n/a", point.model, point.targetDate, `${point.horizonHours}h`, point.highTempF === null ? "n/a" : `${point.highTempF} F`, point.lowTempF === null ? "n/a" : `${point.lowTempF} F`, point.confidence, time(point.createdAt)])} empty="No model forecast inputs yet" />
             </div>
+            <div className="panel wide">
+              <h2>Forecast deltas <HelpTip text="Meaningful forecast changes that can wake up signal generation." /></h2>
+              <Rows headers={forecastDeltaHeaders} rows={forecastDeltas.map((delta) => [`${delta.city}, ${delta.state}`, delta.variable, `${delta.oldValue} -> ${delta.newValue}`, `${delta.absoluteChange}`, delta.targetDate, delta.confidence])} empty="No meaningful deltas yet" />
+            </div>
+            <div className="panel wide">
+              <h2>Scan reports</h2>
+              <Rows headers={scanReportHeaders} rows={scanReports.slice(0, 10).map((scan) => [time(scan.startedAt), scan.trigger, scan.status, scan.counts.marketsDiscovered, `${scan.counts.mappingsAccepted}/${scan.counts.mappingsRejected}`, `${scan.counts.signalsFired}/${scan.counts.signalsSkipped}`, scan.counts.stationObservations, scan.counts.ensembles ?? 0])} empty="No scans recorded yet" />
+            </div>
+            <div className="panel">
+              <h2>Provider status</h2>
+              <Rows headers={providerHeaders} rows={(scanReports[0]?.providerResults ?? []).map((result) => [result.provider, result.stationId ?? "", result.status, <HoverText key={`${result.provider}-${result.stationId ?? "none"}`} label={shorten(result.message, 60)} detail={result.message} />])} empty="No provider checks yet" />
+            </div>
+            <div className="panel wide">
+              <h2>Decision log</h2>
+              <Rows headers={decisionHeaders} rows={(scanReports[0]?.decisions ?? []).slice(0, 50).map((decision) => [decision.stage, decision.status, decision.itemId, <HoverText key={`${decision.stage}-${decision.itemId}`} label={shorten(decision.reason, 70)} detail={decision.reason} />])} empty="No decisions recorded for latest scan" />
+            </div>
+            <div className="panel">
+              <h2>Locations</h2>
+              <Rows headers={locationHeaders} rows={locations.map((loc) => [`${loc.city}, ${loc.state}`, "settlement station", `${loc.pollingIntervalMinutes} min`])} empty="No locations configured" />
+            </div>
           </section>
         ) : null}
 
-        {data && tab === "forecast deltas" ? (
-          <Panel title="Forecast deltas">
-            <p className="muted">A delta is a meaningful forecast move, such as a high/low temperature shift large enough to matter for a Kalshi threshold. Deltas are the main reason the signal engine wakes up.</p>
-            <Rows headers={forecastDeltaHeaders} rows={forecastDeltas.map((delta) => [`${delta.city}, ${delta.state}`, delta.variable, `${delta.oldValue} -> ${delta.newValue}`, `${delta.absoluteChange}`, delta.targetDate, delta.confidence])} empty="No meaningful deltas yet" />
-          </Panel>
-        ) : null}
-
-        {data && tab === "markets" ? (
-          <Panel title="Kalshi weather markets">
-            <div className="explain-bar">
-              <Badge tone="ok">accepted = eligible for signals</Badge>
-              <Badge tone="warn">review/rejected = no trading</Badge>
-              <span>Look for high-confidence rows with a known station, settlement source, threshold, date, and enough liquidity.</span>
+        {data && tab === "decisions" ? (
+          <section className="grid">
+            <div className="panel wide">
+              <h2>Decision watchlist <HelpTip text="Skipped signals ranked by closest edge. This is where you can see if the model is almost ready to buy." /></h2>
+              <p className="muted">A buy needs a fresh forecast move, accepted mapping, positive edge above the threshold, tradable price, tolerable spread, enough liquidity, and open risk capacity.</p>
+              <Rows headers={signalHeaders} rows={nearMisses.map((signal) => [time(signal.createdAt), signal.marketTicker, signal.status, `${(signal.edge * 100).toFixed(1)} pp`, `$${signal.limitPrice.toFixed(2)}`, signal.contracts, <HoverText key={signal.id} label={signalSummary(signal)} detail={signal.explanation} />])} empty="No skipped signals yet. If the latest scan had no forecast deltas, the model had nothing new to score." />
             </div>
-            <Rows headers={marketHeaders} rows={mappings.map((mapping) => [mapping.marketTicker, mapping.station ? `${mapping.station.stationId} ${mapping.station.stationName}` : "review", mapping.settlementSource, mapping.variable, mapping.threshold ?? "n/a", mapping.targetDate ?? "n/a", mapping.accepted ? "accepted" : <HoverText key={mapping.marketTicker} label="review" detail={mapping.reviewReason ?? "Needs manual review before trading."} />, mapping.liquidityScore])} empty="No markets discovered yet" />
-          </Panel>
-        ) : null}
-
-        {data && tab === "signals" ? (
-          <Panel title="Signals">
+            <div className="panel overview-status">
+              <h2>Common blockers</h2>
+              {blockerCounts.length === 0 ? <p className="muted">No skipped-signal blockers recorded yet.</p> : blockerCounts.slice(0, 8).map((blocker) => <StatusLine key={blocker.reason} label={blocker.reason} value={`${blocker.count}`} />)}
+            </div>
+            <Panel title="All signals">
             <div className="summary-strip inline">
               <SummaryItem label="Fired" value={firedSignals} />
               <SummaryItem label="Skipped" value={skippedSignals} />
@@ -416,10 +441,19 @@ export default function Page() {
             </div>
             <p className="muted">A fired signal means mapping, forecast movement, model edge, liquidity, spread, stale-data checks, and risk limits passed. Skipped signals are useful too: they explain why the system refused to trade.</p>
             <Rows headers={signalHeaders} rows={signals.map((signal) => [time(signal.createdAt), signal.marketTicker, signal.status, `${(signal.edge * 100).toFixed(1)} pp`, `$${signal.limitPrice.toFixed(2)}`, signal.contracts, <HoverText key={signal.id} label={signalSummary(signal)} detail={signal.explanation} />])} empty="No signals yet" />
-          </Panel>
+            </Panel>
+            <Panel title="Tradable market coverage">
+              <div className="explain-bar">
+                <Badge tone="ok">accepted = eligible for signals</Badge>
+                <Badge tone="warn">review/rejected = no trading</Badge>
+                <span>Use this when the model is not finding enough opportunities.</span>
+              </div>
+              <Rows headers={marketHeaders} rows={mappings.map((mapping) => [mapping.marketTicker, mapping.station ? `${mapping.station.stationId} ${mapping.station.stationName}` : "review", mapping.settlementSource, mapping.variable, mapping.threshold ?? "n/a", mapping.targetDate ?? "n/a", mapping.accepted ? "accepted" : <HoverText key={mapping.marketTicker} label="review" detail={mapping.reviewReason ?? "Needs manual review before trading."} />, mapping.liquidityScore])} empty="No markets discovered yet" />
+            </Panel>
+          </section>
         ) : null}
 
-        {data && tab === "paper trades" ? (
+        {data && tab === "paper" ? (
           <Panel title="Paper trades">
             <p className="muted">Paper trades are simulated against market prices and liquidity rules. Filled contracts are tracked separately from unfilled contracts so this does not assume perfect fills.</p>
             <Rows headers={paperOrderHeaders} rows={paperOrders.map((order) => [time(order.timestamp), order.marketTicker, order.status, order.filledContracts, order.unfilledContracts, order.simulatedAvgFillPrice ? `$${order.simulatedAvgFillPrice.toFixed(2)}` : "n/a", <HoverText key={order.id} label={shorten(order.reason, 54)} detail={order.reason} />])} empty="No paper orders yet" />
@@ -447,48 +481,6 @@ export default function Page() {
           </section>
         ) : null}
 
-        {data && tab === "audit" ? (
-          <section className="grid">
-            <Guidance
-              title="How to audit a scan"
-              items={[
-                "Start with Scan reports. A clean scan should discover markets, accept known weather mappings, and show zero unexpected rejections.",
-                "Provider status tells you whether weather and station data were fresh or degraded.",
-                "Decision log is the review trail: every accepted, rejected, skipped, or fired decision includes a reason."
-              ]}
-            />
-            <div className="panel wide">
-              <h2>Scan reports</h2>
-              <Rows headers={scanReportHeaders} rows={scanReports.slice(0, 10).map((scan) => [time(scan.startedAt), scan.trigger, scan.status, scan.counts.marketsDiscovered, `${scan.counts.mappingsAccepted}/${scan.counts.mappingsRejected}`, `${scan.counts.signalsFired}/${scan.counts.signalsSkipped}`, scan.counts.stationObservations, scan.counts.ensembles ?? 0])} empty="No scans recorded yet" />
-            </div>
-            <div className="panel">
-              <h2>Provider status</h2>
-              <Rows headers={providerHeaders} rows={(scanReports[0]?.providerResults ?? []).map((result) => [result.provider, result.stationId ?? "", result.status, <HoverText key={`${result.provider}-${result.stationId ?? "none"}`} label={shorten(result.message, 60)} detail={result.message} />])} empty="No provider checks yet" />
-            </div>
-            <div className="panel wide">
-              <h2>Decision log</h2>
-              <Rows headers={decisionHeaders} rows={(scanReports[0]?.decisions ?? []).slice(0, 50).map((decision) => [decision.stage, decision.status, decision.itemId, <HoverText key={`${decision.stage}-${decision.itemId}`} label={shorten(decision.reason, 70)} detail={decision.reason} />])} empty="No decisions recorded for latest scan" />
-            </div>
-          </section>
-        ) : null}
-
-        {data && tab === "settings" ? (
-          <section className="grid">
-            <div className="panel">
-              <h2>Locations</h2>
-              <p className="muted">These are the monitored Kalshi-style settlement locations. More locations broaden market coverage but also require strict station/date parsing.</p>
-              <Rows headers={locationHeaders} rows={locations.map((loc) => [`${loc.city}, ${loc.state}`, "settlement station", `${loc.pollingIntervalMinutes} min`])} empty="No locations configured" />
-            </div>
-            <div className="panel">
-              <h2>Mode controls</h2>
-              <p className="muted">This MVP is intended for watch and paper operation. Live execution remains blocked by backend safety gates.</p>
-              <StatusLine label="Current mode" value={data.mode} />
-              <StatusLine label="Live orders" value="blocked by default" />
-              <StatusLine label="Kill switch" value={data.safety.killSwitchEnabled ? "enabled" : "disabled"} danger={data.safety.killSwitchEnabled} />
-              <div className="secret-note"><LockKeyhole size={16} /> Credentials are checked server-side and never rendered.</div>
-            </div>
-          </section>
-        ) : null}
       </section>
     </main>
   );
@@ -633,6 +625,28 @@ function Rows({ headers, rows, empty }: { headers?: ColumnHeader[]; rows: Array<
 function signalSummary(signal: DashboardData["signals"][number]) {
   if (signal.status === "FIRED") return `Buy ${signal.contracts} at $${signal.limitPrice.toFixed(2)}; edge ${(signal.edge * 100).toFixed(1)} pp`;
   return shorten(signal.skipReason ?? signal.explanation, 72);
+}
+
+function summarizeBlockers(signals: DashboardData["signals"]) {
+  const counts = new Map<string, number>();
+  for (const signal of signals) {
+    for (const reason of (signal.skipReason ?? "unknown skip reason").split(";")) {
+      const normalized = reason.trim();
+      if (!normalized) continue;
+      counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
+function summarizeLatestRun(scan: DashboardData["scanReports"][number]) {
+  if (scan.counts.paperOrders > 0) return `${scan.counts.paperOrders} paper order${scan.counts.paperOrders === 1 ? "" : "s"} recorded on the latest scan.`;
+  if (scan.counts.signalsFired > 0) return `${scan.counts.signalsFired} signal${scan.counts.signalsFired === 1 ? "" : "s"} fired, but no paper order was recorded. Check the decision log.`;
+  if (scan.counts.signalsSkipped > 0) return `${scan.counts.signalsSkipped} signal${scan.counts.signalsSkipped === 1 ? "" : "s"} scored, but every one was skipped. Open Decisions to see the blockers.`;
+  if (scan.counts.forecastDeltas === 0) return "No meaningful forecast delta on the latest scan, so the model did not have a new trade setup to score.";
+  return "The latest scan found data but did not produce a buy setup. Open Data for provider and decision details.";
 }
 
 function shorten(value: string, maxLength: number) {
