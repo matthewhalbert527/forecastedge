@@ -99,10 +99,10 @@ function normalizeMarket(raw: Record<string, unknown>): KalshiMarketCandidate | 
   const title = stringValue(raw.title);
   const eventTicker = stringValue(raw.event_ticker);
   if (!ticker || !title || !eventTicker) return null;
-  const yesBid = cents(raw.yes_bid);
-  const yesAsk = cents(raw.yes_ask);
-  const noBid = cents(raw.no_bid);
-  const noAsk = cents(raw.no_ask);
+  const yesBid = price(raw.yes_bid) ?? price(raw.yes_bid_dollars);
+  const yesAsk = price(raw.yes_ask) ?? price(raw.yes_ask_dollars);
+  const noBid = price(raw.no_bid) ?? price(raw.no_bid_dollars);
+  const noAsk = price(raw.no_ask) ?? price(raw.no_ask_dollars);
   return {
     ticker,
     eventTicker,
@@ -114,9 +114,9 @@ function normalizeMarket(raw: Record<string, unknown>): KalshiMarketCandidate | 
     yesAsk,
     noBid,
     noAsk,
-    lastPrice: cents(raw.last_price),
-    volume: numeric(raw.volume),
-    openInterest: numeric(raw.open_interest),
+    lastPrice: price(raw.last_price) ?? price(raw.last_price_dollars),
+    volume: numeric(raw.volume) ?? numeric(raw.volume_fp) ?? numeric(raw.volume_24h_fp),
+    openInterest: numeric(raw.open_interest) ?? numeric(raw.open_interest_fp),
     rawPayload: raw
   };
 }
@@ -146,10 +146,15 @@ function normalizeResult(value: string | null): KalshiMarketDetails["result"] {
 }
 
 function numeric(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
-function cents(value: unknown): number | null {
+function price(value: unknown): number | null {
   const num = numeric(value);
   if (num === null) return null;
   return num > 1 ? Number((num / 100).toFixed(4)) : num;
