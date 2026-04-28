@@ -148,6 +148,32 @@ export interface ProbabilityEstimate {
   passesModelFilters: boolean;
 }
 
+export interface TrainingCandidate {
+  id: string;
+  scanId: string;
+  marketTicker: string;
+  title: string;
+  city: string | null;
+  stationId: string | null;
+  variable: WeatherVariable | "hurricane" | "unknown";
+  targetDate: string | null;
+  threshold: number | null;
+  thresholdOperator: MarketMapping["thresholdOperator"];
+  forecastValue: number | null;
+  entryPrice: number | null;
+  yesProbability: number | null;
+  impliedProbability: number | null;
+  edge: number | null;
+  spread: number | null;
+  liquidityScore: number;
+  status: "WOULD_BUY" | "WATCH" | "BLOCKED";
+  blockers: string[];
+  settlementResult: "yes" | "no" | null;
+  counterfactualPnl: number | null;
+  reason: string;
+  createdAt: string;
+}
+
 export interface Signal {
   id: string;
   marketTicker: string;

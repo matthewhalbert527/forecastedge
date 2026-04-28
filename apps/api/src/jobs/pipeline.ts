@@ -18,6 +18,7 @@ import { fetchAccuWeatherDailyForecast } from "../weather/accuweather.js";
 import { fetchNwsLatestStationObservation } from "../weather/nws-station.js";
 import { fetchOpenMeteoForecast } from "../weather/open-meteo.js";
 import { fetchModelForecasts, unavailableModelPoint } from "../weather/model-stack.js";
+import { buildTrainingCandidates } from "./training-candidates.js";
 
 export class ForecastEdgePipeline {
   constructor(
@@ -175,6 +176,28 @@ export class ForecastEdgePipeline {
       });
     }
 
+    this.store.trainingCandidates = buildTrainingCandidates({
+      scanId: report.id,
+      markets: this.store.markets,
+      mappings: this.store.mappings,
+      ensembles: this.store.ensembles,
+      config: {
+        minEdge: env.MIN_EDGE_PERCENTAGE_POINTS / 100,
+        maxSpread: activeRiskLimits.maxSpread,
+        minLiquidityScore: activeRiskLimits.minLiquidityScore
+      }
+    });
+    report.counts.trainingCandidates = this.store.trainingCandidates.length;
+    for (const candidate of this.store.trainingCandidates.slice(0, 30)) {
+      report.decisions.push({
+        stage: "training_candidate",
+        itemId: candidate.id,
+        status: candidate.status === "WOULD_BUY" ? "accepted" : "skipped",
+        reason: candidate.reason,
+        metadata: { trainingCandidate: candidate }
+      });
+    }
+
     if (env.APP_MODE === "watch") {
       this.finishReport(report);
       await this.persist(report);
@@ -275,6 +298,7 @@ export class ForecastEdgePipeline {
       paperOrders: this.store.paperOrders.slice(0, 100),
       paperPositions: [],
       settlements: [],
+      trainingCandidates: this.store.trainingCandidates.slice(0, 100),
       modelForecasts: this.store.modelForecasts.slice(0, 100),
       ensembles: this.store.ensembles.slice(0, 100),
       performance: summarizePaperOrders(this.store.paperOrders)

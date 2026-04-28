@@ -13,7 +13,9 @@ import {
   type Signal
 } from "@forecastedge/core";
 import type { AuditEntry } from "../audit/audit-log.js";
+import { activeRiskLimits, env } from "../config/env.js";
 import type { ScanReport, StationObservation, MemoryStore } from "./store.js";
+import { buildTrainingCandidates } from "../jobs/training-candidates.js";
 
 type PrismaJson = Prisma.InputJsonValue;
 
@@ -129,6 +131,21 @@ export class PersistentStore {
       settlementId: position.settlementId
     }));
     const typedSettlements = settlements.map(fromPrismaSettlement);
+    const typedMarkets = markets.map(fromPrismaMarket);
+    const typedMappings = mappings.map(fromPrismaMapping);
+    const typedEnsembles = ensembles.map(fromPrismaEnsemble);
+    const trainingCandidates = buildTrainingCandidates({
+      scanId: scanReports[0]?.id ?? "latest",
+      markets: typedMarkets,
+      mappings: typedMappings,
+      ensembles: typedEnsembles,
+      settlements: typedSettlements,
+      config: {
+        minEdge: env.MIN_EDGE_PERCENTAGE_POINTS / 100,
+        maxSpread: activeRiskLimits.maxSpread,
+        minLiquidityScore: activeRiskLimits.minLiquidityScore
+      }
+    });
 
     return {
       locations: fallback.locations,
@@ -155,14 +172,15 @@ export class PersistentStore {
         temperatureF: obs.temperatureF
       })),
       forecastDeltas: deltas.map(fromPrismaDelta),
-      markets: markets.map(fromPrismaMarket),
-      mappings: mappings.map(fromPrismaMapping),
+      markets: typedMarkets,
+      mappings: typedMappings,
       signals: signals.map(fromPrismaSignal),
       paperOrders: typedOrders,
       paperPositions: typedPositions,
       settlements: typedSettlements,
+      trainingCandidates,
       modelForecasts: modelForecasts.map(fromPrismaModelForecast),
-      ensembles: ensembles.map(fromPrismaEnsemble),
+      ensembles: typedEnsembles,
       performance: summarizePaperOrders(typedOrders, typedPositions, typedSettlements),
       auditLogs: auditLogs.map((log) => ({
         id: log.id,

@@ -9,7 +9,8 @@ import {
   type ModelForecastPoint,
   type NormalizedForecastSnapshot,
   type PaperOrder,
-  type Signal
+  type Signal,
+  type TrainingCandidate
 } from "@forecastedge/core";
 
 export const defaultLocation: LocationConfig = {
@@ -47,11 +48,12 @@ export interface ScanReport {
     signalsFired: number;
     signalsSkipped: number;
     paperOrders: number;
+    trainingCandidates: number;
     modelForecasts: number;
     ensembles: number;
   };
   decisions: Array<{
-    stage: "provider" | "model_forecast" | "model_ensemble" | "market_mapping" | "signal" | "paper_order" | "settlement";
+    stage: "provider" | "model_forecast" | "model_ensemble" | "market_mapping" | "training_candidate" | "signal" | "paper_order" | "settlement";
     itemId: string;
     status: "accepted" | "rejected" | "fired" | "skipped" | "filled" | "partial" | "error";
     reason: string;
@@ -67,6 +69,7 @@ export class MemoryStore {
   mappings: MarketMapping[] = [];
   signals: Signal[] = [];
   paperOrders: PaperOrder[] = [];
+  trainingCandidates: TrainingCandidate[] = [];
   modelForecasts: ModelForecastPoint[] = [];
   ensembles: EnsembleForecast[] = [];
   stationObservations: StationObservation[] = [];
@@ -106,6 +109,7 @@ export class MemoryStore {
         signalsFired: 0,
         signalsSkipped: 0,
         paperOrders: 0,
+        trainingCandidates: 0,
         modelForecasts: 0,
         ensembles: 0
       },

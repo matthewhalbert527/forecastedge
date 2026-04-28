@@ -15,6 +15,7 @@ type DashboardData = {
   paperOrders: Array<{ id: string; marketTicker: string; side: string; action: string; requestedContracts: number; limitPrice: number; status: string; filledContracts: number; unfilledContracts: number; simulatedAvgFillPrice: number | null; reason: string; timestamp: string }>;
   paperPositions: Array<{ id: string; marketTicker: string; side: string; contracts: number; avgEntryPrice: number; realizedPnl: number; markPrice: number | null; openedAt: string; closedAt: string | null; settlementId: string | null }>;
   settlements: Array<{ id: string; marketTicker: string; result: string; settledPrice: number; source: string; createdAt: string }>;
+  trainingCandidates: Array<{ id: string; marketTicker: string; title: string; city: string | null; stationId: string | null; variable: string; targetDate: string | null; threshold: number | null; thresholdOperator: string; forecastValue: number | null; entryPrice: number | null; yesProbability: number | null; impliedProbability: number | null; edge: number | null; spread: number | null; liquidityScore: number; status: "WOULD_BUY" | "WATCH" | "BLOCKED"; blockers: string[]; settlementResult: string | null; counterfactualPnl: number | null; reason: string; createdAt: string }>;
   modelForecasts: Array<{ id: string; city: string; state: string; stationId: string | null; model: string; targetDate: string; horizonHours: number; highTempF: number | null; lowTempF: number | null; precipitationAmountIn: number | null; windGustMph: number | null; confidence: string; createdAt: string }>;
   ensembles: Array<{ id: string; city: string; state: string; stationId: string | null; targetDate: string; variable: string; prediction: number | null; uncertaintyStdDev: number | null; confidence: string; contributingModels: string[]; disagreement: number | null; reason: string; createdAt: string }>;
   performance: { totalTrades: number; simulatedContracts: number; averageEntryPrice: number; totalCost: number; rejectedOrders: number; realizedPnl: number; unrealizedExposure: number; winRate: number; roi: number; maxDrawdown: number; longestLosingStreak: number; settledTrades: number; openPositions: number };
@@ -36,6 +37,7 @@ type DashboardData = {
       signalsFired: number;
       signalsSkipped: number;
       paperOrders: number;
+      trainingCandidates?: number;
       modelForecasts: number;
       ensembles: number;
     };
@@ -121,6 +123,17 @@ const paperPositionHeaders: ColumnHeader[] = [
   { label: "Status", help: "Open positions are still being held; settled positions have a result." },
   { label: "P/L", help: "Realized profit or loss after settlement." },
   { label: "Settlement", help: "Settlement record id, or pending if not settled yet." }
+];
+
+const trainingCandidateHeaders: ColumnHeader[] = [
+  { label: "Ticker", help: "Kalshi market scored as a counterfactual training candidate." },
+  { label: "Status", help: "Would buy means current rules pass. Watch means positive edge but at least one blocker remains. Blocked means no positive trade setup." },
+  { label: "Forecast", help: "Blended forecast compared with the market threshold." },
+  { label: "Model", help: "Estimated YES probability from the forecast and uncertainty." },
+  { label: "Entry", help: "Executable YES ask or synthetic YES price from NO bid." },
+  { label: "Edge", help: "Model probability minus entry price, in percentage points." },
+  { label: "Result", help: "Known settlement outcome and hypothetical one-contract P/L when available." },
+  { label: "Why", help: "Condensed decision context. Hover for exact blockers and scoring details." }
 ];
 
 const settlementHeaders: ColumnHeader[] = [
@@ -240,6 +253,7 @@ export default function Page() {
   const paperOrders = data?.paperOrders ?? [];
   const paperPositions = data?.paperPositions ?? [];
   const settlements = data?.settlements ?? [];
+  const trainingCandidates = data?.trainingCandidates ?? [];
   const modelForecasts = data?.modelForecasts ?? [];
   const ensembles = data?.ensembles ?? [];
   const scanReports = data?.scanReports ?? [];
@@ -259,6 +273,9 @@ export default function Page() {
   const openPaperPositions = paperPositions.filter((position) => !position.closedAt);
   const skippedSignalRows = signals.filter((signal) => signal.status !== "FIRED");
   const nearMisses = [...skippedSignalRows].sort((a, b) => b.edge - a.edge).slice(0, 8);
+  const wouldBuyCandidates = trainingCandidates.filter((candidate) => candidate.status === "WOULD_BUY");
+  const watchCandidates = trainingCandidates.filter((candidate) => candidate.status === "WATCH");
+  const settledCandidateCount = trainingCandidates.filter((candidate) => candidate.settlementResult).length;
   const blockerCounts = summarizeBlockers(skippedSignalRows);
   const latestRunSummary = latestScan ? summarizeLatestRun(latestScan) : "No scan has completed yet.";
 
@@ -318,6 +335,11 @@ export default function Page() {
             <div className="panel decision-brief wide">
               <h2>Buy readiness</h2>
               <p className="decision-note">{latestRunSummary}</p>
+              <div className="summary-strip inline compact">
+                <SummaryItem label="Would buy now" value={wouldBuyCandidates.length} />
+                <SummaryItem label="Positive-edge watch" value={watchCandidates.length} />
+                <SummaryItem label="Settled examples" value={settledCandidateCount} />
+              </div>
               <div className="blocker-list">
                 {blockerCounts.length === 0 ? (
                   <span className="blocker ok">No recent skipped-signal blockers</span>
@@ -428,6 +450,20 @@ export default function Page() {
               <h2>Decision watchlist <HelpTip text="Skipped signals ranked by closest edge. This is where you can see if the model is almost ready to buy." /></h2>
               <p className="muted">A buy needs a fresh forecast move, accepted mapping, positive edge above the threshold, tradable price, tolerable spread, enough liquidity, and open risk capacity.</p>
               <Rows headers={signalHeaders} rows={nearMisses.map((signal) => [time(signal.createdAt), signal.marketTicker, signal.status, `${(signal.edge * 100).toFixed(1)} pp`, `$${signal.limitPrice.toFixed(2)}`, signal.contracts, <HoverText key={signal.id} label={signalSummary(signal)} detail={signal.explanation} />])} empty="No skipped signals yet. If the latest scan had no forecast deltas, the model had nothing new to score." />
+            </div>
+            <div className="panel wide">
+              <h2>Training candidates <HelpTip text="Every accepted mapped market is scored against the latest ensemble forecast so you can see potential buys, blockers, and eventual counterfactual outcomes." /></h2>
+              <p className="muted">This table answers whether the model is too strict. It scores markets even when no forecast delta fired, then marks what current rules would buy, watch, or block.</p>
+              <Rows headers={trainingCandidateHeaders} rows={trainingCandidates.slice(0, 40).map((candidate) => [
+                candidate.marketTicker,
+                candidateStatus(candidate),
+                forecastSummary(candidate),
+                candidate.yesProbability === null ? "n/a" : `${(candidate.yesProbability * 100).toFixed(1)}%`,
+                candidate.entryPrice === null ? "n/a" : `$${candidate.entryPrice.toFixed(2)}`,
+                candidate.edge === null ? "n/a" : `${(candidate.edge * 100).toFixed(1)} pp`,
+                outcomeSummary(candidate),
+                <HoverText key={candidate.id} label={candidateSummary(candidate)} detail={candidate.reason} />
+              ])} empty="No training candidates yet. Run a scan after model ensembles and market mappings are available." />
             </div>
             <div className="panel overview-status">
               <h2>Common blockers</h2>
@@ -625,6 +661,30 @@ function Rows({ headers, rows, empty }: { headers?: ColumnHeader[]; rows: Array<
 function signalSummary(signal: DashboardData["signals"][number]) {
   if (signal.status === "FIRED") return `Buy ${signal.contracts} at $${signal.limitPrice.toFixed(2)}; edge ${(signal.edge * 100).toFixed(1)} pp`;
   return shorten(signal.skipReason ?? signal.explanation, 72);
+}
+
+function candidateStatus(candidate: DashboardData["trainingCandidates"][number]) {
+  if (candidate.status === "WOULD_BUY") return <Badge tone="ok">would buy</Badge>;
+  if (candidate.status === "WATCH") return <Badge tone="warn">watch</Badge>;
+  return <Badge tone="neutral">blocked</Badge>;
+}
+
+function forecastSummary(candidate: DashboardData["trainingCandidates"][number]) {
+  const threshold = candidate.threshold === null ? "unknown" : `${candidate.thresholdOperator} ${candidate.threshold}`;
+  if (candidate.forecastValue === null) return threshold;
+  return `${valueForVariable(candidate.variable, candidate.forecastValue)} vs ${threshold}`;
+}
+
+function outcomeSummary(candidate: DashboardData["trainingCandidates"][number]) {
+  if (!candidate.settlementResult || candidate.counterfactualPnl === null) return "pending";
+  const pnl = candidate.counterfactualPnl >= 0 ? `+${candidate.counterfactualPnl.toFixed(2)}` : candidate.counterfactualPnl.toFixed(2);
+  return `${candidate.settlementResult.toUpperCase()} ${pnl}`;
+}
+
+function candidateSummary(candidate: DashboardData["trainingCandidates"][number]) {
+  if (candidate.status === "WOULD_BUY") return `Would buy: edge ${candidate.edge === null ? "n/a" : `${(candidate.edge * 100).toFixed(1)} pp`}`;
+  if (candidate.blockers.length === 0) return candidate.reason;
+  return shorten(candidate.blockers.join("; "), 72);
 }
 
 function summarizeBlockers(signals: DashboardData["signals"]) {
