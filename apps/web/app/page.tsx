@@ -1,32 +1,41 @@
 "use client";
 
-import { Activity, AlertTriangle, BarChart3, BriefcaseBusiness, CircleHelp, ClipboardList, Gauge, LineChart, Play, Power, ShieldCheck, ShoppingCart, WalletCards } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  BriefcaseBusiness,
+  ChevronDown,
+  Clock3,
+  Database,
+  Gauge,
+  Play,
+  RefreshCw,
+  ShoppingCart,
+  ThermometerSun,
+  Trophy
+} from "lucide-react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 
 type DashboardData = {
   mode: "watch" | "paper" | "demo" | "live";
   locations: Array<{ id: string; city: string; state: string; pollingIntervalMinutes: number }>;
-  forecastSnapshots: Array<{ id: string; provider: string; createdAt: string; daily: Array<{ targetDate: string; highTempF: number | null; lowTempF: number | null; precipitationProbabilityPct: number | null }> }>;
-  stationObservations: Array<{ stationId: string; stationName: string; observedAt: string; temperatureF: number | null }>;
   forecastDeltas: Array<{ id: string; city: string; state: string; variable: string; targetDate: string; oldValue: number; newValue: number; absoluteChange: number; confidence: string; reason: string; createdAt: string }>;
   markets: Array<{ ticker: string; title: string; yesBid: number | null; yesAsk: number | null; volume: number | null; openInterest: number | null }>;
-  mappings: Array<{ marketTicker: string; title: string; variable: string; threshold: number | null; targetDate: string | null; confidence: string; accepted: boolean; reviewReason: string | null; liquidityScore: number; location: { city: string; state?: string } | null; station: { stationId: string; stationName: string } | null; settlementSource: string }>;
+  mappings: Array<{ marketTicker: string; title: string; variable: string; threshold: number | null; thresholdOperator: string; targetDate: string | null; confidence: string; accepted: boolean; reviewReason: string | null; liquidityScore: number; location: { city: string; state?: string } | null; station: { stationId: string; stationName: string } | null; settlementSource: string }>;
   signals: Array<{ id: string; marketTicker: string; status: string; edge: number; limitPrice: number; contracts: number; explanation: string; skipReason: string | null; createdAt: string }>;
   paperOrders: Array<{ id: string; marketTicker: string; side: string; action: string; requestedContracts: number; limitPrice: number; status: string; filledContracts: number; unfilledContracts: number; simulatedAvgFillPrice: number | null; reason: string; timestamp: string }>;
   paperPositions: Array<{ id: string; marketTicker: string; side: string; contracts: number; avgEntryPrice: number; realizedPnl: number; markPrice: number | null; openedAt: string; closedAt: string | null; settlementId: string | null }>;
-  settlements: Array<{ id: string; marketTicker: string; result: string; settledPrice: number; source: string; createdAt: string }>;
+  settlements: Array<{ id: string; marketTicker: string; result: string; settledPrice: number; source: string; rawPayload?: unknown; createdAt: string }>;
   trainingCandidates: Array<{ id: string; marketTicker: string; title: string; city: string | null; stationId: string | null; variable: string; targetDate: string | null; threshold: number | null; thresholdOperator: string; forecastValue: number | null; entryPrice: number | null; yesProbability: number | null; impliedProbability: number | null; edge: number | null; spread: number | null; liquidityScore: number; status: "WOULD_BUY" | "WATCH" | "BLOCKED"; blockers: string[]; settlementResult: string | null; counterfactualPnl: number | null; reason: string; createdAt: string }>;
   modelForecasts: Array<{ id: string; city: string; state: string; stationId: string | null; model: string; targetDate: string; horizonHours: number; highTempF: number | null; lowTempF: number | null; precipitationAmountIn: number | null; windGustMph: number | null; confidence: string; createdAt: string }>;
   ensembles: Array<{ id: string; city: string; state: string; stationId: string | null; targetDate: string; variable: string; prediction: number | null; uncertaintyStdDev: number | null; confidence: string; contributingModels: string[]; disagreement: number | null; reason: string; createdAt: string }>;
   performance: { totalTrades: number; simulatedContracts: number; averageEntryPrice: number; totalCost: number; rejectedOrders: number; realizedPnl: number; unrealizedExposure: number; winRate: number; roi: number; maxDrawdown: number; longestLosingStreak: number; settledTrades: number; openPositions: number };
-  auditLogs: Array<{ id: string; timestamp: string; type: string; message: string }>;
   scanReports: Array<{
     id: string;
     startedAt: string;
     completedAt: string | null;
     status: string;
     trigger: string;
-    providerResults: Array<{ provider: string; status: string; message: string; stationId?: string }>;
+    providerResults: Array<{ provider: string; locationId?: string; status: string; message: string; stationId?: string }>;
     counts: {
       forecastSnapshots: number;
       stationObservations: number;
@@ -44,143 +53,17 @@ type DashboardData = {
     decisions: Array<{ stage: string; itemId: string; status: string; reason: string }>;
   }>;
   safety: { liveTradingEnabled: boolean; killSwitchEnabled: boolean; requireManualConfirmation: boolean; demoConfigured: boolean; prodCredentialConfigured: boolean };
+  backgroundWorker?: {
+    enabled: boolean;
+    running: boolean;
+    intervalMinutes: number;
+    lastRunAt: string | null;
+    quoteRefresh?: { enabled: boolean; running: boolean; intervalMinutes: number; lastRunAt: string | null };
+  };
 };
 
-type ColumnHeader = {
-  label: string;
-  help: string;
-};
-
-const ensembleHeaders: ColumnHeader[] = [
-  { label: "Location", help: "City and state for the forecast target." },
-  { label: "Station", help: "Settlement weather station used when available." },
-  { label: "Date", help: "Market or forecast target date." },
-  { label: "Variable", help: "Weather variable being predicted, such as high temperature or wind gust." },
-  { label: "Prediction", help: "Blended model value used for scoring." },
-  { label: "Uncertainty", help: "Estimated model spread. Lower usually means stronger agreement." },
-  { label: "Confidence", help: "Internal confidence bucket for this forecast." },
-  { label: "Models", help: "Forecast models contributing to this blended value." },
-  { label: "Reason", help: "Why the ensemble was produced or how it should be interpreted." }
-];
-
-const modelInputHeaders: ColumnHeader[] = [
-  { label: "Location", help: "City and state for the raw forecast point." },
-  { label: "Station", help: "Station this forecast is tied to, if known." },
-  { label: "Model", help: "Forecast source or model family." },
-  { label: "Date", help: "Target day for the forecast." },
-  { label: "Horizon", help: "How far ahead the model is forecasting." },
-  { label: "High", help: "Forecast high temperature in Fahrenheit." },
-  { label: "Low", help: "Forecast low temperature in Fahrenheit." },
-  { label: "Confidence", help: "Internal confidence bucket for this input." },
-  { label: "Created", help: "When this forecast input was stored." }
-];
-
-const forecastDeltaHeaders: ColumnHeader[] = [
-  { label: "Location", help: "City and state where the forecast changed." },
-  { label: "Variable", help: "Weather value that moved enough to matter." },
-  { label: "Move", help: "Previous value to latest value." },
-  { label: "Change", help: "Absolute size of the move." },
-  { label: "Date", help: "Target date affected by the move." },
-  { label: "Confidence", help: "Internal confidence bucket for this delta." }
-];
-
-const marketHeaders: ColumnHeader[] = [
-  { label: "Ticker", help: "Kalshi market ticker." },
-  { label: "Station", help: "Settlement station matched to the market. Review means the parser could not confidently match it." },
-  { label: "Source", help: "Weather source expected for settlement." },
-  { label: "Variable", help: "Weather variable the market is about." },
-  { label: "Threshold", help: "Market line, such as 85 degrees." },
-  { label: "Date", help: "Market target date." },
-  { label: "Status", help: "Accepted markets can generate signals. Review/rejected markets cannot trade." },
-  { label: "Liquidity", help: "Internal liquidity score used by risk checks." }
-];
-
-const signalHeaders: ColumnHeader[] = [
-  { label: "Time", help: "When the signal was generated." },
-  { label: "Ticker", help: "Kalshi market ticker." },
-  { label: "Status", help: "Fired means it passed checks. Skipped means it refused to trade." },
-  { label: "Edge", help: "Model probability minus implied market probability, in percentage points." },
-  { label: "Limit", help: "Maximum price the strategy was willing to pay." },
-  { label: "Contracts", help: "Number of contracts requested by the strategy." },
-  { label: "Why", help: "Short reason. Hover for the full explanation." }
-];
-
-const paperOrderHeaders: ColumnHeader[] = [
-  { label: "Time", help: "When the paper order was recorded." },
-  { label: "Ticker", help: "Kalshi market ticker." },
-  { label: "Status", help: "Filled, partial, or rejected paper execution result." },
-  { label: "Filled", help: "Contracts counted as held in paper mode." },
-  { label: "Unfilled", help: "Contracts not filled. In current paper mode approved signals are held hypothetically." },
-  { label: "Avg price", help: "Average simulated entry price." },
-  { label: "Reason", help: "Execution note. Hover for the full text." }
-];
-
-const paperPositionHeaders: ColumnHeader[] = [
-  { label: "Ticker", help: "Kalshi market ticker." },
-  { label: "Side", help: "YES or NO position." },
-  { label: "Contracts", help: "Open or settled contract count." },
-  { label: "Entry", help: "Average entry price per contract." },
-  { label: "Status", help: "Open positions are still being held; settled positions have a result." },
-  { label: "P/L", help: "Realized profit or loss after settlement." },
-  { label: "Settlement", help: "Settlement record id, or pending if not settled yet." }
-];
-
-const trainingCandidateHeaders: ColumnHeader[] = [
-  { label: "Ticker", help: "Kalshi market scored as a counterfactual training candidate." },
-  { label: "Status", help: "Would buy means current rules pass. Watch means positive edge but at least one blocker remains. Blocked means no positive trade setup." },
-  { label: "Forecast", help: "Blended forecast compared with the market threshold." },
-  { label: "Model", help: "Estimated YES probability from the forecast and uncertainty." },
-  { label: "Entry", help: "Executable YES ask or synthetic YES price from NO bid." },
-  { label: "Edge", help: "Model probability minus entry price, in percentage points." },
-  { label: "Result", help: "Known settlement outcome and hypothetical one-contract P/L when available." },
-  { label: "Why", help: "Condensed decision context. Hover for exact blockers and scoring details." }
-];
-
-const settlementHeaders: ColumnHeader[] = [
-  { label: "Time", help: "When settlement was recorded." },
-  { label: "Ticker", help: "Settled market ticker." },
-  { label: "Result", help: "Official YES or NO outcome." },
-  { label: "Source", help: "Source used to determine settlement." }
-];
-
-const scanReportHeaders: ColumnHeader[] = [
-  { label: "Started", help: "When the scan began." },
-  { label: "Trigger", help: "Manual, startup, or scheduled run." },
-  { label: "Status", help: "Whether the scan completed cleanly or with errors." },
-  { label: "Markets", help: "Markets discovered during this scan." },
-  { label: "Mappings", help: "Accepted/rejected market mappings." },
-  { label: "Signals", help: "Fired/skipped signal decisions." },
-  { label: "Obs", help: "Station observations collected." },
-  { label: "Ensembles", help: "Model ensemble records produced." }
-];
-
-const providerHeaders: ColumnHeader[] = [
-  { label: "Provider", help: "Weather, market, or station data provider." },
-  { label: "Station", help: "Station id involved in the provider check, if any." },
-  { label: "Status", help: "Provider check result." },
-  { label: "Message", help: "Provider detail. Hover for the full message." }
-];
-
-const decisionHeaders: ColumnHeader[] = [
-  { label: "Stage", help: "Pipeline stage that made the decision." },
-  { label: "Status", help: "Accepted, rejected, fired, skipped, filled, partial, or error." },
-  { label: "Item", help: "Identifier for the decision target." },
-  { label: "Reason", help: "Decision explanation. Hover for the full text." }
-];
-
-const locationHeaders: ColumnHeader[] = [
-  { label: "Location", help: "City and state being monitored." },
-  { label: "Role", help: "Why this location is tracked." },
-  { label: "Interval", help: "Configured polling interval for this location." }
-];
-
-const tabs = [
-  ["overview", Activity],
-  ["decisions", LineChart],
-  ["paper", WalletCards],
-  ["performance", BarChart3],
-  ["data", ClipboardList]
-] as const;
+type View = "cockpit" | "buy" | "holdings" | "results" | "details";
+type BusyAction = "scan" | "buy" | "settle" | null;
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? process.env.WEB_PUBLIC_API_URL ?? "http://localhost:4000";
 
@@ -200,10 +83,18 @@ const emptyPerformance: DashboardData["performance"] = {
   openPositions: 0
 };
 
+const navItems: Array<{ key: View; label: string; icon: typeof Gauge }> = [
+  { key: "cockpit", label: "Overview", icon: Gauge },
+  { key: "buy", label: "Buy", icon: ShoppingCart },
+  { key: "holdings", label: "Holdings", icon: BriefcaseBusiness },
+  { key: "results", label: "Results", icon: Trophy },
+  { key: "details", label: "Details", icon: Database }
+];
+
 export default function Page() {
   const [data, setData] = useState<DashboardData | null>(null);
-  const [tab, setTab] = useState<(typeof tabs)[number][0]>("overview");
-  const [loading, setLoading] = useState(false);
+  const [view, setView] = useState<View>("cockpit");
+  const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
@@ -212,31 +103,26 @@ export default function Page() {
     setData(await response.json());
   }
 
-  async function runOnce() {
-    setLoading(true);
+  async function runAction(action: BusyAction, endpoint: string) {
+    setBusyAction(action);
     setError(null);
     try {
-      const response = await fetch(`${apiUrl}/api/run-once`, { method: "POST" });
-      if (!response.ok) throw new Error(`Run failed with ${response.status}`);
-      setData(await response.json());
+      const response = await fetch(`${apiUrl}${endpoint}`, { method: "POST" });
+      if (!response.ok) throw new Error(`Request failed with ${response.status}`);
+      const payload = await response.json();
+      const nextData = dashboardFromPayload(payload);
+      if (nextData) setData(nextData);
+      try {
+        await refresh();
+      } catch (refreshError) {
+        if (!nextData) throw refreshError;
+      }
+      if (action === "buy") setView("holdings");
+      if (action === "settle") setView("results");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown run error");
+      setError(err instanceof Error ? err.message : "Unknown request error");
     } finally {
-      setLoading(false);
-    }
-  }
-
-  async function runSettlements() {
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetch(`${apiUrl}/api/settlements/run-once`, { method: "POST" });
-      if (!response.ok) throw new Error(`Settlement run failed with ${response.status}`);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown settlement error");
-    } finally {
-      setLoading(false);
+      setBusyAction(null);
     }
   }
 
@@ -246,490 +132,552 @@ export default function Page() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const locations = data?.locations ?? [];
-  const forecastDeltas = data?.forecastDeltas ?? [];
-  const mappings = data?.mappings ?? [];
-  const signals = data?.signals ?? [];
-  const paperOrders = data?.paperOrders ?? [];
-  const paperPositions = data?.paperPositions ?? [];
-  const settlements = data?.settlements ?? [];
-  const trainingCandidates = data?.trainingCandidates ?? [];
-  const modelForecasts = data?.modelForecasts ?? [];
-  const ensembles = data?.ensembles ?? [];
-  const scanReports = data?.scanReports ?? [];
-  const acceptedMappings = useMemo(() => mappings.filter((mapping) => mapping.accepted).length, [mappings]);
-  const latestScan = scanReports[0] ?? null;
-  const scanVerdict = latestScan ? scanHealth(latestScan) : { label: "Waiting for first scan", tone: "warn" as const, detail: "Run a scan to check providers, market discovery, parser decisions, and signal generation." };
-  const firedSignals = signals.filter((signal) => signal.status === "FIRED").length;
-  const skippedSignals = signals.filter((signal) => signal.status !== "FIRED").length;
-  const latestRunOrderIds = new Set((latestScan?.decisions ?? []).filter((decision) => decision.stage === "paper_order").map((decision) => decision.itemId));
+  const model = useDashboardModel(data);
+  const latestScan = data?.scanReports[0] ?? null;
+  const scanVerdict = latestScan ? scanHealth(latestScan) : { label: "Waiting", tone: "watch" as const };
   const performance = { ...emptyPerformance, ...(data?.performance ?? {}) };
-  const latestRunBuyOrders = paperOrders.filter((order) => {
-    if (latestRunOrderIds.size > 0) return latestRunOrderIds.has(order.id);
-    if (!latestScan) return false;
-    const completedAt = latestScan.completedAt ?? new Date().toISOString();
-    return order.timestamp >= latestScan.startedAt && order.timestamp <= completedAt;
-  });
-  const openPaperPositions = paperPositions.filter((position) => !position.closedAt);
-  const skippedSignalRows = signals.filter((signal) => signal.status !== "FIRED");
-  const nearMisses = [...skippedSignalRows].sort((a, b) => b.edge - a.edge).slice(0, 8);
-  const wouldBuyCandidates = trainingCandidates.filter((candidate) => candidate.status === "WOULD_BUY");
-  const watchCandidates = trainingCandidates.filter((candidate) => candidate.status === "WATCH");
-  const settledCandidateCount = trainingCandidates.filter((candidate) => candidate.settlementResult).length;
-  const blockerCounts = summarizeBlockers(skippedSignalRows);
-  const latestRunSummary = latestScan ? summarizeLatestRun(latestScan) : "No scan has completed yet.";
+  const worker = data?.backgroundWorker;
 
   return (
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <Gauge size={28} />
+          <div className="brand-mark"><ThermometerSun size={20} /></div>
           <div>
             <h1>ForecastEdge</h1>
-            <p>Weather market monitor</p>
+            <p>Paper trading</p>
           </div>
         </div>
-        <nav className="nav">
-          {tabs.map(([name, Icon]) => (
-            <button key={name} className={tab === name ? "active" : ""} onClick={() => setTab(name)}>
+        <nav className="nav" aria-label="Primary">
+          {navItems.map(({ key, label, icon: Icon }) => (
+            <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}>
               <Icon size={17} />
-              <span>{name}</span>
+              <span>{label}</span>
             </button>
           ))}
         </nav>
+        <div className="sidebar-status">
+          <StatusDot tone={data?.safety.killSwitchEnabled ? "watch" : "good"} label={data?.safety.killSwitchEnabled ? "Paper safe" : "Ready"} />
+          <span>{worker?.quoteRefresh?.enabled ? `Quotes every ${worker.quoteRefresh.intervalMinutes} min` : "Quote refresh idle"}</span>
+        </div>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="section-label">Mode</p>
-            <div className="mode-row">
-              <span className={`mode mode-${data?.mode ?? "paper"}`}>{data?.mode ?? "paper"}</span>
-              {data?.safety.killSwitchEnabled ? <span className="status danger"><Power size={14} /> Kill switch on</span> : <span className="status ok"><ShieldCheck size={14} /> Kill switch off</span>}
-            </div>
+            <p className="eyebrow">{data?.mode ?? "paper"} mode</p>
+            <h2>Paper trading cockpit</h2>
           </div>
-          <button className="primary" onClick={runOnce} disabled={loading}>
-            <Play size={16} />
-            {loading ? "Running" : "Run scan"}
-          </button>
-          <button className="secondary" onClick={runSettlements} disabled={loading}>
-            Reconcile settlements
-          </button>
+          <div className="topbar-actions">
+            <button className="ghost-button" onClick={() => runAction("scan", "/api/run-once")} disabled={busyAction !== null}>
+              <RefreshCw size={16} />
+              {busyAction === "scan" ? "Scanning" : "Full scan"}
+            </button>
+            <button className="ghost-button" onClick={() => runAction("settle", "/api/settlements/run-once")} disabled={busyAction !== null}>
+              <Clock3 size={16} />
+              {busyAction === "settle" ? "Checking" : "Check results"}
+            </button>
+            <button className="buy-button" onClick={() => runAction("buy", "/api/quotes/refresh-once")} disabled={busyAction !== null || model.strong.length === 0}>
+              <ShoppingCart size={17} />
+              {busyAction === "buy" ? "Buying" : "Buy strongest paper bets"}
+            </button>
+          </div>
         </header>
 
         {error ? <div className="alert"><AlertTriangle size={18} /> {error}</div> : null}
-        {!data ? <div className="empty">Loading ForecastEdge dashboard from {apiUrl}</div> : null}
+        {!data ? <div className="loading">Loading ForecastEdge from {apiUrl}</div> : null}
 
-        {data && tab === "overview" ? (
-          <section className="grid">
-            <div className="panel overview-hero wide">
-              <div>
-                <p className="section-label">Latest run</p>
-                <h2>{latestScan ? `${latestRunBuyOrders.length} buy decision${latestRunBuyOrders.length === 1 ? "" : "s"}` : "No scan run yet"}</h2>
-                <p className="muted">{latestScan ? `Last scan ${time(latestScan.startedAt)}. ${scanVerdict.detail}` : "Run a scan to let ForecastEdge evaluate markets and create paper orders."}</p>
-              </div>
-              <Badge tone={scanVerdict.tone}>{scanVerdict.label}</Badge>
-            </div>
-            <Metric title="Currently held" value={openPaperPositions.length} detail={`${performance.simulatedContracts} simulated contracts, ${money(performance.unrealizedExposure)} open exposure`} />
-            <Metric title="Paper P/L" value={money(performance.realizedPnl)} detail={`${performance.settledTrades} settled, ${performance.openPositions} open`} />
-            <div className="panel decision-brief wide">
-              <h2>Buy readiness</h2>
-              <p className="decision-note">{latestRunSummary}</p>
-              <div className="summary-strip inline compact">
-                <SummaryItem label="Would buy now" value={wouldBuyCandidates.length} />
-                <SummaryItem label="Positive-edge watch" value={watchCandidates.length} />
-                <SummaryItem label="Settled examples" value={settledCandidateCount} />
-              </div>
-              <div className="blocker-list">
-                {blockerCounts.length === 0 ? (
-                  <span className="blocker ok">No recent skipped-signal blockers</span>
-                ) : (
-                  blockerCounts.slice(0, 4).map((blocker) => (
-                    <span className="blocker" key={blocker.reason}>{blocker.reason}: {blocker.count}</span>
-                  ))
-                )}
-              </div>
-            </div>
-            <div className="panel trade-list wide">
-              <div className="panel-heading">
-                <ShoppingCart size={18} />
-                <h2>Bought on last run</h2>
-              </div>
-              {latestRunBuyOrders.length === 0 ? (
-                <EmptyState title="No buy orders on the last run" detail="A scan can finish cleanly without buying when no signal passes edge, liquidity, price, and risk checks." />
-              ) : (
-                <div className="decision-list">
-                  {latestRunBuyOrders.map((order) => (
-                    <OrderCard key={order.id} order={order} />
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="panel trade-list wide">
-              <div className="panel-heading">
-                <BriefcaseBusiness size={18} />
-                <h2>Currently held</h2>
-              </div>
-              {openPaperPositions.length === 0 ? (
-                <EmptyState title="No open paper positions" detail="Filled paper orders will appear here as hypothetical holdings until settlement reconciliation closes them." />
-              ) : (
-                <div className="holding-list">
-                  {openPaperPositions.map((position) => (
-                    <HoldingCard key={position.id} position={position} />
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="panel overview-status">
-              <h2>Run summary</h2>
-              {latestScan ? (
-                <>
-                  <StatusLine label="Fired signals" value={`${latestScan.counts.signalsFired}`} />
-                  <StatusLine label="Paper orders" value={`${latestScan.counts.paperOrders}`} />
-                  <StatusLine label="Accepted mappings" value={`${latestScan.counts.mappingsAccepted}`} />
-                  <StatusLine label="Rejected mappings" value={`${latestScan.counts.mappingsRejected}`} danger={latestScan.counts.mappingsRejected > 0} />
-                </>
-              ) : (
-                <p className="muted">No scan report is available yet.</p>
-              )}
-            </div>
-            <div className="panel overview-status">
-              <h2>Paper readiness</h2>
-              <StatusLine label="Mode" value={data.mode} />
-              <StatusLine label="Tradable mappings" value={`${acceptedMappings}`} />
-              <StatusLine label="Live trading" value={data.safety.liveTradingEnabled ? "enabled" : "disabled"} danger={data.safety.liveTradingEnabled} />
-              <StatusLine label="Kill switch" value={data.safety.killSwitchEnabled ? "enabled" : "disabled"} danger={data.safety.killSwitchEnabled} />
-            </div>
-          </section>
+        {data ? (
+          <>
+            <section className="health-strip">
+              <StatusDot tone={scanVerdict.tone} label={scanVerdict.label} />
+              <span>{latestScan ? `${labelForTrigger(latestScan.trigger)} at ${time(latestScan.startedAt)}` : "No scan yet"}</span>
+              <span>{model.strong.length} strong buys</span>
+              <span>{model.openPositions.length} held</span>
+            </section>
+
+            {view === "cockpit" ? (
+              <CockpitView
+                model={model}
+                performance={performance}
+                buyAction={() => runAction("buy", "/api/quotes/refresh-once")}
+                buyBusy={busyAction === "buy"}
+              />
+            ) : null}
+
+            {view === "buy" ? <BuyView candidates={model.strong} watch={model.watch} buyAction={() => runAction("buy", "/api/quotes/refresh-once")} busy={busyAction === "buy"} /> : null}
+            {view === "holdings" ? <HoldingsView positions={model.openPositions} /> : null}
+            {view === "results" ? <ResultsView results={model.results} performance={performance} settleAction={() => runAction("settle", "/api/settlements/run-once")} busy={busyAction === "settle"} /> : null}
+            {view === "details" ? <DetailsView data={data} model={model} /> : null}
+          </>
         ) : null}
-
-        {data && tab === "data" ? (
-          <section className="grid">
-            <Guidance
-              title="Data room"
-              items={[
-                "This area keeps the detailed model, market, scan, and configuration data available without crowding the daily trading view.",
-                "Use it when you need to diagnose stale data, mapping coverage, provider failures, or model inputs.",
-                "The Overview and Decisions tabs are the primary operating surfaces."
-              ]}
-            />
-            <div className="panel wide">
-              <h2>Ensemble forecasts <HelpTip text="The blended forecast ForecastEdge uses when scoring market edges." /></h2>
-              <Rows headers={ensembleHeaders} rows={ensembles.slice(0, 40).map((ensemble) => [`${ensemble.city}, ${ensemble.state}`, ensemble.stationId ?? "n/a", ensemble.targetDate, ensemble.variable, ensemble.prediction === null ? "n/a" : valueForVariable(ensemble.variable, ensemble.prediction), ensemble.uncertaintyStdDev === null ? "n/a" : `${ensemble.uncertaintyStdDev.toFixed(2)}`, ensemble.confidence, ensemble.contributingModels.join(", "), <HoverText key={ensemble.id} label={shorten(ensemble.reason, 80)} detail={ensemble.reason} />])} empty="No model ensembles yet" />
-            </div>
-            <div className="panel wide">
-              <h2>Model forecast inputs <HelpTip text="Raw model points that feed the ensemble before signals are generated." /></h2>
-              <Rows headers={modelInputHeaders} rows={modelForecasts.slice(0, 50).map((point) => [`${point.city}, ${point.state}`, point.stationId ?? "n/a", point.model, point.targetDate, `${point.horizonHours}h`, point.highTempF === null ? "n/a" : `${point.highTempF} F`, point.lowTempF === null ? "n/a" : `${point.lowTempF} F`, point.confidence, time(point.createdAt)])} empty="No model forecast inputs yet" />
-            </div>
-            <div className="panel wide">
-              <h2>Forecast deltas <HelpTip text="Meaningful forecast changes that can wake up signal generation." /></h2>
-              <Rows headers={forecastDeltaHeaders} rows={forecastDeltas.map((delta) => [`${delta.city}, ${delta.state}`, delta.variable, `${delta.oldValue} -> ${delta.newValue}`, `${delta.absoluteChange}`, delta.targetDate, delta.confidence])} empty="No meaningful deltas yet" />
-            </div>
-            <div className="panel wide">
-              <h2>Scan reports</h2>
-              <Rows headers={scanReportHeaders} rows={scanReports.slice(0, 10).map((scan) => [time(scan.startedAt), scan.trigger, scan.status, scan.counts.marketsDiscovered, `${scan.counts.mappingsAccepted}/${scan.counts.mappingsRejected}`, `${scan.counts.signalsFired}/${scan.counts.signalsSkipped}`, scan.counts.stationObservations, scan.counts.ensembles ?? 0])} empty="No scans recorded yet" />
-            </div>
-            <div className="panel">
-              <h2>Provider status</h2>
-              <Rows headers={providerHeaders} rows={(scanReports[0]?.providerResults ?? []).map((result) => [result.provider, result.stationId ?? "", result.status, <HoverText key={`${result.provider}-${result.stationId ?? "none"}`} label={shorten(result.message, 60)} detail={result.message} />])} empty="No provider checks yet" />
-            </div>
-            <div className="panel wide">
-              <h2>Decision log</h2>
-              <Rows headers={decisionHeaders} rows={(scanReports[0]?.decisions ?? []).slice(0, 50).map((decision) => [decision.stage, decision.status, decision.itemId, <HoverText key={`${decision.stage}-${decision.itemId}`} label={shorten(decision.reason, 70)} detail={decision.reason} />])} empty="No decisions recorded for latest scan" />
-            </div>
-            <div className="panel">
-              <h2>Locations</h2>
-              <Rows headers={locationHeaders} rows={locations.map((loc) => [`${loc.city}, ${loc.state}`, "settlement station", `${loc.pollingIntervalMinutes} min`])} empty="No locations configured" />
-            </div>
-          </section>
-        ) : null}
-
-        {data && tab === "decisions" ? (
-          <section className="grid">
-            <div className="panel wide">
-              <h2>Decision watchlist <HelpTip text="Skipped signals ranked by closest edge. This is where you can see if the model is almost ready to buy." /></h2>
-              <p className="muted">A buy needs a fresh forecast move, accepted mapping, positive edge above the threshold, tradable price, tolerable spread, enough liquidity, and open risk capacity.</p>
-              <Rows headers={signalHeaders} rows={nearMisses.map((signal) => [time(signal.createdAt), signal.marketTicker, signal.status, `${(signal.edge * 100).toFixed(1)} pp`, `$${signal.limitPrice.toFixed(2)}`, signal.contracts, <HoverText key={signal.id} label={signalSummary(signal)} detail={signal.explanation} />])} empty="No skipped signals yet. If the latest scan had no forecast deltas, the model had nothing new to score." />
-            </div>
-            <div className="panel wide">
-              <h2>Training candidates <HelpTip text="Every accepted mapped market is scored against the latest ensemble forecast so you can see potential buys, blockers, and eventual counterfactual outcomes." /></h2>
-              <p className="muted">This table answers whether the model is too strict. It scores markets even when no forecast delta fired, then marks what current rules would buy, watch, or block.</p>
-              <Rows headers={trainingCandidateHeaders} rows={trainingCandidates.slice(0, 40).map((candidate) => [
-                candidate.marketTicker,
-                candidateStatus(candidate),
-                forecastSummary(candidate),
-                candidate.yesProbability === null ? "n/a" : `${(candidate.yesProbability * 100).toFixed(1)}%`,
-                candidate.entryPrice === null ? "n/a" : `$${candidate.entryPrice.toFixed(2)}`,
-                candidate.edge === null ? "n/a" : `${(candidate.edge * 100).toFixed(1)} pp`,
-                outcomeSummary(candidate),
-                <HoverText key={candidate.id} label={candidateSummary(candidate)} detail={candidate.reason} />
-              ])} empty="No training candidates yet. Run a scan after model ensembles and market mappings are available." />
-            </div>
-            <div className="panel overview-status">
-              <h2>Common blockers</h2>
-              {blockerCounts.length === 0 ? <p className="muted">No skipped-signal blockers recorded yet.</p> : blockerCounts.slice(0, 8).map((blocker) => <StatusLine key={blocker.reason} label={blocker.reason} value={`${blocker.count}`} />)}
-            </div>
-            <Panel title="All signals">
-            <div className="summary-strip inline">
-              <SummaryItem label="Fired" value={firedSignals} />
-              <SummaryItem label="Skipped" value={skippedSignals} />
-              <SummaryItem label="Min edge" value="8 pp" />
-            </div>
-            <p className="muted">A fired signal means mapping, forecast movement, model edge, liquidity, spread, stale-data checks, and risk limits passed. Skipped signals are useful too: they explain why the system refused to trade.</p>
-            <Rows headers={signalHeaders} rows={signals.map((signal) => [time(signal.createdAt), signal.marketTicker, signal.status, `${(signal.edge * 100).toFixed(1)} pp`, `$${signal.limitPrice.toFixed(2)}`, signal.contracts, <HoverText key={signal.id} label={signalSummary(signal)} detail={signal.explanation} />])} empty="No signals yet" />
-            </Panel>
-            <Panel title="Tradable market coverage">
-              <div className="explain-bar">
-                <Badge tone="ok">accepted = eligible for signals</Badge>
-                <Badge tone="warn">review/rejected = no trading</Badge>
-                <span>Use this when the model is not finding enough opportunities.</span>
-              </div>
-              <Rows headers={marketHeaders} rows={mappings.map((mapping) => [mapping.marketTicker, mapping.station ? `${mapping.station.stationId} ${mapping.station.stationName}` : "review", mapping.settlementSource, mapping.variable, mapping.threshold ?? "n/a", mapping.targetDate ?? "n/a", mapping.accepted ? "accepted" : <HoverText key={mapping.marketTicker} label="review" detail={mapping.reviewReason ?? "Needs manual review before trading."} />, mapping.liquidityScore])} empty="No markets discovered yet" />
-            </Panel>
-          </section>
-        ) : null}
-
-        {data && tab === "paper" ? (
-          <Panel title="Paper trades">
-            <p className="muted">Paper trades are simulated against market prices and liquidity rules. Filled contracts are tracked separately from unfilled contracts so this does not assume perfect fills.</p>
-            <Rows headers={paperOrderHeaders} rows={paperOrders.map((order) => [time(order.timestamp), order.marketTicker, order.status, order.filledContracts, order.unfilledContracts, order.simulatedAvgFillPrice ? `$${order.simulatedAvgFillPrice.toFixed(2)}` : "n/a", <HoverText key={order.id} label={shorten(order.reason, 54)} detail={order.reason} />])} empty="No paper orders yet" />
-            <h2 className="subhead">Paper positions</h2>
-            <Rows headers={paperPositionHeaders} rows={paperPositions.map((position) => [position.marketTicker, position.side, position.contracts, `$${position.avgEntryPrice.toFixed(2)}`, position.closedAt ? "settled" : "open", money(position.realizedPnl), position.settlementId ?? "pending"])} empty="No paper positions yet" />
-            <h2 className="subhead">Settlements</h2>
-            <Rows headers={settlementHeaders} rows={settlements.map((settlement) => [time(settlement.createdAt), settlement.marketTicker, settlement.result.toUpperCase(), settlement.source])} empty="No settled markets yet" />
-          </Panel>
-        ) : null}
-
-        {data && tab === "performance" ? (
-          <section className="grid">
-            <Metric title="Total trades" value={performance.totalTrades} detail={`${performance.rejectedOrders} rejected orders`} />
-            <Metric title="Contracts" value={performance.simulatedContracts} detail="Filled simulated contracts" />
-            <Metric title="Average entry" value={`$${performance.averageEntryPrice.toFixed(2)}`} detail="Weighted by contracts" />
-            <Metric title="Capital deployed" value={money(performance.totalCost)} detail="Total simulated entry cost" />
-            <Metric title="Realized P/L" value={money(performance.realizedPnl)} detail={`${performance.settledTrades} settled positions`} />
-            <Metric title="Win rate" value={`${(performance.winRate * 100).toFixed(1)}%`} detail="Closed winning positions / closed positions" />
-            <Metric title="ROI" value={`${(performance.roi * 100).toFixed(1)}%`} detail="Realized P/L / settled entry cost" />
-            <Metric title="Max drawdown" value={money(performance.maxDrawdown)} detail={`${performance.longestLosingStreak} longest losing streak`} />
-            <div className="panel wide">
-              <h2>Calibration queue</h2>
-              <p className="muted">Estimated probability vs actual outcome will populate after settled markets are ingested.</p>
-            </div>
-          </section>
-        ) : null}
-
       </section>
     </main>
   );
 }
 
-function Metric({ title, value, detail }: { title: string; value: React.ReactNode; detail: string }) {
+function CockpitView({ model, performance, buyAction, buyBusy }: { model: DashboardModel; performance: DashboardData["performance"]; buyAction: () => void; buyBusy: boolean }) {
   return (
-    <div className="panel metric">
-      <p className="section-label">{title}</p>
-      <strong>{value}</strong>
-      <span>{detail}</span>
+    <section className="page-grid">
+      <div className="hero-panel">
+        <div>
+          <h3>{model.strong.length > 0 ? `${model.strong.length} model-approved bets` : "No model-approved bets"}</h3>
+          <p>{model.strong[0] ? `${model.strong[0].marketTicker} leads the board at ${formatPct(model.strong[0].edge)} edge.` : "The next quote refresh will update the buy board."}</p>
+        </div>
+        <button className="buy-button large" onClick={buyAction} disabled={buyBusy || model.strong.length === 0}>
+          <ShoppingCart size={18} />
+          {buyBusy ? "Buying" : "Buy strongest paper bets"}
+        </button>
+      </div>
+
+      <Metric label="Strong buys" value={model.strong.length} detail={`${model.watch.length} watch`} />
+      <Metric label="Open holdings" value={model.openPositions.length} detail={`${money(model.openCost)} at risk`} />
+      <Metric label="Max payout" value={money(model.maxOpenPayout)} detail={`${model.openContracts} contracts`} />
+      <Metric label="Settled P/L" value={money(model.realizedPnl)} detail={`${model.results.length || performance.settledTrades} settled`} />
+
+      <Panel title="Best bets">
+        <CandidateList candidates={model.strong.slice(0, 5)} empty="No strong paper buys right now" />
+      </Panel>
+      <Panel title="Currently held">
+        <HoldingList positions={model.openPositions.slice(0, 5)} />
+      </Panel>
+      <Panel title="Recent results">
+        <ResultList results={model.results.slice(0, 4)} />
+      </Panel>
+    </section>
+  );
+}
+
+function BuyView({ candidates, watch, buyAction, busy }: { candidates: CandidateView[]; watch: CandidateView[]; buyAction: () => void; busy: boolean }) {
+  return (
+    <section className="stack">
+      <div className="section-head">
+        <div>
+          <h3>Buy board</h3>
+          <p>{candidates.length} bets currently clear the model threshold.</p>
+        </div>
+        <button className="buy-button" onClick={buyAction} disabled={busy || candidates.length === 0}>
+          <Play size={16} />
+          {busy ? "Buying" : "Buy strongest paper bets"}
+        </button>
+      </div>
+      <CandidateList candidates={candidates} empty="No strong buys right now" expanded />
+      <Disclosure title={`Watch list (${watch.length})`}>
+        <CandidateList candidates={watch} empty="No positive-edge watch items" compact />
+      </Disclosure>
+    </section>
+  );
+}
+
+function HoldingsView({ positions }: { positions: HoldingView[] }) {
+  return (
+    <section className="stack">
+      <div className="section-head">
+        <div>
+          <h3>Holdings</h3>
+          <p>{positions.length} paper positions waiting for final outcome.</p>
+        </div>
+      </div>
+      <HoldingList positions={positions} expanded />
+    </section>
+  );
+}
+
+function ResultsView({ results, performance, settleAction, busy }: { results: ResultView[]; performance: DashboardData["performance"]; settleAction: () => void; busy: boolean }) {
+  return (
+    <section className="stack">
+      <div className="section-head">
+        <div>
+          <h3>Results</h3>
+          <p>{money(performance.realizedPnl)} settled paper P/L.</p>
+        </div>
+        <button className="ghost-button" onClick={settleAction} disabled={busy}>
+          <Clock3 size={16} />
+          {busy ? "Checking" : "Check results"}
+        </button>
+      </div>
+      <ResultList results={results} expanded />
+    </section>
+  );
+}
+
+function DetailsView({ data, model }: { data: DashboardData; model: DashboardModel }) {
+  const latestScan = data.scanReports[0] ?? null;
+  return (
+    <section className="stack details-stack">
+      <div className="section-head">
+        <div>
+          <h3>Technical details</h3>
+          <p>Backend data is collapsed by default.</p>
+        </div>
+      </div>
+      <Disclosure title="Model candidates">
+        <SimpleTable
+          columns={["Ticker", "Status", "Forecast", "Ask", "Edge", "Reason"]}
+          rows={data.trainingCandidates.slice(0, 60).map((candidate) => [
+            candidate.marketTicker,
+            statusLabel(candidate.status),
+            forecastText(candidate),
+            price(candidate.entryPrice),
+            formatPct(candidate.edge),
+            candidate.reason
+          ])}
+          empty="No candidates"
+        />
+      </Disclosure>
+      <Disclosure title="Latest scan">
+        <SimpleTable
+          columns={["Metric", "Value"]}
+          rows={latestScan ? Object.entries(latestScan.counts).map(([key, value]) => [labelize(key), String(value)]) : []}
+          empty="No scan report"
+        />
+      </Disclosure>
+      <Disclosure title="Provider checks">
+        <SimpleTable
+          columns={["Provider", "Status", "Message"]}
+          rows={(latestScan?.providerResults ?? []).map((item) => [item.provider, item.status, item.message])}
+          empty="No provider checks"
+        />
+      </Disclosure>
+      <Disclosure title="Signals and orders">
+        <SimpleTable
+          columns={["Time", "Ticker", "Status", "Edge", "Reason"]}
+          rows={data.signals.slice(0, 80).map((signal) => [time(signal.createdAt), signal.marketTicker, signal.status, formatPct(signal.edge), signal.skipReason ?? signal.explanation])}
+          empty="No signals"
+        />
+      </Disclosure>
+      <Disclosure title="Locations and mappings">
+        <SimpleTable
+          columns={["Market", "City", "Target", "Liquidity", "Status"]}
+          rows={data.mappings.slice(0, 80).map((mapping) => [mapping.marketTicker, mapping.location ? `${mapping.location.city}, ${mapping.location.state ?? ""}` : "unknown", mappingLine(mapping), mapping.liquidityScore.toFixed(3), mapping.accepted ? "accepted" : mapping.reviewReason ?? "review"])}
+          empty="No mappings"
+        />
+      </Disclosure>
+      <div className="quiet-summary">
+        <span>{model.strong.length} strong</span>
+        <span>{model.watch.length} watch</span>
+        <span>{data.markets.length} markets</span>
+        <span>{data.ensembles.length} forecasts</span>
+      </div>
+    </section>
+  );
+}
+
+function CandidateList({ candidates, empty, expanded = false, compact = false }: { candidates: CandidateView[]; empty: string; expanded?: boolean; compact?: boolean }) {
+  if (candidates.length === 0) return <EmptyState>{empty}</EmptyState>;
+  return (
+    <div className={compact ? "candidate-list compact" : "candidate-list"}>
+      {candidates.map((candidate) => (
+        <article className="bet-row" key={candidate.marketTicker}>
+          <div className="bet-main">
+            <strong>{candidate.displayName}</strong>
+            <span>{candidate.marketTicker}</span>
+          </div>
+          <div className="bet-facts">
+            <Fact label="Forecast" value={candidate.forecast} />
+            <Fact label="Ask" value={price(candidate.entryPrice)} />
+            <Fact label="Edge" value={formatPct(candidate.edge)} good={candidate.status === "WOULD_BUY"} />
+            <Fact label="Model" value={formatPct(candidate.yesProbability)} />
+            {expanded ? <Fact label="Target" value={candidate.target} /> : null}
+          </div>
+          <StatusPill tone={candidate.status === "WOULD_BUY" ? "good" : candidate.status === "WATCH" ? "watch" : "neutral"}>{candidate.status === "WOULD_BUY" ? "Strong" : candidate.status === "WATCH" ? "Watch" : "Blocked"}</StatusPill>
+        </article>
+      ))}
     </div>
   );
 }
 
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+function HoldingList({ positions, expanded = false }: { positions: HoldingView[]; expanded?: boolean }) {
+  if (positions.length === 0) return <EmptyState>No paper holdings yet</EmptyState>;
   return (
-    <div className="panel wide">
-      <h2>{title}</h2>
+    <div className="timeline-list">
+      {positions.map((position) => (
+        <article className="timeline-row" key={position.id}>
+          <div className="timeline-dot" />
+          <div className="timeline-content">
+            <div className="row-title">
+              <strong>{position.displayName}</strong>
+              <StatusPill tone="good">Held</StatusPill>
+            </div>
+            <div className="fact-grid">
+              <Fact label="Entry" value={price(position.avgEntryPrice)} />
+              <Fact label="Contracts" value={position.contracts} />
+              <Fact label="Cost" value={money(position.cost)} />
+              <Fact label="Max payout" value={money(position.maxPayout)} />
+              {expanded ? <Fact label="Target" value={position.target} /> : null}
+              {expanded ? <Fact label="Opened" value={dateTime(position.openedAt)} /> : null}
+            </div>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function ResultList({ results, expanded = false }: { results: ResultView[]; expanded?: boolean }) {
+  if (results.length === 0) return <EmptyState>No settled paper results yet</EmptyState>;
+  return (
+    <div className="result-list">
+      {results.map((result) => (
+        <article className="result-row" key={result.id}>
+          <div>
+            <div className="row-title">
+              <strong>{result.displayName}</strong>
+              <StatusPill tone={result.net >= 0 ? "good" : "danger"}>{result.net >= 0 ? "Won" : "Lost"}</StatusPill>
+            </div>
+            <span className="row-subtitle">{result.marketTicker}</span>
+          </div>
+          <div className="result-facts">
+            <Fact label="Final temp" value={result.finalTemperature} />
+            <Fact label="Outcome" value={result.result} />
+            <Fact label="Cost" value={money(result.cost)} />
+            <Fact label="Payout" value={money(result.payout)} />
+            <Fact label="Net" value={money(result.net)} good={result.net >= 0} danger={result.net < 0} />
+            {expanded ? <Fact label="Closed" value={dateTime(result.closedAt)} /> : null}
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function Panel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h3>{title}</h3>
+        {action}
+      </div>
       {children}
-    </div>
+    </section>
   );
 }
 
-function Guidance({ title, items }: { title: string; items: string[] }) {
+function Metric({ label, value, detail }: { label: string; value: ReactNode; detail: string }) {
   return (
-    <div className="panel guidance wide">
-      <h2>{title}</h2>
-      <ul>
-        {items.map((item) => (
-          <li key={item}>{item}</li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function Badge({ tone, children }: { tone: "ok" | "warn" | "danger" | "neutral"; children: React.ReactNode }) {
-  return <span className={`badge ${tone}`}>{children}</span>;
-}
-
-function SummaryItem({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="summary-item">
+    <div className="metric">
       <span>{label}</span>
       <strong>{value}</strong>
+      <small>{detail}</small>
     </div>
   );
 }
 
-function EmptyState({ title, detail }: { title: string; detail: string }) {
+function Fact({ label, value, good = false, danger = false }: { label: string; value: ReactNode; good?: boolean; danger?: boolean }) {
   return (
-    <div className="empty-state">
-      <strong>{title}</strong>
-      <span>{detail}</span>
-    </div>
-  );
-}
-
-function OrderCard({ order }: { order: DashboardData["paperOrders"][number] }) {
-  const filledCost = (order.simulatedAvgFillPrice ?? order.limitPrice) * order.filledContracts;
-  return (
-    <article className="trade-card">
-      <div>
-        <div className="trade-title">
-          <strong>{order.marketTicker}</strong>
-          <Badge tone={order.status === "FILLED" ? "ok" : order.status === "PARTIAL" ? "warn" : "neutral"}>{order.status}</Badge>
-        </div>
-        <p className="muted">{order.reason}</p>
-      </div>
-      <div className="trade-facts">
-        <span>{order.side} {order.action}</span>
-        <span>{order.filledContracts}/{order.requestedContracts} filled</span>
-        <span>{order.simulatedAvgFillPrice === null ? `limit $${order.limitPrice.toFixed(2)}` : `${money(filledCost)} at $${order.simulatedAvgFillPrice.toFixed(2)}`}</span>
-      </div>
-    </article>
-  );
-}
-
-function HoldingCard({ position }: { position: DashboardData["paperPositions"][number] }) {
-  const exposure = position.avgEntryPrice * position.contracts;
-  return (
-    <article className="trade-card holding-card">
-      <div>
-        <div className="trade-title">
-          <strong>{position.marketTicker}</strong>
-          <Badge tone="ok">Open</Badge>
-        </div>
-        <p className="muted">Opened {time(position.openedAt)}. Settlement pending.</p>
-      </div>
-      <div className="trade-facts">
-        <span>{position.side}</span>
-        <span>{position.contracts} contracts</span>
-        <span>{money(exposure)} at ${position.avgEntryPrice.toFixed(2)}</span>
-      </div>
-    </article>
-  );
-}
-
-function HelpTip({ text }: { text: string }) {
-  return (
-    <span className="help-tip" tabIndex={0} aria-label={text} title={text}>
-      <CircleHelp size={13} />
+    <span className="fact">
+      <small>{label}</small>
+      <b className={good ? "good-text" : danger ? "danger-text" : ""}>{value}</b>
     </span>
   );
 }
 
-function HoverText({ label, detail }: { label: string; detail: string }) {
+function Disclosure({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <span className="hover-text" tabIndex={0} title={detail}>
-      {label}
-      <HelpTip text={detail} />
-    </span>
+    <details className="disclosure">
+      <summary>
+        <span>{title}</span>
+        <ChevronDown size={16} />
+      </summary>
+      <div className="disclosure-body">{children}</div>
+    </details>
   );
 }
 
-function Rows({ headers, rows, empty }: { headers?: ColumnHeader[]; rows: Array<Array<React.ReactNode>>; empty: string }) {
-  if (rows.length === 0) return <p className="muted">{empty}</p>;
+function SimpleTable({ columns, rows, empty }: { columns: string[]; rows: Array<Array<ReactNode>>; empty: string }) {
+  if (rows.length === 0) return <EmptyState>{empty}</EmptyState>;
   return (
-    <div className="rows">
-      {headers ? (
-        <div className="row row-header">
-          {headers.map((header) => (
-            <span key={header.label}>
-              {header.label}
-              <HelpTip text={header.help} />
-            </span>
-          ))}
-        </div>
-      ) : null}
+    <div className="simple-table" style={{ "--columns": columns.length } as CSSProperties}>
+      <div className="simple-row header">
+        {columns.map((column) => <span key={column}>{column}</span>)}
+      </div>
       {rows.map((row, index) => (
-        <div className="row" key={index}>
-          {row.map((cell, cellIndex) => (
-            <span key={cellIndex}>{cell}</span>
-          ))}
+        <div className="simple-row" key={index}>
+          {row.map((cell, cellIndex) => <span key={cellIndex}>{cell}</span>)}
         </div>
       ))}
     </div>
   );
 }
 
-function signalSummary(signal: DashboardData["signals"][number]) {
-  if (signal.status === "FIRED") return `Buy ${signal.contracts} at $${signal.limitPrice.toFixed(2)}; edge ${(signal.edge * 100).toFixed(1)} pp`;
-  return shorten(signal.skipReason ?? signal.explanation, 72);
+function EmptyState({ children }: { children: ReactNode }) {
+  return <div className="empty-state">{children}</div>;
 }
 
-function candidateStatus(candidate: DashboardData["trainingCandidates"][number]) {
-  if (candidate.status === "WOULD_BUY") return <Badge tone="ok">would buy</Badge>;
-  if (candidate.status === "WATCH") return <Badge tone="warn">watch</Badge>;
-  return <Badge tone="neutral">blocked</Badge>;
-}
-
-function forecastSummary(candidate: DashboardData["trainingCandidates"][number]) {
-  const threshold = candidate.threshold === null ? "unknown" : `${candidate.thresholdOperator} ${candidate.threshold}`;
-  if (candidate.forecastValue === null) return threshold;
-  return `${valueForVariable(candidate.variable, candidate.forecastValue)} vs ${threshold}`;
-}
-
-function outcomeSummary(candidate: DashboardData["trainingCandidates"][number]) {
-  if (!candidate.settlementResult || candidate.counterfactualPnl === null) return "pending";
-  const pnl = candidate.counterfactualPnl >= 0 ? `+${candidate.counterfactualPnl.toFixed(2)}` : candidate.counterfactualPnl.toFixed(2);
-  return `${candidate.settlementResult.toUpperCase()} ${pnl}`;
-}
-
-function candidateSummary(candidate: DashboardData["trainingCandidates"][number]) {
-  if (candidate.status === "WOULD_BUY") return `Would buy: edge ${candidate.edge === null ? "n/a" : `${(candidate.edge * 100).toFixed(1)} pp`}`;
-  if (candidate.blockers.length === 0) return candidate.reason;
-  return shorten(candidate.blockers.join("; "), 72);
-}
-
-function summarizeBlockers(signals: DashboardData["signals"]) {
-  const counts = new Map<string, number>();
-  for (const signal of signals) {
-    for (const reason of (signal.skipReason ?? "unknown skip reason").split(";")) {
-      const normalized = reason.trim();
-      if (!normalized) continue;
-      counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
-    }
-  }
-  return [...counts.entries()]
-    .map(([reason, count]) => ({ reason, count }))
-    .sort((a, b) => b.count - a.count);
-}
-
-function summarizeLatestRun(scan: DashboardData["scanReports"][number]) {
-  if (scan.trigger === "quote_refresh") return `Quote refresh checked ${scan.counts.trainingCandidates ?? 0} candidates and recorded ${scan.counts.paperOrders} paper order${scan.counts.paperOrders === 1 ? "" : "s"}.`;
-  if (scan.counts.paperOrders > 0) return `${scan.counts.paperOrders} paper order${scan.counts.paperOrders === 1 ? "" : "s"} recorded on the latest scan.`;
-  if (scan.counts.signalsFired > 0) return `${scan.counts.signalsFired} signal${scan.counts.signalsFired === 1 ? "" : "s"} fired, but no paper order was recorded. Check the decision log.`;
-  if (scan.counts.signalsSkipped > 0) return `${scan.counts.signalsSkipped} signal${scan.counts.signalsSkipped === 1 ? "" : "s"} scored, but every one was skipped. Open Decisions to see the blockers.`;
-  if (scan.counts.forecastDeltas === 0) return "No meaningful forecast delta on the latest scan, so the model did not have a new trade setup to score.";
-  return "The latest scan found data but did not produce a buy setup. Open Data for provider and decision details.";
-}
-
-function shorten(value: string, maxLength: number) {
-  if (value.length <= maxLength) return value;
-  return `${value.slice(0, maxLength - 1).trim()}...`;
-}
-
-function StatusLine({ label, value, danger = false }: { label: string; value: string; danger?: boolean }) {
+function StatusDot({ tone, label }: { tone: "good" | "watch" | "danger" | "neutral"; label: string }) {
   return (
-    <div className="status-line">
-      <span>{label}</span>
-      <strong className={danger ? "danger-text" : ""}>{value}</strong>
-    </div>
+    <span className={`status-dot ${tone}`}>
+      <i />
+      {label}
+    </span>
   );
 }
 
-function time(iso: string) {
-  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
+function StatusPill({ tone, children }: { tone: "good" | "watch" | "danger" | "neutral"; children: ReactNode }) {
+  return <span className={`status-pill ${tone}`}>{children}</span>;
 }
 
-function money(value: number) {
-  return `${value < 0 ? "-" : ""}$${Math.abs(value).toFixed(2)}`;
+type DashboardModel = ReturnType<typeof buildDashboardModel>;
+type CandidateView = ReturnType<typeof candidateView>;
+type HoldingView = ReturnType<typeof holdingView>;
+type ResultView = ReturnType<typeof resultView>;
+
+function useDashboardModel(data: DashboardData | null) {
+  return useMemo(() => buildDashboardModel(data), [data]);
+}
+
+function dashboardFromPayload(payload: unknown) {
+  const candidate = payload && typeof payload === "object" && "summary" in payload ? (payload as { summary?: unknown }).summary : payload;
+  if (!candidate || typeof candidate !== "object") return null;
+  return Array.isArray((candidate as { scanReports?: unknown }).scanReports) ? candidate as DashboardData : null;
+}
+
+function buildDashboardModel(data: DashboardData | null) {
+  const mappings = new Map((data?.mappings ?? []).map((mapping) => [mapping.marketTicker, mapping]));
+  const candidates = [...(data?.trainingCandidates ?? [])].sort((a, b) => (b.edge ?? -1) - (a.edge ?? -1));
+  const settlements = new Map((data?.settlements ?? []).map((settlement) => [settlement.marketTicker, settlement]));
+  const positions = data ? paperPositions(data.paperPositions, data.paperOrders, settlements) : [];
+  const strong = candidates.filter((candidate) => candidate.status === "WOULD_BUY").map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker)));
+  const watch = candidates.filter((candidate) => candidate.status === "WATCH").map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker)));
+  const openPositions = positions.filter((position) => !position.closedAt).map((position) => holdingView(position, mappings.get(position.marketTicker)));
+  const results = positions.filter((position) => position.closedAt).map((position) => resultView(position, mappings.get(position.marketTicker), settlements.get(position.marketTicker)));
+  const openContracts = openPositions.reduce((sum, position) => sum + position.contracts, 0);
+  const openCost = openPositions.reduce((sum, position) => sum + position.cost, 0);
+  const realizedPnl = results.reduce((sum, result) => sum + result.net, 0);
+  return {
+    strong,
+    watch,
+    openPositions,
+    results,
+    openContracts,
+    openCost,
+    realizedPnl,
+    maxOpenPayout: openContracts
+  };
+}
+
+function paperPositions(positions: DashboardData["paperPositions"], orders: DashboardData["paperOrders"], settlements: Map<string, DashboardData["settlements"][number]>): DashboardData["paperPositions"] {
+  if (positions.length > 0) return positions;
+  const grouped = new Map<string, DashboardData["paperOrders"]>();
+  for (const order of orders) {
+    if (order.filledContracts <= 0 || order.simulatedAvgFillPrice === null) continue;
+    const key = `${order.marketTicker}:${order.side}`;
+    grouped.set(key, [...(grouped.get(key) ?? []), order]);
+  }
+  return [...grouped.entries()].map(([key, groupedOrders]) => {
+    const [marketTicker = "unknown", side = "YES"] = key.split(":");
+    const contracts = groupedOrders.reduce((sum, order) => sum + order.filledContracts, 0);
+    const cost = groupedOrders.reduce((sum, order) => sum + (order.simulatedAvgFillPrice ?? order.limitPrice) * order.filledContracts, 0);
+    const settlement = settlements.get(marketTicker);
+    const payout = settlement?.result?.toLowerCase() === side.toLowerCase() ? contracts : 0;
+    return {
+      id: `derived_${marketTicker}_${side}`,
+      marketTicker,
+      side,
+      contracts,
+      avgEntryPrice: contracts ? Number((cost / contracts).toFixed(4)) : 0,
+      realizedPnl: settlement ? Number((payout - cost).toFixed(2)) : 0,
+      markPrice: null,
+      openedAt: groupedOrders.map((order) => order.timestamp).sort()[0] ?? new Date().toISOString(),
+      closedAt: settlement?.createdAt ?? null,
+      settlementId: settlement?.id ?? null
+    };
+  });
+}
+
+function candidateView(candidate: DashboardData["trainingCandidates"][number], mapping: DashboardData["mappings"][number] | undefined) {
+  return {
+    ...candidate,
+    displayName: displayName(candidate.marketTicker, candidate.city, mapping?.location?.state),
+    forecast: forecastText(candidate),
+    target: mappingLine(mapping),
+    entryPrice: candidate.entryPrice,
+    edge: candidate.edge,
+    yesProbability: candidate.yesProbability
+  };
+}
+
+function holdingView(position: DashboardData["paperPositions"][number], mapping: DashboardData["mappings"][number] | undefined) {
+  const cost = position.avgEntryPrice * position.contracts;
+  return {
+    ...position,
+    displayName: displayName(position.marketTicker, mapping?.location?.city ?? null, mapping?.location?.state),
+    target: mappingLine(mapping),
+    cost,
+    maxPayout: position.contracts
+  };
+}
+
+function resultView(position: DashboardData["paperPositions"][number], mapping: DashboardData["mappings"][number] | undefined, settlement: DashboardData["settlements"][number] | undefined) {
+  const cost = position.avgEntryPrice * position.contracts;
+  const payout = settlement?.result?.toLowerCase() === position.side.toLowerCase() ? position.contracts : 0;
+  return {
+    id: position.id,
+    marketTicker: position.marketTicker,
+    displayName: displayName(position.marketTicker, mapping?.location?.city ?? null, mapping?.location?.state),
+    result: settlement?.result ? settlement.result.toUpperCase() : "pending",
+    finalTemperature: finalTemperature(settlement),
+    cost,
+    payout,
+    net: position.realizedPnl,
+    closedAt: position.closedAt ?? settlement?.createdAt ?? ""
+  };
+}
+
+function displayName(ticker: string, city: string | null | undefined, state: string | undefined) {
+  if (city) return state ? `${city}, ${state}` : city;
+  return ticker.split("-")[0] ?? ticker;
+}
+
+function forecastText(candidate: DashboardData["trainingCandidates"][number]) {
+  if (candidate.forecastValue === null) return mappingLine(candidate);
+  return `${valueForVariable(candidate.variable, candidate.forecastValue)} vs ${mappingLine(candidate)}`;
+}
+
+function mappingLine(mapping: Pick<DashboardData["mappings"][number], "threshold" | "thresholdOperator" | "targetDate"> | Pick<DashboardData["trainingCandidates"][number], "threshold" | "thresholdOperator" | "targetDate"> | undefined) {
+  if (!mapping || mapping.threshold === null) return "Line pending";
+  const operator = mapping.thresholdOperator === "below" ? "below" : mapping.thresholdOperator === "above" ? "above" : mapping.thresholdOperator;
+  return `${operator} ${mapping.threshold} F${mapping.targetDate ? ` on ${shortDate(mapping.targetDate)}` : ""}`;
+}
+
+function finalTemperature(settlement: DashboardData["settlements"][number] | undefined) {
+  const raw = settlement?.rawPayload;
+  if (!raw || typeof raw !== "object") return "Not published";
+  const record = raw as Record<string, unknown>;
+  const value = numericValue(record.expiration_value) ?? numericValue(record.settlement_value) ?? numericValue(record.final_value);
+  return value === null ? "Not published" : `${value.toFixed(1)} F`;
+}
+
+function numericValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function statusLabel(status: string) {
+  if (status === "WOULD_BUY") return "strong";
+  return status.toLowerCase().replaceAll("_", " ");
+}
+
+function scanHealth(scan: DashboardData["scanReports"][number]) {
+  const failedProviders = scan.providerResults.filter((result) => result.status === "error").length;
+  if (scan.status.includes("error") || failedProviders > 0) return { label: `${failedProviders} provider errors`, tone: "watch" as const };
+  if (scan.trigger === "quote_refresh") return { label: "Quotes refreshed", tone: "good" as const };
+  if (scan.counts.marketsDiscovered === 0) return { label: "No markets", tone: "watch" as const };
+  return { label: "Ready", tone: "good" as const };
+}
+
+function labelForTrigger(trigger: string) {
+  if (trigger === "quote_refresh") return "Quotes refreshed";
+  if (trigger === "manual") return "Full scan";
+  return labelize(trigger);
+}
+
+function labelize(value: string) {
+  return value.replace(/([A-Z])/g, " $1").replaceAll("_", " ").trim();
 }
 
 function valueForVariable(variable: string, value: number) {
@@ -739,26 +687,26 @@ function valueForVariable(variable: string, value: number) {
   return value.toFixed(2);
 }
 
-function scanHealth(scan: DashboardData["scanReports"][number]) {
-  const failedProviders = scan.providerResults.filter((result) => result.status === "error").length;
-  const skippedProviders = scan.providerResults.filter((result) => result.status === "skipped").length;
-  if (scan.status.includes("error")) {
-    return { label: "Scan has errors", tone: "danger" as const, detail: "Open Provider status and Decision log before trusting any signal from this run." };
-  }
-  if (failedProviders > 0) {
-    return { label: "Provider degraded", tone: "warn" as const, detail: `${failedProviders} provider check failed. Signals may be skipped because data freshness is uncertain.` };
-  }
-  if (scan.trigger === "quote_refresh") {
-    return { label: "Quote refresh OK", tone: "ok" as const, detail: `Latest lightweight refresh updated market quotes without running a full weather scan.` };
-  }
-  if (skippedProviders > 0) {
-    return { label: "Scan OK", tone: "ok" as const, detail: `${skippedProviders} provider checks were intentionally skipped because cached or optional data was used.` };
-  }
-  if (scan.counts.marketsDiscovered === 0) {
-    return { label: "No markets found", tone: "warn" as const, detail: "Kalshi discovery returned no markets, so the scanner has nothing to map or trade." };
-  }
-  if (scan.counts.mappingsRejected > 0) {
-    return { label: "Review rejected mappings", tone: "warn" as const, detail: `${scan.counts.mappingsRejected} markets were rejected. This is safe behavior, but review the reasons before expanding trading.` };
-  }
-  return { label: "Scan OK", tone: "ok" as const, detail: "Providers responded, weather markets were discovered, and mappings were accepted without parser rejects." };
+function formatPct(value: number | null) {
+  return value === null ? "n/a" : `${(value * 100).toFixed(1)}%`;
+}
+
+function price(value: number | null) {
+  return value === null ? "n/a" : `$${value.toFixed(2)}`;
+}
+
+function money(value: number) {
+  return `${value < 0 ? "-" : ""}$${Math.abs(value).toFixed(2)}`;
+}
+
+function time(iso: string) {
+  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
+}
+
+function shortDate(isoDate: string) {
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(`${isoDate}T12:00:00`));
+}
+
+function dateTime(iso: string) {
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
 }

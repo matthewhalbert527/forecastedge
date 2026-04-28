@@ -123,6 +123,19 @@ describe("Kalshi market parsing", () => {
     expect(mapping.accepted).toBe(true);
     expect(mapping.station?.stationId).toBe("KPHX");
     expect(mapping.threshold).toBe(99);
+    expect(mapping.targetDate).toBe("2026-04-28");
+  });
+
+  it("uses the ticker date when title date text is missing", () => {
+    const mapping = parseKalshiWeatherMarket({
+      ...market,
+      ticker: "KXHIGHNY-26APR28-B65.5",
+      eventTicker: "KXHIGHNY-26APR28",
+      title: "Will the high temperature in New York be above 65.5?",
+      subtitle: "New York City weather",
+      closeTime: "2026-04-29T04:59:00Z"
+    });
+    expect(mapping.targetDate).toBe("2026-04-28");
   });
 });
 

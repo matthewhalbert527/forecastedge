@@ -82,6 +82,10 @@ function parseSettlementSource(text: string, fallback: MarketMapping["settlement
 function parseDate(text: string, closeTime?: string): string | null {
   const iso = text.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
   if (iso?.[1]) return iso[1];
+  const naturalDate = parseNaturalDate(text);
+  if (naturalDate) return naturalDate;
+  const tickerDate = parseTickerDate(text);
+  if (tickerDate) return tickerDate;
   if (/\btoday\b/.test(text)) return new Date().toISOString().slice(0, 10);
   if (/\btomorrow\b/.test(text)) {
     const date = new Date();
@@ -90,6 +94,43 @@ function parseDate(text: string, closeTime?: string): string | null {
   }
   if (closeTime) return new Date(closeTime).toISOString().slice(0, 10);
   return null;
+}
+
+function parseNaturalDate(text: string) {
+  const match = text.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:,\s*(20\d{2}))?\b/);
+  if (!match?.[1] || !match[2]) return null;
+  const month = monthNumber(match[1]);
+  const day = Number(match[2]);
+  const year = match[3] ? Number(match[3]) : null;
+  if (month === null || !year || day < 1 || day > 31) return null;
+  return new Date(Date.UTC(year, month, day)).toISOString().slice(0, 10);
+}
+
+function parseTickerDate(text: string) {
+  const match = text.match(/-(\d{2})(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)(\d{2})\b/);
+  if (!match?.[1] || !match[2] || !match[3]) return null;
+  const month = monthNumber(match[2]);
+  if (month === null) return null;
+  return new Date(Date.UTC(2000 + Number(match[1]), month, Number(match[3]))).toISOString().slice(0, 10);
+}
+
+function monthNumber(month: string) {
+  const key = month.slice(0, 3);
+  const months: Record<string, number> = {
+    jan: 0,
+    feb: 1,
+    mar: 2,
+    apr: 3,
+    may: 4,
+    jun: 5,
+    jul: 6,
+    aug: 7,
+    sep: 8,
+    oct: 9,
+    nov: 10,
+    dec: 11
+  };
+  return key in months ? months[key] : null;
 }
 
 function computeLiquidityScore(market: KalshiMarketCandidate): number {
