@@ -46,7 +46,7 @@ Important defaults:
 - `REQUIRE_MANUAL_CONFIRMATION=true`
 - `KILL_SWITCH_ENABLED=true`
 - `RUN_BACKGROUND_WORKER=false` locally, `true` on Render
-- `BACKGROUND_POLL_INTERVAL_MINUTES=30`
+- `BACKGROUND_POLL_INTERVAL_MINUTES=15`
 - `ENABLE_MODEL_STACK=true`
 - `OPEN_METEO_GFS_BASE_URL=https://api.open-meteo.com/v1/gfs`
 - `OPEN_METEO_ECMWF_MODEL=ecmwf_ifs025`
@@ -74,7 +74,7 @@ To run scans continuously in a server process:
 RUN_BACKGROUND_WORKER=true npm run dev:api
 ```
 
-On Render this is enabled by `render.yaml`; the API runs one scan on startup and then repeats every 30 minutes.
+On Render this is enabled by `render.yaml`; the API runs one scan on startup and then repeats every 15 minutes.
 
 ## Render Deployment
 
