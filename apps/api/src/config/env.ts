@@ -15,7 +15,7 @@ const schema = z.object({
   API_PORT: z.coerce.number().default(4000),
   RUN_BACKGROUND_WORKER: booleanFromEnv.default(false),
   RUN_ON_STARTUP: booleanFromEnv.default(true),
-  BACKGROUND_POLL_INTERVAL_MINUTES: z.coerce.number().default(15),
+  BACKGROUND_POLL_INTERVAL_MINUTES: z.coerce.number().default(15).transform((minutes) => Math.min(minutes, 15)),
   FORECAST_CACHE_MINUTES: z.coerce.number().default(45),
   OPEN_METEO_COOLDOWN_MINUTES: z.coerce.number().default(60),
   OPEN_METEO_BASE_URL: z.string().url().default("https://api.open-meteo.com/v1"),
