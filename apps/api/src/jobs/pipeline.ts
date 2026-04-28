@@ -305,12 +305,46 @@ export class ForecastEdgePipeline {
       trainingCandidates: this.store.trainingCandidates.slice(0, 100),
       modelForecasts: this.store.modelForecasts.slice(0, 100),
       ensembles: this.store.ensembles.slice(0, 100),
-      performance: summarizePaperOrders(this.store.paperOrders)
+      performance: summarizePaperOrders(this.store.paperOrders),
+      learning: {
+        collection: {
+          quoteSnapshots: 0,
+          candidateSnapshots: this.store.trainingCandidates.length,
+          paperTradeExamples: this.store.paperOrders.length,
+          settledPaperTradeExamples: 0,
+          latestQuoteAt: null,
+          latestCandidateAt: this.store.trainingCandidates[0]?.createdAt ?? null
+        },
+        backtest: {
+          method: "database unavailable",
+          candidateSnapshots: this.store.trainingCandidates.length,
+          evaluatedMarkets: 0,
+          wins: 0,
+          losses: 0,
+          winRate: 0,
+          totalCost: 0,
+          totalPayout: 0,
+          totalPnl: 0,
+          roi: 0
+        },
+        recentPaperExamples: []
+      }
     };
   }
 
   async persistedSummary() {
     return this.persistentStore ? this.persistentStore.dashboardSummary(this.store) : this.summary();
+  }
+
+  async learningSummary() {
+    return this.persistentStore ? this.persistentStore.learningSummary() : this.summary().learning;
+  }
+
+  async runStoredBacktest(parameters: Record<string, unknown> = {}) {
+    if (!this.persistentStore) {
+      return { id: "memory_backtest", startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), summary: this.summary().learning.backtest };
+    }
+    return this.persistentStore.runStoredBacktest(parameters);
   }
 
   async refreshQuoteCandidates(trigger: "manual" | "quote_refresh" = "manual") {
@@ -327,7 +361,10 @@ export class ForecastEdgePipeline {
     const candidateTickers = existingCandidates
       .filter((candidate) => candidate.status === "WOULD_BUY" || candidate.status === "WATCH")
       .map((candidate) => candidate.marketTicker);
-    const tickers = [...new Set(candidateTickers)].slice(0, 50);
+    const heldTickers = this.store.paperOrders
+      .filter((order) => order.filledContracts > 0)
+      .map((order) => order.marketTicker);
+    const tickers = [...new Set([...candidateTickers, ...heldTickers])].slice(0, 50);
 
     if (tickers.length === 0) {
       report.providerResults.push({ provider: "kalshi_quotes", locationId: "quotes", status: "skipped", message: "No would-buy or watch candidates to refresh yet" });

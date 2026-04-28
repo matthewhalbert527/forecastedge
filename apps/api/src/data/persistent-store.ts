@@ -10,7 +10,8 @@ import {
   type NormalizedForecastSnapshot,
   type PaperOrder,
   type Settlement,
-  type Signal
+  type Signal,
+  type TrainingCandidate
 } from "@forecastedge/core";
 import type { AuditEntry } from "../audit/audit-log.js";
 import { activeRiskLimits, env } from "../config/env.js";
@@ -93,9 +94,12 @@ export class PersistentStore {
     await this.persistForecastDeltas(store.forecastDeltas);
     await this.persistMarkets(store.markets);
     await this.persistMappings(store.mappings);
+    await this.persistQuoteSnapshots(marketsForQuoteSnapshots(store.markets, report), report);
+    await this.persistCandidateSnapshots(store.trainingCandidates);
     await this.persistSignals(store.signals, report);
     await this.persistPaperOrders(store.paperOrders);
     await this.rebuildPaperPositions();
+    await this.syncPaperTrainingExamples();
     await this.persistAudit(auditEntries);
     await this.persistScanReport(report);
   }
@@ -151,6 +155,8 @@ export class PersistentStore {
       }
     });
 
+    const learning = await this.learningSummary();
+
     return {
       locations: fallback.locations,
       scanReports: scanReports.map((scan) => ({
@@ -186,6 +192,7 @@ export class PersistentStore {
       modelForecasts: modelForecasts.map(fromPrismaModelForecast),
       ensembles: typedEnsembles,
       performance: summarizePaperOrders(typedOrders, typedPositions, typedSettlements),
+      learning,
       auditLogs: auditLogs.map((log) => ({
         id: log.id,
         timestamp: log.createdAt.toISOString(),
@@ -214,6 +221,65 @@ export class PersistentStore {
       }
     });
     await this.rebuildPaperPositions();
+    await this.syncPaperTrainingExamples();
+  }
+
+  async learningSummary() {
+    const [quoteSnapshots, candidateSnapshots, paperExamples, settledPaperExamples, latestQuote, latestCandidate, recentExamples] = await Promise.all([
+      this.prisma.marketQuoteSnapshot.count(),
+      this.prisma.candidateDecisionSnapshot.count(),
+      this.prisma.paperTradeTrainingExample.count(),
+      this.prisma.paperTradeTrainingExample.count({ where: { status: { in: ["won", "lost"] } } }),
+      this.prisma.marketQuoteSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
+      this.prisma.candidateDecisionSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
+      this.prisma.paperTradeTrainingExample.findMany({ orderBy: { openedAt: "desc" }, take: 20 })
+    ]);
+
+    const backtest = await this.backtestStoredWouldBuys();
+    return {
+      collection: {
+        quoteSnapshots,
+        candidateSnapshots,
+        paperTradeExamples: paperExamples,
+        settledPaperTradeExamples: settledPaperExamples,
+        latestQuoteAt: latestQuote?.observedAt.toISOString() ?? null,
+        latestCandidateAt: latestCandidate?.observedAt.toISOString() ?? null
+      },
+      backtest,
+      recentPaperExamples: recentExamples.map((example) => ({
+        orderId: example.orderId,
+        marketTicker: example.marketTicker,
+        openedAt: example.openedAt.toISOString(),
+        status: example.status,
+        entryPrice: example.entryPrice,
+        contracts: example.filledContracts,
+        cost: example.cost,
+        modelProbability: example.modelProbability,
+        impliedProbability: example.impliedProbability,
+        edge: example.edge,
+        settlementResult: example.settlementResult,
+        pnl: example.pnl,
+        roi: example.roi
+      }))
+    };
+  }
+
+  async runStoredBacktest(parameters: Record<string, unknown> = {}) {
+    const summary = await this.backtestStoredWouldBuys();
+    const run = await this.prisma.strategyRun.create({
+      data: {
+        mode: env.APP_MODE,
+        parameters: toJson({ strategy: "stored_would_buy_v1", ...parameters }),
+        completedAt: new Date(),
+        summary: toJson(summary)
+      }
+    });
+    return {
+      id: run.id,
+      startedAt: run.startedAt.toISOString(),
+      completedAt: run.completedAt?.toISOString() ?? null,
+      summary
+    };
   }
 
   async openPaperPositions() {
@@ -370,6 +436,27 @@ export class PersistentStore {
     }
   }
 
+  private async persistQuoteSnapshots(markets: KalshiMarketCandidate[], report: ScanReport) {
+    const observedAt = report.completedAt ?? report.startedAt;
+    for (const market of markets.slice(0, 250)) {
+      await this.prisma.marketQuoteSnapshot.upsert({
+        where: { marketTicker_observedAt: { marketTicker: market.ticker, observedAt: new Date(observedAt) } },
+        create: quoteSnapshotWrite(market, observedAt),
+        update: quoteSnapshotWrite(market, observedAt)
+      });
+    }
+  }
+
+  private async persistCandidateSnapshots(candidates: TrainingCandidate[]) {
+    for (const candidate of candidates.slice(0, 250)) {
+      await this.prisma.candidateDecisionSnapshot.upsert({
+        where: { id: candidate.id },
+        create: candidateSnapshotWrite(candidate),
+        update: candidateSnapshotWrite(candidate)
+      });
+    }
+  }
+
   private async persistSignals(signals: Signal[], report: ScanReport) {
     const signalDecisions = new Map(report.decisions.filter((decision) => decision.stage === "signal").map((decision) => [decision.itemId, decision]));
     const validDeltaIds = new Set((await this.prisma.forecastDelta.findMany({ select: { id: true } })).map((delta) => delta.id));
@@ -426,6 +513,99 @@ export class PersistentStore {
     }
   }
 
+  private async syncPaperTrainingExamples() {
+    const orders = await this.prisma.paperOrder.findMany({ include: { signal: true }, orderBy: { timestamp: "desc" }, take: 1000 });
+    const settlements = new Map((await this.prisma.settlement.findMany()).map((settlement) => [settlement.marketTicker, settlement]));
+
+    for (const order of orders) {
+      const candidate = await this.prisma.candidateDecisionSnapshot.findFirst({
+        where: { marketTicker: order.marketTicker, observedAt: { lte: order.timestamp } },
+        orderBy: { observedAt: "desc" }
+      });
+      const settlement = settlements.get(order.marketTicker) ?? null;
+      const fillPrice = order.simulatedAvgFillPrice ?? order.limitPrice;
+      const cost = Number((fillPrice * order.filledContracts).toFixed(4));
+      const payout = settlement ? settlementPayout(order.side, settlement.result, order.filledContracts) : null;
+      const pnl = payout === null ? null : Number((payout - cost).toFixed(4));
+      const roi = pnl === null || cost === 0 ? null : Number((pnl / cost).toFixed(4));
+      const status = settlement ? (pnl !== null && pnl >= 0 ? "won" : "lost") : order.filledContracts > 0 ? "open" : "rejected";
+
+      await this.prisma.paperTradeTrainingExample.upsert({
+        where: { orderId: order.id },
+        create: {
+          id: `paper_training_${order.id}`,
+          orderId: order.id,
+          signalId: order.signalId,
+          marketTicker: order.marketTicker,
+          side: order.side,
+          openedAt: order.timestamp,
+          requestedContracts: order.requestedContracts,
+          filledContracts: order.filledContracts,
+          limitPrice: order.limitPrice,
+          entryPrice: order.simulatedAvgFillPrice,
+          cost,
+          modelProbability: candidate?.yesProbability ?? order.signal.modelProbability,
+          impliedProbability: candidate?.impliedProbability ?? order.signal.impliedProbability,
+          edge: candidate?.edge ?? order.signal.edge,
+          forecastValue: candidate?.forecastValue ?? null,
+          threshold: candidate?.threshold ?? null,
+          thresholdOperator: candidate?.thresholdOperator ?? null,
+          targetDate: candidate?.targetDate ?? null,
+          variable: candidate?.variable ?? null,
+          status,
+          settlementResult: settlement?.result ?? null,
+          settledAt: settlement?.createdAt ?? null,
+          payout,
+          pnl,
+          roi,
+          features: toJson({
+            candidate,
+            signal: {
+              id: order.signal.id,
+              modelProbability: order.signal.modelProbability,
+              impliedProbability: order.signal.impliedProbability,
+              edge: order.signal.edge,
+              explanation: order.signal.explanation,
+              skipReason: order.signal.skipReason
+            },
+            orderReason: order.reason
+          })
+        },
+        update: {
+          filledContracts: order.filledContracts,
+          entryPrice: order.simulatedAvgFillPrice,
+          cost,
+          modelProbability: candidate?.yesProbability ?? order.signal.modelProbability,
+          impliedProbability: candidate?.impliedProbability ?? order.signal.impliedProbability,
+          edge: candidate?.edge ?? order.signal.edge,
+          forecastValue: candidate?.forecastValue ?? null,
+          threshold: candidate?.threshold ?? null,
+          thresholdOperator: candidate?.thresholdOperator ?? null,
+          targetDate: candidate?.targetDate ?? null,
+          variable: candidate?.variable ?? null,
+          status,
+          settlementResult: settlement?.result ?? null,
+          settledAt: settlement?.createdAt ?? null,
+          payout,
+          pnl,
+          roi,
+          features: toJson({
+            candidate,
+            signal: {
+              id: order.signal.id,
+              modelProbability: order.signal.modelProbability,
+              impliedProbability: order.signal.impliedProbability,
+              edge: order.signal.edge,
+              explanation: order.signal.explanation,
+              skipReason: order.signal.skipReason
+            },
+            orderReason: order.reason
+          })
+        }
+      });
+    }
+  }
+
   private async rebuildPaperPositions() {
     const [orders, settlements] = await Promise.all([
       this.prisma.paperOrder.findMany({ orderBy: { timestamp: "asc" } }),
@@ -470,6 +650,54 @@ export class PersistentStore {
       update: scanReportWrite(report)
     });
   }
+
+  private async backtestStoredWouldBuys() {
+    const [snapshots, settlements] = await Promise.all([
+      this.prisma.candidateDecisionSnapshot.findMany({
+        where: { status: "WOULD_BUY", entryPrice: { not: null } },
+        orderBy: { observedAt: "asc" },
+        take: 10000
+      }),
+      this.prisma.settlement.findMany()
+    ]);
+    const settlementByTicker = new Map(settlements.map((settlement) => [settlement.marketTicker, settlement]));
+    const seenMarkets = new Set<string>();
+    let simulatedTrades = 0;
+    let wins = 0;
+    let losses = 0;
+    let totalCost = 0;
+    let totalPayout = 0;
+
+    for (const snapshot of snapshots) {
+      if (seenMarkets.has(snapshot.marketTicker)) continue;
+      const settlement = settlementByTicker.get(snapshot.marketTicker);
+      if (!settlement || snapshot.entryPrice === null) continue;
+      seenMarkets.add(snapshot.marketTicker);
+      const contracts = simulatedContracts(snapshot.entryPrice);
+      const cost = snapshot.entryPrice * contracts;
+      const payout = settlement.result === "yes" ? contracts : 0;
+      const pnl = payout - cost;
+      simulatedTrades += 1;
+      totalCost += cost;
+      totalPayout += payout;
+      if (pnl >= 0) wins += 1;
+      else losses += 1;
+    }
+
+    const totalPnl = totalPayout - totalCost;
+    return {
+      method: "first stored WOULD_BUY per settled market",
+      candidateSnapshots: snapshots.length,
+      evaluatedMarkets: simulatedTrades,
+      wins,
+      losses,
+      winRate: simulatedTrades > 0 ? Number((wins / simulatedTrades).toFixed(4)) : 0,
+      totalCost: Number(totalCost.toFixed(4)),
+      totalPayout: Number(totalPayout.toFixed(4)),
+      totalPnl: Number(totalPnl.toFixed(4)),
+      roi: totalCost > 0 ? Number((totalPnl / totalCost).toFixed(4)) : 0
+    };
+  }
 }
 
 function marketWrite(market: KalshiMarketCandidate) {
@@ -512,6 +740,54 @@ function mappingWrite(mapping: MarketMapping) {
   };
 }
 
+function quoteSnapshotWrite(market: KalshiMarketCandidate, observedAt: string) {
+  return {
+    id: `quote_${market.ticker}_${new Date(observedAt).getTime()}`,
+    marketTicker: market.ticker,
+    eventTicker: market.eventTicker,
+    observedAt: new Date(observedAt),
+    yesBid: market.yesBid,
+    yesAsk: market.yesAsk,
+    noBid: market.noBid,
+    noAsk: market.noAsk,
+    lastPrice: market.lastPrice,
+    volume: market.volume,
+    openInterest: market.openInterest,
+    closeTime: optionalDate(market.closeTime),
+    settlementTime: optionalDate(market.settlementTime),
+    rawPayload: toJson(market.rawPayload)
+  };
+}
+
+function candidateSnapshotWrite(candidate: TrainingCandidate) {
+  return {
+    id: candidate.id,
+    scanId: candidate.scanId,
+    marketTicker: candidate.marketTicker,
+    observedAt: new Date(candidate.createdAt),
+    title: candidate.title,
+    city: candidate.city,
+    stationId: candidate.stationId,
+    variable: candidate.variable,
+    targetDate: candidate.targetDate ? new Date(`${candidate.targetDate}T00:00:00Z`) : null,
+    threshold: candidate.threshold,
+    thresholdOperator: candidate.thresholdOperator,
+    forecastValue: candidate.forecastValue,
+    entryPrice: candidate.entryPrice,
+    yesProbability: candidate.yesProbability,
+    impliedProbability: candidate.impliedProbability,
+    edge: candidate.edge,
+    spread: candidate.spread,
+    liquidityScore: candidate.liquidityScore,
+    status: candidate.status,
+    blockers: toJson(candidate.blockers),
+    settlementResult: candidate.settlementResult,
+    counterfactualPnl: candidate.counterfactualPnl,
+    reason: candidate.reason,
+    rawPayload: toJson(candidate)
+  };
+}
+
 function scanReportWrite(report: ScanReport) {
   return {
     id: report.id,
@@ -523,6 +799,28 @@ function scanReportWrite(report: ScanReport) {
     counts: toJson(report.counts),
     decisions: toJson(report.decisions)
   };
+}
+
+function marketsForQuoteSnapshots(markets: KalshiMarketCandidate[], report: ScanReport) {
+  const refreshedTickers = new Set(
+    report.providerResults
+      .filter((result) => result.provider === "kalshi_quotes" && result.status === "ok")
+      .map((result) => result.locationId)
+  );
+  if (report.trigger === "quote_refresh" && refreshedTickers.size > 0) {
+    return markets.filter((market) => refreshedTickers.has(market.ticker));
+  }
+  return markets;
+}
+
+function simulatedContracts(entryPrice: number) {
+  return Math.max(1, Math.min(activeRiskLimits.maxContractsPerTrade, Math.floor(env.MAX_STAKE_PER_TRADE_PAPER / Math.max(entryPrice, 0.01))));
+}
+
+function settlementPayout(side: string, result: string, contracts: number) {
+  const normalizedSide = side.toLowerCase();
+  const normalizedResult = result.toLowerCase();
+  return normalizedSide === normalizedResult ? contracts : 0;
 }
 
 function modelForecastWrite(point: ModelForecastPoint) {

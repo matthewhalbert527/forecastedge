@@ -30,6 +30,11 @@ type DashboardData = {
   modelForecasts: Array<{ id: string; city: string; state: string; stationId: string | null; model: string; targetDate: string; horizonHours: number; highTempF: number | null; lowTempF: number | null; precipitationAmountIn: number | null; windGustMph: number | null; confidence: string; createdAt: string }>;
   ensembles: Array<{ id: string; city: string; state: string; stationId: string | null; targetDate: string; variable: string; prediction: number | null; uncertaintyStdDev: number | null; confidence: string; contributingModels: string[]; disagreement: number | null; reason: string; createdAt: string }>;
   performance: { totalTrades: number; simulatedContracts: number; averageEntryPrice: number; totalCost: number; rejectedOrders: number; realizedPnl: number; unrealizedExposure: number; winRate: number; roi: number; maxDrawdown: number; longestLosingStreak: number; settledTrades: number; openPositions: number };
+  learning?: {
+    collection: { quoteSnapshots: number; candidateSnapshots: number; paperTradeExamples: number; settledPaperTradeExamples: number; latestQuoteAt: string | null; latestCandidateAt: string | null };
+    backtest: { method: string; candidateSnapshots: number; evaluatedMarkets: number; wins: number; losses: number; winRate: number; totalCost: number; totalPayout: number; totalPnl: number; roi: number };
+    recentPaperExamples: Array<{ orderId: string; marketTicker: string; openedAt: string; status: string; entryPrice: number | null; contracts: number; cost: number; modelProbability: number | null; impliedProbability: number | null; edge: number | null; settlementResult: string | null; pnl: number | null; roi: number | null }>;
+  };
   scanReports: Array<{
     id: string;
     startedAt: string;
@@ -333,6 +338,7 @@ function ResultsView({ results, performance, settleAction, busy }: { results: Re
 
 function DetailsView({ data, model }: { data: DashboardData; model: DashboardModel }) {
   const latestScan = data.scanReports[0] ?? null;
+  const learning = data.learning ?? null;
   return (
     <section className="stack details-stack">
       <div className="section-head">
@@ -376,6 +382,47 @@ function DetailsView({ data, model }: { data: DashboardData; model: DashboardMod
           empty="No signals"
         />
       </Disclosure>
+      <Disclosure title="Learning database">
+        <SimpleTable
+          columns={["Metric", "Value"]}
+          rows={learning ? [
+            ["Quote snapshots", String(learning.collection.quoteSnapshots)],
+            ["Candidate decisions", String(learning.collection.candidateSnapshots)],
+            ["Paper trade examples", String(learning.collection.paperTradeExamples)],
+            ["Settled examples", String(learning.collection.settledPaperTradeExamples)],
+            ["Latest quote", learning.collection.latestQuoteAt ? dateTime(learning.collection.latestQuoteAt) : "pending"],
+            ["Latest candidate", learning.collection.latestCandidateAt ? dateTime(learning.collection.latestCandidateAt) : "pending"]
+          ] : []}
+          empty="No learning data yet"
+        />
+      </Disclosure>
+      <Disclosure title="Backtest snapshot">
+        <SimpleTable
+          columns={["Method", "Trades", "Wins", "P/L", "ROI"]}
+          rows={learning ? [[
+            learning.backtest.method,
+            String(learning.backtest.evaluatedMarkets),
+            `${learning.backtest.wins}/${learning.backtest.losses}`,
+            money(learning.backtest.totalPnl),
+            formatPct(learning.backtest.roi)
+          ]] : []}
+          empty="No settled backtest sample yet"
+        />
+      </Disclosure>
+      <Disclosure title="Paper training examples">
+        <SimpleTable
+          columns={["Time", "Ticker", "Status", "Contracts", "Edge", "P/L"]}
+          rows={(learning?.recentPaperExamples ?? []).slice(0, 30).map((example) => [
+            dateTime(example.openedAt),
+            example.marketTicker,
+            example.status,
+            String(example.contracts),
+            formatPct(example.edge),
+            moneyOrPending(example.pnl)
+          ])}
+          empty="No paper training examples yet"
+        />
+      </Disclosure>
       <Disclosure title="Locations and mappings">
         <SimpleTable
           columns={["Market", "City", "Target", "Liquidity", "Status"]}
@@ -388,6 +435,7 @@ function DetailsView({ data, model }: { data: DashboardData; model: DashboardMod
         <span>{model.watch.length} watch</span>
         <span>{data.markets.length} markets</span>
         <span>{data.ensembles.length} forecasts</span>
+        <span>{learning?.collection.quoteSnapshots ?? 0} quote snapshots</span>
       </div>
     </section>
   );

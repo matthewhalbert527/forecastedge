@@ -179,6 +179,32 @@ model KalshiMarket {
   updatedAt      DateTime        @updatedAt
   mappings       MarketMapping[]
   signals        Signal[]
+  quoteSnapshots MarketQuoteSnapshot[]
+  candidateSnapshots CandidateDecisionSnapshot[]
+}
+
+model MarketQuoteSnapshot {
+  id             String       @id
+  marketTicker   String
+  market         KalshiMarket @relation(fields: [marketTicker], references: [ticker])
+  eventTicker    String
+  observedAt     DateTime
+  source         String       @default("kalshi")
+  yesBid         Float?
+  yesAsk         Float?
+  noBid          Float?
+  noAsk          Float?
+  lastPrice      Float?
+  volume         Float?
+  openInterest   Float?
+  closeTime      DateTime?
+  settlementTime DateTime?
+  rawPayload     Json
+  createdAt      DateTime     @default(now())
+
+  @@unique([marketTicker, observedAt])
+  @@index([observedAt])
+  @@index([marketTicker, observedAt])
 }
 
 model MarketMapping {
@@ -199,6 +225,39 @@ model MarketMapping {
   reviewReason      String?
   rawPayload        Json
   createdAt         DateTime        @default(now())
+}
+
+model CandidateDecisionSnapshot {
+  id                 String          @id
+  scanId             String
+  marketTicker       String
+  market             KalshiMarket    @relation(fields: [marketTicker], references: [ticker])
+  observedAt         DateTime
+  title              String
+  city               String?
+  stationId          String?
+  variable           WeatherVariable
+  targetDate         DateTime?
+  threshold          Float?
+  thresholdOperator  String
+  forecastValue      Float?
+  entryPrice         Float?
+  yesProbability     Float?
+  impliedProbability Float?
+  edge               Float?
+  spread             Float?
+  liquidityScore     Float
+  status             String
+  blockers           Json
+  settlementResult   String?
+  counterfactualPnl  Float?
+  reason             String
+  rawPayload         Json
+  createdAt          DateTime        @default(now())
+
+  @@index([scanId])
+  @@index([marketTicker, observedAt])
+  @@index([status, observedAt])
 }
 
 model Signal {
@@ -250,6 +309,42 @@ model PaperOrder {
   reason                 String
   positionId             String?
   position               PaperPosition? @relation(fields: [positionId], references: [id])
+  trainingExample        PaperTradeTrainingExample?
+}
+
+model PaperTradeTrainingExample {
+  id                 String      @id
+  orderId            String      @unique
+  order              PaperOrder  @relation(fields: [orderId], references: [id])
+  signalId           String
+  marketTicker       String
+  side               String
+  openedAt           DateTime
+  requestedContracts Int
+  filledContracts    Int
+  limitPrice         Float
+  entryPrice         Float?
+  cost               Float
+  modelProbability   Float?
+  impliedProbability Float?
+  edge               Float?
+  forecastValue      Float?
+  threshold          Float?
+  thresholdOperator  String?
+  targetDate         DateTime?
+  variable           WeatherVariable?
+  status             String
+  settlementResult   String?
+  settledAt          DateTime?
+  payout             Float?
+  pnl                Float?
+  roi                Float?
+  features           Json
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  @@index([marketTicker, openedAt])
+  @@index([status, openedAt])
 }
 
 model PaperPosition {

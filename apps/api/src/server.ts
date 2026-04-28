@@ -59,6 +59,11 @@ export function buildServer() {
   }));
 
   app.get("/api/dashboard", async () => dashboardResponse());
+  app.get("/api/learning/summary", async () => pipeline.learningSummary());
+  app.post("/api/backtests/run", async (request) => {
+    const body = request.body && typeof request.body === "object" ? request.body as Record<string, unknown> : {};
+    return pipeline.runStoredBacktest(body);
+  });
 
   app.get("/api/settlement-stations", async () => KALSHI_SETTLEMENT_STATIONS);
   app.get("/api/data-sources", async () => WEATHER_DATASET_REFERENCES);
