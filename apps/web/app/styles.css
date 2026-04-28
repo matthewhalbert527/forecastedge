@@ -186,6 +186,7 @@ button {
   font-size: 13px;
   font-weight: 850;
   line-height: 1;
+  text-decoration: none;
 }
 
 .buy-button {

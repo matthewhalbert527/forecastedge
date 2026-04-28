@@ -312,8 +312,13 @@ export class ForecastEdgePipeline {
           candidateSnapshots: this.store.trainingCandidates.length,
           paperTradeExamples: this.store.paperOrders.length,
           settledPaperTradeExamples: 0,
+          scanReports: this.store.scanReports.length,
+          fullScans: this.store.scanReports.filter((scan) => scan.trigger !== "quote_refresh").length,
+          quoteRefreshScans: this.store.scanReports.filter((scan) => scan.trigger === "quote_refresh").length,
           latestQuoteAt: null,
-          latestCandidateAt: this.store.trainingCandidates[0]?.createdAt ?? null
+          latestCandidateAt: this.store.trainingCandidates[0]?.createdAt ?? null,
+          latestFullScanAt: this.store.scanReports.find((scan) => scan.trigger !== "quote_refresh")?.startedAt ?? null,
+          latestQuoteRefreshAt: this.store.scanReports.find((scan) => scan.trigger === "quote_refresh")?.startedAt ?? null
         },
         backtest: {
           method: "database unavailable",
@@ -345,6 +350,35 @@ export class ForecastEdgePipeline {
       return { id: "memory_backtest", startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), summary: this.summary().learning.backtest };
     }
     return this.persistentStore.runStoredBacktest(parameters);
+  }
+
+  async exportLearningDataset() {
+    if (!this.persistentStore) {
+      return {
+        schemaVersion: 1,
+        generatedAt: new Date().toISOString(),
+        description: "ForecastEdge in-memory export. Configure DATABASE_URL for complete persistent history.",
+        counts: {
+          scanReports: this.store.scanReports.length,
+          quoteSnapshots: 0,
+          candidateSnapshots: this.store.trainingCandidates.length,
+          paperTradeExamples: this.store.paperOrders.length
+        },
+        tables: {
+          scanReports: this.store.scanReports,
+          candidateDecisionSnapshots: this.store.trainingCandidates,
+          paperOrders: this.store.paperOrders,
+          markets: this.store.markets,
+          mappings: this.store.mappings,
+          modelForecasts: this.store.modelForecasts,
+          ensembleForecasts: this.store.ensembles,
+          stationObservations: this.store.stationObservations,
+          forecastSnapshots: this.store.forecastSnapshots
+        },
+        modelTrainingRows: this.store.trainingCandidates
+      };
+    }
+    return this.persistentStore.exportLearningDataset();
   }
 
   async refreshQuoteCandidates(trigger: "manual" | "quote_refresh" = "manual") {

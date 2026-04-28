@@ -83,7 +83,7 @@ model ForecastSnapshot {
 }
 
 model ModelForecast {
-  id                          String   @id
+  id                          String     @id
   locationId                  String
   city                        String
   state                       String
@@ -102,14 +102,14 @@ model ModelForecast {
   freshnessMinutes            Float
   confidence                  Confidence
   rawPayload                  Json
-  createdAt                   DateTime @default(now())
+  createdAt                   DateTime   @default(now())
 
   @@index([locationId, model, targetDate])
   @@index([stationId, targetDate])
 }
 
 model EnsembleForecast {
-  id                 String   @id
+  id                 String          @id
   locationId         String
   city               String
   state              String
@@ -122,7 +122,7 @@ model EnsembleForecast {
   contributingModels Json
   disagreement       Float?
   reason             String
-  createdAt          DateTime @default(now())
+  createdAt          DateTime        @default(now())
 
   @@index([locationId, targetDate, variable])
   @@index([stationId, targetDate])
@@ -141,7 +141,7 @@ model StationObservation {
 }
 
 model ForecastDelta {
-  id                String           @id @default(cuid())
+  id                String            @id @default(cuid())
   snapshotId        String?
   snapshot          ForecastSnapshot? @relation(fields: [snapshotId], references: [id])
   locationId        String
@@ -154,56 +154,61 @@ model ForecastDelta {
   timeHorizonHours  Int
   confidence        Confidence
   reason            String
-  createdAt         DateTime         @default(now())
+  createdAt         DateTime          @default(now())
   signals           Signal[]
 
   @@index([locationId, variable, targetDate])
 }
 
 model KalshiMarket {
-  ticker         String          @id
-  eventTicker    String
-  title          String
-  subtitle       String?
-  closeTime      DateTime?
-  settlementTime DateTime?
-  yesBid         Float?
-  yesAsk         Float?
-  noBid          Float?
-  noAsk          Float?
-  lastPrice      Float?
-  volume         Float?
-  openInterest   Float?
-  liquidityScore Float           @default(0)
-  rawPayload     Json
-  updatedAt      DateTime        @updatedAt
-  mappings       MarketMapping[]
-  signals        Signal[]
-  quoteSnapshots MarketQuoteSnapshot[]
+  ticker             String                      @id
+  eventTicker        String
+  title              String
+  subtitle           String?
+  closeTime          DateTime?
+  settlementTime     DateTime?
+  yesBid             Float?
+  yesAsk             Float?
+  noBid              Float?
+  noAsk              Float?
+  lastPrice          Float?
+  volume             Float?
+  openInterest       Float?
+  liquidityScore     Float                       @default(0)
+  rawPayload         Json
+  updatedAt          DateTime                    @updatedAt
+  mappings           MarketMapping[]
+  signals            Signal[]
+  quoteSnapshots     MarketQuoteSnapshot[]
   candidateSnapshots CandidateDecisionSnapshot[]
 }
 
 model MarketQuoteSnapshot {
-  id             String       @id
-  marketTicker   String
-  market         KalshiMarket @relation(fields: [marketTicker], references: [ticker])
-  eventTicker    String
-  observedAt     DateTime
-  source         String       @default("kalshi")
-  yesBid         Float?
-  yesAsk         Float?
-  noBid          Float?
-  noAsk          Float?
-  lastPrice      Float?
-  volume         Float?
-  openInterest   Float?
-  closeTime      DateTime?
-  settlementTime DateTime?
-  rawPayload     Json
-  createdAt      DateTime     @default(now())
+  id                 String       @id
+  scanId             String?
+  scanTrigger        String?
+  scanCadenceMinutes Int?
+  marketTicker       String
+  market             KalshiMarket @relation(fields: [marketTicker], references: [ticker])
+  eventTicker        String
+  observedAt         DateTime
+  source             String       @default("kalshi")
+  yesBid             Float?
+  yesAsk             Float?
+  noBid              Float?
+  noAsk              Float?
+  lastPrice          Float?
+  volume             Float?
+  openInterest       Float?
+  closeTime          DateTime?
+  settlementTime     DateTime?
+  rawPayload         Json
+  createdAt          DateTime     @default(now())
 
   @@unique([marketTicker, observedAt])
   @@index([observedAt])
+  @@index([scanId])
+  @@index([scanTrigger, observedAt])
   @@index([marketTicker, observedAt])
 }
 
@@ -230,6 +235,8 @@ model MarketMapping {
 model CandidateDecisionSnapshot {
   id                 String          @id
   scanId             String
+  scanTrigger        String?
+  scanCadenceMinutes Int?
   marketTicker       String
   market             KalshiMarket    @relation(fields: [marketTicker], references: [ticker])
   observedAt         DateTime
@@ -257,13 +264,14 @@ model CandidateDecisionSnapshot {
 
   @@index([scanId])
   @@index([marketTicker, observedAt])
+  @@index([scanTrigger, observedAt])
   @@index([status, observedAt])
 }
 
 model Signal {
-  id                 String        @id @default(cuid())
+  id                 String         @id @default(cuid())
   marketTicker       String
-  market             KalshiMarket  @relation(fields: [marketTicker], references: [ticker])
+  market             KalshiMarket   @relation(fields: [marketTicker], references: [ticker])
   forecastDeltaId    String?
   forecastDelta      ForecastDelta? @relation(fields: [forecastDeltaId], references: [id])
   side               String
@@ -278,7 +286,7 @@ model Signal {
   explanation        String
   status             SignalStatus
   skipReason         String?
-  createdAt          DateTime      @default(now())
+  createdAt          DateTime       @default(now())
   riskChecks         RiskCheck[]
   paperOrders        PaperOrder[]
 }
@@ -293,29 +301,29 @@ model RiskCheck {
 }
 
 model PaperOrder {
-  id                     String      @id
-  signalId               String
-  signal                 Signal      @relation(fields: [signalId], references: [id])
-  timestamp              DateTime
-  marketTicker           String
-  side                   String
-  action                 String
-  requestedContracts     Int
-  limitPrice             Float
-  simulatedAvgFillPrice  Float?
-  filledContracts        Int
-  unfilledContracts      Int
-  status                 OrderStatus
-  reason                 String
-  positionId             String?
-  position               PaperPosition? @relation(fields: [positionId], references: [id])
-  trainingExample        PaperTradeTrainingExample?
+  id                    String                     @id
+  signalId              String
+  signal                Signal                     @relation(fields: [signalId], references: [id])
+  timestamp             DateTime
+  marketTicker          String
+  side                  String
+  action                String
+  requestedContracts    Int
+  limitPrice            Float
+  simulatedAvgFillPrice Float?
+  filledContracts       Int
+  unfilledContracts     Int
+  status                OrderStatus
+  reason                String
+  positionId            String?
+  position              PaperPosition?             @relation(fields: [positionId], references: [id])
+  trainingExample       PaperTradeTrainingExample?
 }
 
 model PaperTradeTrainingExample {
-  id                 String      @id
-  orderId            String      @unique
-  order              PaperOrder  @relation(fields: [orderId], references: [id])
+  id                 String           @id
+  orderId            String           @unique
+  order              PaperOrder       @relation(fields: [orderId], references: [id])
   signalId           String
   marketTicker       String
   side               String
@@ -340,8 +348,8 @@ model PaperTradeTrainingExample {
   pnl                Float?
   roi                Float?
   features           Json
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
 
   @@index([marketTicker, openedAt])
   @@index([status, openedAt])
@@ -364,24 +372,24 @@ model PaperPosition {
 }
 
 model DemoOrder {
-  id           String   @id @default(cuid())
+  id            String   @id @default(cuid())
   kalshiOrderId String?
-  marketTicker String
-  request      Json
-  response     Json?
-  status       String
-  createdAt    DateTime @default(now())
+  marketTicker  String
+  request       Json
+  response      Json?
+  status        String
+  createdAt     DateTime @default(now())
 }
 
 model LiveOrderIntent {
-  id          String   @id @default(cuid())
-  marketTicker String
-  request     Json
-  riskSnapshot Json
-  uiConfirmed Boolean  @default(false)
-  approved    Boolean  @default(false)
+  id            String   @id @default(cuid())
+  marketTicker  String
+  request       Json
+  riskSnapshot  Json
+  uiConfirmed   Boolean  @default(false)
+  approved      Boolean  @default(false)
   blockedReason Json?
-  createdAt   DateTime @default(now())
+  createdAt     DateTime @default(now())
 }
 
 model LiveOrder {
@@ -405,7 +413,7 @@ model Settlement {
 }
 
 model ScanReport {
-  id              String   @id
+  id              String    @id
   startedAt       DateTime
   completedAt     DateTime?
   status          String
@@ -413,16 +421,16 @@ model ScanReport {
   providerResults Json
   counts          Json
   decisions       Json
-  createdAt       DateTime @default(now())
+  createdAt       DateTime  @default(now())
 
   @@index([startedAt])
 }
 
 model StrategyRun {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   mode        AppMode
   parameters  Json
-  startedAt   DateTime @default(now())
+  startedAt   DateTime  @default(now())
   completedAt DateTime?
   summary     Json?
 }

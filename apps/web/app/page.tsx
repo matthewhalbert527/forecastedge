@@ -7,6 +7,7 @@ import {
   CircleHelp,
   Clock3,
   Database,
+  Download,
   Gauge,
   Play,
   RefreshCw,
@@ -31,7 +32,7 @@ type DashboardData = {
   ensembles: Array<{ id: string; city: string; state: string; stationId: string | null; targetDate: string; variable: string; prediction: number | null; uncertaintyStdDev: number | null; confidence: string; contributingModels: string[]; disagreement: number | null; reason: string; createdAt: string }>;
   performance: { totalTrades: number; simulatedContracts: number; averageEntryPrice: number; totalCost: number; rejectedOrders: number; realizedPnl: number; unrealizedExposure: number; winRate: number; roi: number; maxDrawdown: number; longestLosingStreak: number; settledTrades: number; openPositions: number };
   learning?: {
-    collection: { quoteSnapshots: number; candidateSnapshots: number; paperTradeExamples: number; settledPaperTradeExamples: number; latestQuoteAt: string | null; latestCandidateAt: string | null };
+    collection: { quoteSnapshots: number; candidateSnapshots: number; paperTradeExamples: number; settledPaperTradeExamples: number; scanReports?: number; fullScans?: number; quoteRefreshScans?: number; latestQuoteAt: string | null; latestCandidateAt: string | null; latestFullScanAt?: string | null; latestQuoteRefreshAt?: string | null };
     backtest: { method: string; candidateSnapshots: number; evaluatedMarkets: number; wins: number; losses: number; winRate: number; totalCost: number; totalPayout: number; totalPnl: number; roi: number };
     recentPaperExamples: Array<{ orderId: string; marketTicker: string; openedAt: string; status: string; entryPrice: number | null; contracts: number; cost: number; modelProbability: number | null; impliedProbability: number | null; edge: number | null; settlementResult: string | null; pnl: number | null; roi: number | null }>;
   };
@@ -346,6 +347,10 @@ function DetailsView({ data, model }: { data: DashboardData; model: DashboardMod
           <h3>Technical details</h3>
           <p>Backend data is collapsed by default.</p>
         </div>
+        <a className="ghost-button" href={`${apiUrl}/api/dataset/export`}>
+          <Download size={16} />
+          Download dataset
+        </a>
       </div>
       <Disclosure title="Model candidates">
         <SimpleTable
@@ -390,8 +395,13 @@ function DetailsView({ data, model }: { data: DashboardData; model: DashboardMod
             ["Candidate decisions", String(learning.collection.candidateSnapshots)],
             ["Paper trade examples", String(learning.collection.paperTradeExamples)],
             ["Settled examples", String(learning.collection.settledPaperTradeExamples)],
+            ["All scan reports", String(learning.collection.scanReports ?? 0)],
+            ["Full scans", String(learning.collection.fullScans ?? 0)],
+            ["1-minute quote scans", String(learning.collection.quoteRefreshScans ?? 0)],
             ["Latest quote", learning.collection.latestQuoteAt ? dateTime(learning.collection.latestQuoteAt) : "pending"],
-            ["Latest candidate", learning.collection.latestCandidateAt ? dateTime(learning.collection.latestCandidateAt) : "pending"]
+            ["Latest candidate", learning.collection.latestCandidateAt ? dateTime(learning.collection.latestCandidateAt) : "pending"],
+            ["Latest full scan", learning.collection.latestFullScanAt ? dateTime(learning.collection.latestFullScanAt) : "pending"],
+            ["Latest quote scan", learning.collection.latestQuoteRefreshAt ? dateTime(learning.collection.latestQuoteRefreshAt) : "pending"]
           ] : []}
           empty="No learning data yet"
         />
@@ -436,6 +446,7 @@ function DetailsView({ data, model }: { data: DashboardData; model: DashboardMod
         <span>{data.markets.length} markets</span>
         <span>{data.ensembles.length} forecasts</span>
         <span>{learning?.collection.quoteSnapshots ?? 0} quote snapshots</span>
+        <span>{learning?.collection.scanReports ?? data.scanReports.length} scans</span>
       </div>
     </section>
   );

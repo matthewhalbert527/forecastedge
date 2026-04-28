@@ -60,6 +60,22 @@ export function buildServer() {
 
   app.get("/api/dashboard", async () => dashboardResponse());
   app.get("/api/learning/summary", async () => pipeline.learningSummary());
+  app.get("/api/dataset/export", async (_request, reply) => {
+    const dataset = await pipeline.exportLearningDataset();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    return reply
+      .header("Content-Type", "application/json; charset=utf-8")
+      .header("Content-Disposition", `attachment; filename="forecastedge-dataset-${stamp}.json"`)
+      .send(dataset);
+  });
+  app.get("/api/learning/export", async (_request, reply) => {
+    const dataset = await pipeline.exportLearningDataset();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    return reply
+      .header("Content-Type", "application/json; charset=utf-8")
+      .header("Content-Disposition", `attachment; filename="forecastedge-dataset-${stamp}.json"`)
+      .send(dataset);
+  });
   app.post("/api/backtests/run", async (request) => {
     const body = request.body && typeof request.body === "object" ? request.body as Record<string, unknown> : {};
     return pipeline.runStoredBacktest(body);

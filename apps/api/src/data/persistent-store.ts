@@ -95,7 +95,7 @@ export class PersistentStore {
     await this.persistMarkets(store.markets);
     await this.persistMappings(store.mappings);
     await this.persistQuoteSnapshots(marketsForQuoteSnapshots(store.markets, report), report);
-    await this.persistCandidateSnapshots(store.trainingCandidates);
+    await this.persistCandidateSnapshots(store.trainingCandidates, report);
     await this.persistSignals(store.signals, report);
     await this.persistPaperOrders(store.paperOrders);
     await this.rebuildPaperPositions();
@@ -225,13 +225,18 @@ export class PersistentStore {
   }
 
   async learningSummary() {
-    const [quoteSnapshots, candidateSnapshots, paperExamples, settledPaperExamples, latestQuote, latestCandidate, recentExamples] = await Promise.all([
+    const [quoteSnapshots, candidateSnapshots, paperExamples, settledPaperExamples, scanReports, fullScans, quoteRefreshScans, latestQuote, latestCandidate, latestFullScan, latestQuoteRefresh, recentExamples] = await Promise.all([
       this.prisma.marketQuoteSnapshot.count(),
       this.prisma.candidateDecisionSnapshot.count(),
       this.prisma.paperTradeTrainingExample.count(),
       this.prisma.paperTradeTrainingExample.count({ where: { status: { in: ["won", "lost"] } } }),
+      this.prisma.scanReport.count(),
+      this.prisma.scanReport.count({ where: { trigger: { not: "quote_refresh" } } }),
+      this.prisma.scanReport.count({ where: { trigger: "quote_refresh" } }),
       this.prisma.marketQuoteSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
       this.prisma.candidateDecisionSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
+      this.prisma.scanReport.findFirst({ where: { trigger: { not: "quote_refresh" } }, orderBy: { startedAt: "desc" }, select: { startedAt: true } }),
+      this.prisma.scanReport.findFirst({ where: { trigger: "quote_refresh" }, orderBy: { startedAt: "desc" }, select: { startedAt: true } }),
       this.prisma.paperTradeTrainingExample.findMany({ orderBy: { openedAt: "desc" }, take: 20 })
     ]);
 
@@ -242,8 +247,13 @@ export class PersistentStore {
         candidateSnapshots,
         paperTradeExamples: paperExamples,
         settledPaperTradeExamples: settledPaperExamples,
+        scanReports,
+        fullScans,
+        quoteRefreshScans,
         latestQuoteAt: latestQuote?.observedAt.toISOString() ?? null,
-        latestCandidateAt: latestCandidate?.observedAt.toISOString() ?? null
+        latestCandidateAt: latestCandidate?.observedAt.toISOString() ?? null,
+        latestFullScanAt: latestFullScan?.startedAt.toISOString() ?? null,
+        latestQuoteRefreshAt: latestQuoteRefresh?.startedAt.toISOString() ?? null
       },
       backtest,
       recentPaperExamples: recentExamples.map((example) => ({
@@ -261,6 +271,134 @@ export class PersistentStore {
         pnl: example.pnl,
         roi: example.roi
       }))
+    };
+  }
+
+  async exportLearningDataset() {
+    const [
+      locations,
+      scanReports,
+      quoteSnapshots,
+      candidateSnapshots,
+      paperExamples,
+      paperOrders,
+      paperPositions,
+      settlements,
+      signals,
+      markets,
+      mappings,
+      forecastSnapshots,
+      stationObservations,
+      modelForecasts,
+      ensembles,
+      strategyRuns
+    ] = await Promise.all([
+      this.prisma.location.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.scanReport.findMany({ orderBy: { startedAt: "asc" } }),
+      this.prisma.marketQuoteSnapshot.findMany({ orderBy: [{ observedAt: "asc" }, { marketTicker: "asc" }] }),
+      this.prisma.candidateDecisionSnapshot.findMany({ orderBy: [{ observedAt: "asc" }, { marketTicker: "asc" }] }),
+      this.prisma.paperTradeTrainingExample.findMany({ orderBy: { openedAt: "asc" } }),
+      this.prisma.paperOrder.findMany({ orderBy: { timestamp: "asc" } }),
+      this.prisma.paperPosition.findMany({ orderBy: { openedAt: "asc" } }),
+      this.prisma.settlement.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.signal.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.kalshiMarket.findMany({ orderBy: { updatedAt: "asc" } }),
+      this.prisma.marketMapping.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.forecastSnapshot.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.stationObservation.findMany({ orderBy: { observedAt: "asc" } }),
+      this.prisma.modelForecast.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.ensembleForecast.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.strategyRun.findMany({ orderBy: { startedAt: "asc" } })
+    ]);
+
+    const settlementByTicker = new Map(settlements.map((settlement) => [settlement.marketTicker, settlement]));
+    const quoteByScanAndTicker = new Map(
+      quoteSnapshots
+        .filter((quote) => quote.scanId)
+        .map((quote) => [`${quote.scanId}:${quote.marketTicker}`, quote])
+    );
+
+    const modelTrainingRows = candidateSnapshots.map((candidate) => {
+      const settlement = settlementByTicker.get(candidate.marketTicker) ?? null;
+      const quote = quoteByScanAndTicker.get(`${candidate.scanId}:${candidate.marketTicker}`) ?? null;
+      const contracts = candidate.entryPrice === null ? null : simulatedContracts(candidate.entryPrice);
+      const cost = candidate.entryPrice === null || contracts === null ? null : Number((candidate.entryPrice * contracts).toFixed(4));
+      const payout = settlement && contracts !== null ? settlementPayout("YES", settlement.result, contracts) : null;
+      const pnl = payout === null || cost === null ? null : Number((payout - cost).toFixed(4));
+
+      return {
+        scanId: candidate.scanId,
+        scanTrigger: candidate.scanTrigger,
+        scanCadenceMinutes: candidate.scanCadenceMinutes,
+        observedAt: candidate.observedAt,
+        marketTicker: candidate.marketTicker,
+        city: candidate.city,
+        stationId: candidate.stationId,
+        variable: candidate.variable,
+        targetDate: candidate.targetDate,
+        threshold: candidate.threshold,
+        thresholdOperator: candidate.thresholdOperator,
+        forecastValue: candidate.forecastValue,
+        entryPrice: candidate.entryPrice,
+        yesBid: quote?.yesBid ?? null,
+        yesAsk: quote?.yesAsk ?? null,
+        noBid: quote?.noBid ?? null,
+        noAsk: quote?.noAsk ?? null,
+        lastPrice: quote?.lastPrice ?? null,
+        volume: quote?.volume ?? null,
+        openInterest: quote?.openInterest ?? null,
+        yesProbability: candidate.yesProbability,
+        impliedProbability: candidate.impliedProbability,
+        edge: candidate.edge,
+        spread: candidate.spread,
+        liquidityScore: candidate.liquidityScore,
+        decision: candidate.status,
+        blockers: candidate.blockers,
+        reason: candidate.reason,
+        settledResult: settlement?.result ?? null,
+        settledPrice: settlement?.settledPrice ?? null,
+        outcomeYes: settlement ? settlement.result === "yes" : null,
+        simulatedContracts: contracts,
+        simulatedCost: cost,
+        simulatedPayout: payout,
+        simulatedPnl: pnl
+      };
+    });
+
+    return {
+      schemaVersion: 1,
+      generatedAt: new Date().toISOString(),
+      description: "ForecastEdge complete learning export: scan reports, quote snapshots, model decisions, paper trades, outcomes, forecasts, and joined training rows.",
+      counts: {
+        locations: locations.length,
+        scanReports: scanReports.length,
+        fullScans: scanReports.filter((scan) => scan.trigger !== "quote_refresh").length,
+        quoteRefreshScans: scanReports.filter((scan) => scan.trigger === "quote_refresh").length,
+        quoteSnapshots: quoteSnapshots.length,
+        candidateSnapshots: candidateSnapshots.length,
+        paperTradeExamples: paperExamples.length,
+        modelTrainingRows: modelTrainingRows.length,
+        settlements: settlements.length
+      },
+      tables: {
+        locations,
+        scanReports,
+        quoteSnapshots,
+        candidateDecisionSnapshots: candidateSnapshots,
+        paperTradeTrainingExamples: paperExamples,
+        paperOrders,
+        paperPositions,
+        settlements,
+        signals,
+        markets,
+        mappings,
+        forecastSnapshots,
+        stationObservations,
+        modelForecasts,
+        ensembleForecasts: ensembles,
+        strategyRuns
+      },
+      modelTrainingRows
     };
   }
 
@@ -437,22 +575,22 @@ export class PersistentStore {
   }
 
   private async persistQuoteSnapshots(markets: KalshiMarketCandidate[], report: ScanReport) {
-    const observedAt = report.completedAt ?? report.startedAt;
+    const observedAt = report.startedAt;
     for (const market of markets.slice(0, 250)) {
       await this.prisma.marketQuoteSnapshot.upsert({
         where: { marketTicker_observedAt: { marketTicker: market.ticker, observedAt: new Date(observedAt) } },
-        create: quoteSnapshotWrite(market, observedAt),
-        update: quoteSnapshotWrite(market, observedAt)
+        create: quoteSnapshotWrite(market, observedAt, report),
+        update: quoteSnapshotWrite(market, observedAt, report)
       });
     }
   }
 
-  private async persistCandidateSnapshots(candidates: TrainingCandidate[]) {
+  private async persistCandidateSnapshots(candidates: TrainingCandidate[], report: ScanReport) {
     for (const candidate of candidates.slice(0, 250)) {
       await this.prisma.candidateDecisionSnapshot.upsert({
         where: { id: candidate.id },
-        create: candidateSnapshotWrite(candidate),
-        update: candidateSnapshotWrite(candidate)
+        create: candidateSnapshotWrite(candidate, report),
+        update: candidateSnapshotWrite(candidate, report)
       });
     }
   }
@@ -740,9 +878,12 @@ function mappingWrite(mapping: MarketMapping) {
   };
 }
 
-function quoteSnapshotWrite(market: KalshiMarketCandidate, observedAt: string) {
+function quoteSnapshotWrite(market: KalshiMarketCandidate, observedAt: string, report: ScanReport) {
   return {
     id: `quote_${market.ticker}_${new Date(observedAt).getTime()}`,
+    scanId: report.id,
+    scanTrigger: report.trigger,
+    scanCadenceMinutes: scanCadenceMinutesFor(report),
     marketTicker: market.ticker,
     eventTicker: market.eventTicker,
     observedAt: new Date(observedAt),
@@ -759,10 +900,12 @@ function quoteSnapshotWrite(market: KalshiMarketCandidate, observedAt: string) {
   };
 }
 
-function candidateSnapshotWrite(candidate: TrainingCandidate) {
+function candidateSnapshotWrite(candidate: TrainingCandidate, report: ScanReport) {
   return {
     id: candidate.id,
     scanId: candidate.scanId,
+    scanTrigger: report.trigger,
+    scanCadenceMinutes: scanCadenceMinutesFor(report),
     marketTicker: candidate.marketTicker,
     observedAt: new Date(candidate.createdAt),
     title: candidate.title,
@@ -811,6 +954,12 @@ function marketsForQuoteSnapshots(markets: KalshiMarketCandidate[], report: Scan
     return markets.filter((market) => refreshedTickers.has(market.ticker));
   }
   return markets;
+}
+
+function scanCadenceMinutesFor(report: ScanReport) {
+  if (report.trigger === "quote_refresh") return env.QUOTE_REFRESH_INTERVAL_MINUTES;
+  if (report.trigger === "scheduled" || report.trigger === "startup") return env.BACKGROUND_POLL_INTERVAL_MINUTES;
+  return null;
 }
 
 function simulatedContracts(entryPrice: number) {
