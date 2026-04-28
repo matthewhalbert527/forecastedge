@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, AlertTriangle, BarChart3, BrainCircuit, BriefcaseBusiness, ClipboardList, CloudSun, Gauge, LineChart, LockKeyhole, Play, Power, Radar, Settings, ShieldCheck, ShoppingCart, WalletCards } from "lucide-react";
+import { Activity, AlertTriangle, BarChart3, BrainCircuit, BriefcaseBusiness, CircleHelp, ClipboardList, CloudSun, Gauge, LineChart, LockKeyhole, Play, Power, Radar, Settings, ShieldCheck, ShoppingCart, WalletCards } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 type DashboardData = {
@@ -44,6 +44,123 @@ type DashboardData = {
   safety: { liveTradingEnabled: boolean; killSwitchEnabled: boolean; requireManualConfirmation: boolean; demoConfigured: boolean; prodCredentialConfigured: boolean };
 };
 
+type ColumnHeader = {
+  label: string;
+  help: string;
+};
+
+const ensembleHeaders: ColumnHeader[] = [
+  { label: "Location", help: "City and state for the forecast target." },
+  { label: "Station", help: "Settlement weather station used when available." },
+  { label: "Date", help: "Market or forecast target date." },
+  { label: "Variable", help: "Weather variable being predicted, such as high temperature or wind gust." },
+  { label: "Prediction", help: "Blended model value used for scoring." },
+  { label: "Uncertainty", help: "Estimated model spread. Lower usually means stronger agreement." },
+  { label: "Confidence", help: "Internal confidence bucket for this forecast." },
+  { label: "Models", help: "Forecast models contributing to this blended value." },
+  { label: "Reason", help: "Why the ensemble was produced or how it should be interpreted." }
+];
+
+const modelInputHeaders: ColumnHeader[] = [
+  { label: "Location", help: "City and state for the raw forecast point." },
+  { label: "Station", help: "Station this forecast is tied to, if known." },
+  { label: "Model", help: "Forecast source or model family." },
+  { label: "Date", help: "Target day for the forecast." },
+  { label: "Horizon", help: "How far ahead the model is forecasting." },
+  { label: "High", help: "Forecast high temperature in Fahrenheit." },
+  { label: "Low", help: "Forecast low temperature in Fahrenheit." },
+  { label: "Confidence", help: "Internal confidence bucket for this input." },
+  { label: "Created", help: "When this forecast input was stored." }
+];
+
+const forecastDeltaHeaders: ColumnHeader[] = [
+  { label: "Location", help: "City and state where the forecast changed." },
+  { label: "Variable", help: "Weather value that moved enough to matter." },
+  { label: "Move", help: "Previous value to latest value." },
+  { label: "Change", help: "Absolute size of the move." },
+  { label: "Date", help: "Target date affected by the move." },
+  { label: "Confidence", help: "Internal confidence bucket for this delta." }
+];
+
+const marketHeaders: ColumnHeader[] = [
+  { label: "Ticker", help: "Kalshi market ticker." },
+  { label: "Station", help: "Settlement station matched to the market. Review means the parser could not confidently match it." },
+  { label: "Source", help: "Weather source expected for settlement." },
+  { label: "Variable", help: "Weather variable the market is about." },
+  { label: "Threshold", help: "Market line, such as 85 degrees." },
+  { label: "Date", help: "Market target date." },
+  { label: "Status", help: "Accepted markets can generate signals. Review/rejected markets cannot trade." },
+  { label: "Liquidity", help: "Internal liquidity score used by risk checks." }
+];
+
+const signalHeaders: ColumnHeader[] = [
+  { label: "Time", help: "When the signal was generated." },
+  { label: "Ticker", help: "Kalshi market ticker." },
+  { label: "Status", help: "Fired means it passed checks. Skipped means it refused to trade." },
+  { label: "Edge", help: "Model probability minus implied market probability, in percentage points." },
+  { label: "Limit", help: "Maximum price the strategy was willing to pay." },
+  { label: "Contracts", help: "Number of contracts requested by the strategy." },
+  { label: "Why", help: "Short reason. Hover for the full explanation." }
+];
+
+const paperOrderHeaders: ColumnHeader[] = [
+  { label: "Time", help: "When the paper order was recorded." },
+  { label: "Ticker", help: "Kalshi market ticker." },
+  { label: "Status", help: "Filled, partial, or rejected paper execution result." },
+  { label: "Filled", help: "Contracts counted as held in paper mode." },
+  { label: "Unfilled", help: "Contracts not filled. In current paper mode approved signals are held hypothetically." },
+  { label: "Avg price", help: "Average simulated entry price." },
+  { label: "Reason", help: "Execution note. Hover for the full text." }
+];
+
+const paperPositionHeaders: ColumnHeader[] = [
+  { label: "Ticker", help: "Kalshi market ticker." },
+  { label: "Side", help: "YES or NO position." },
+  { label: "Contracts", help: "Open or settled contract count." },
+  { label: "Entry", help: "Average entry price per contract." },
+  { label: "Status", help: "Open positions are still being held; settled positions have a result." },
+  { label: "P/L", help: "Realized profit or loss after settlement." },
+  { label: "Settlement", help: "Settlement record id, or pending if not settled yet." }
+];
+
+const settlementHeaders: ColumnHeader[] = [
+  { label: "Time", help: "When settlement was recorded." },
+  { label: "Ticker", help: "Settled market ticker." },
+  { label: "Result", help: "Official YES or NO outcome." },
+  { label: "Source", help: "Source used to determine settlement." }
+];
+
+const scanReportHeaders: ColumnHeader[] = [
+  { label: "Started", help: "When the scan began." },
+  { label: "Trigger", help: "Manual, startup, or scheduled run." },
+  { label: "Status", help: "Whether the scan completed cleanly or with errors." },
+  { label: "Markets", help: "Markets discovered during this scan." },
+  { label: "Mappings", help: "Accepted/rejected market mappings." },
+  { label: "Signals", help: "Fired/skipped signal decisions." },
+  { label: "Obs", help: "Station observations collected." },
+  { label: "Ensembles", help: "Model ensemble records produced." }
+];
+
+const providerHeaders: ColumnHeader[] = [
+  { label: "Provider", help: "Weather, market, or station data provider." },
+  { label: "Station", help: "Station id involved in the provider check, if any." },
+  { label: "Status", help: "Provider check result." },
+  { label: "Message", help: "Provider detail. Hover for the full message." }
+];
+
+const decisionHeaders: ColumnHeader[] = [
+  { label: "Stage", help: "Pipeline stage that made the decision." },
+  { label: "Status", help: "Accepted, rejected, fired, skipped, filled, partial, or error." },
+  { label: "Item", help: "Identifier for the decision target." },
+  { label: "Reason", help: "Decision explanation. Hover for the full text." }
+];
+
+const locationHeaders: ColumnHeader[] = [
+  { label: "Location", help: "City and state being monitored." },
+  { label: "Role", help: "Why this location is tracked." },
+  { label: "Interval", help: "Configured polling interval for this location." }
+];
+
 const tabs = [
   ["overview", Activity],
   ["forecast deltas", CloudSun],
@@ -57,6 +174,22 @@ const tabs = [
 ] as const;
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? process.env.WEB_PUBLIC_API_URL ?? "http://localhost:4000";
+
+const emptyPerformance: DashboardData["performance"] = {
+  totalTrades: 0,
+  simulatedContracts: 0,
+  averageEntryPrice: 0,
+  totalCost: 0,
+  rejectedOrders: 0,
+  realizedPnl: 0,
+  unrealizedExposure: 0,
+  winRate: 0,
+  roi: 0,
+  maxDrawdown: 0,
+  longestLosingStreak: 0,
+  settledTrades: 0,
+  openPositions: 0
+};
 
 export default function Page() {
   const [data, setData] = useState<DashboardData | null>(null);
@@ -104,14 +237,23 @@ export default function Page() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const acceptedMappings = useMemo(() => data?.mappings.filter((mapping) => mapping.accepted).length ?? 0, [data]);
-  const latestScan = data?.scanReports[0] ?? null;
-  const scanVerdict = latestScan ? scanHealth(latestScan) : { label: "Waiting for first scan", tone: "warn" as const, detail: "Run a scan to check providers, market discovery, parser decisions, and signal generation." };
-  const firedSignals = data?.signals.filter((signal) => signal.status === "FIRED").length ?? 0;
-  const skippedSignals = data?.signals.filter((signal) => signal.status !== "FIRED").length ?? 0;
-  const latestRunOrderIds = new Set((latestScan?.decisions ?? []).filter((decision) => decision.stage === "paper_order").map((decision) => decision.itemId));
+  const locations = data?.locations ?? [];
+  const forecastDeltas = data?.forecastDeltas ?? [];
+  const mappings = data?.mappings ?? [];
+  const signals = data?.signals ?? [];
   const paperOrders = data?.paperOrders ?? [];
   const paperPositions = data?.paperPositions ?? [];
+  const settlements = data?.settlements ?? [];
+  const modelForecasts = data?.modelForecasts ?? [];
+  const ensembles = data?.ensembles ?? [];
+  const scanReports = data?.scanReports ?? [];
+  const acceptedMappings = useMemo(() => mappings.filter((mapping) => mapping.accepted).length, [mappings]);
+  const latestScan = scanReports[0] ?? null;
+  const scanVerdict = latestScan ? scanHealth(latestScan) : { label: "Waiting for first scan", tone: "warn" as const, detail: "Run a scan to check providers, market discovery, parser decisions, and signal generation." };
+  const firedSignals = signals.filter((signal) => signal.status === "FIRED").length;
+  const skippedSignals = signals.filter((signal) => signal.status !== "FIRED").length;
+  const latestRunOrderIds = new Set((latestScan?.decisions ?? []).filter((decision) => decision.stage === "paper_order").map((decision) => decision.itemId));
+  const performance = { ...emptyPerformance, ...(data?.performance ?? {}) };
   const latestRunBuyOrders = paperOrders.filter((order) => {
     if (latestRunOrderIds.size > 0) return latestRunOrderIds.has(order.id);
     if (!latestScan) return false;
@@ -171,8 +313,8 @@ export default function Page() {
               </div>
               <Badge tone={scanVerdict.tone}>{scanVerdict.label}</Badge>
             </div>
-            <Metric title="Currently held" value={openPaperPositions.length} detail={`${data.performance.simulatedContracts} simulated contracts, ${money(data.performance.unrealizedExposure)} open exposure`} />
-            <Metric title="Paper P/L" value={money(data.performance.realizedPnl)} detail={`${data.performance.settledTrades} settled, ${data.performance.openPositions} open`} />
+            <Metric title="Currently held" value={openPaperPositions.length} detail={`${performance.simulatedContracts} simulated contracts, ${money(performance.unrealizedExposure)} open exposure`} />
+            <Metric title="Paper P/L" value={money(performance.realizedPnl)} detail={`${performance.settledTrades} settled, ${performance.openPositions} open`} />
             <div className="panel trade-list wide">
               <div className="panel-heading">
                 <ShoppingCart size={18} />
@@ -237,12 +379,12 @@ export default function Page() {
               ]}
             />
             <div className="panel wide">
-              <h2>Ensemble forecasts</h2>
-              <Rows rows={data.ensembles.slice(0, 40).map((ensemble) => [`${ensemble.city}, ${ensemble.state}`, ensemble.stationId ?? "n/a", ensemble.targetDate, ensemble.variable, ensemble.prediction === null ? "n/a" : valueForVariable(ensemble.variable, ensemble.prediction), ensemble.uncertaintyStdDev === null ? "n/a" : `${ensemble.uncertaintyStdDev.toFixed(2)}`, ensemble.confidence, ensemble.contributingModels.join(", "), ensemble.reason])} empty="No model ensembles yet" />
+              <h2>Ensemble forecasts <HelpTip text="The blended forecast ForecastEdge uses when scoring market edges." /></h2>
+              <Rows headers={ensembleHeaders} rows={ensembles.slice(0, 40).map((ensemble) => [`${ensemble.city}, ${ensemble.state}`, ensemble.stationId ?? "n/a", ensemble.targetDate, ensemble.variable, ensemble.prediction === null ? "n/a" : valueForVariable(ensemble.variable, ensemble.prediction), ensemble.uncertaintyStdDev === null ? "n/a" : `${ensemble.uncertaintyStdDev.toFixed(2)}`, ensemble.confidence, ensemble.contributingModels.join(", "), <HoverText key={ensemble.id} label={shorten(ensemble.reason, 80)} detail={ensemble.reason} />])} empty="No model ensembles yet" />
             </div>
             <div className="panel wide">
-              <h2>Model forecast inputs</h2>
-              <Rows rows={data.modelForecasts.slice(0, 50).map((point) => [`${point.city}, ${point.state}`, point.stationId ?? "n/a", point.model, point.targetDate, `${point.horizonHours}h`, point.highTempF === null ? "n/a" : `${point.highTempF} F`, point.lowTempF === null ? "n/a" : `${point.lowTempF} F`, point.confidence, time(point.createdAt)])} empty="No model forecast inputs yet" />
+              <h2>Model forecast inputs <HelpTip text="Raw model points that feed the ensemble before signals are generated." /></h2>
+              <Rows headers={modelInputHeaders} rows={modelForecasts.slice(0, 50).map((point) => [`${point.city}, ${point.state}`, point.stationId ?? "n/a", point.model, point.targetDate, `${point.horizonHours}h`, point.highTempF === null ? "n/a" : `${point.highTempF} F`, point.lowTempF === null ? "n/a" : `${point.lowTempF} F`, point.confidence, time(point.createdAt)])} empty="No model forecast inputs yet" />
             </div>
           </section>
         ) : null}
@@ -250,7 +392,7 @@ export default function Page() {
         {data && tab === "forecast deltas" ? (
           <Panel title="Forecast deltas">
             <p className="muted">A delta is a meaningful forecast move, such as a high/low temperature shift large enough to matter for a Kalshi threshold. Deltas are the main reason the signal engine wakes up.</p>
-            <Rows rows={data.forecastDeltas.map((delta) => [`${delta.city}, ${delta.state}`, delta.variable, `${delta.oldValue} -> ${delta.newValue}`, `${delta.absoluteChange}`, delta.targetDate, delta.confidence])} empty="No meaningful deltas yet" />
+            <Rows headers={forecastDeltaHeaders} rows={forecastDeltas.map((delta) => [`${delta.city}, ${delta.state}`, delta.variable, `${delta.oldValue} -> ${delta.newValue}`, `${delta.absoluteChange}`, delta.targetDate, delta.confidence])} empty="No meaningful deltas yet" />
           </Panel>
         ) : null}
 
@@ -261,7 +403,7 @@ export default function Page() {
               <Badge tone="warn">review/rejected = no trading</Badge>
               <span>Look for high-confidence rows with a known station, settlement source, threshold, date, and enough liquidity.</span>
             </div>
-            <Rows rows={data.mappings.map((mapping) => [mapping.marketTicker, mapping.station ? `${mapping.station.stationId} ${mapping.station.stationName}` : "review", mapping.settlementSource, mapping.variable, mapping.threshold ?? "n/a", mapping.targetDate ?? "n/a", mapping.accepted ? "accepted" : mapping.reviewReason ?? "review", mapping.liquidityScore])} empty="No markets discovered yet" />
+            <Rows headers={marketHeaders} rows={mappings.map((mapping) => [mapping.marketTicker, mapping.station ? `${mapping.station.stationId} ${mapping.station.stationName}` : "review", mapping.settlementSource, mapping.variable, mapping.threshold ?? "n/a", mapping.targetDate ?? "n/a", mapping.accepted ? "accepted" : <HoverText key={mapping.marketTicker} label="review" detail={mapping.reviewReason ?? "Needs manual review before trading."} />, mapping.liquidityScore])} empty="No markets discovered yet" />
           </Panel>
         ) : null}
 
@@ -273,31 +415,31 @@ export default function Page() {
               <SummaryItem label="Min edge" value="8 pp" />
             </div>
             <p className="muted">A fired signal means mapping, forecast movement, model edge, liquidity, spread, stale-data checks, and risk limits passed. Skipped signals are useful too: they explain why the system refused to trade.</p>
-            <Rows rows={data.signals.map((signal) => [time(signal.createdAt), signal.marketTicker, signal.status, `${(signal.edge * 100).toFixed(1)} pp`, `$${signal.limitPrice.toFixed(2)}`, signal.explanation])} empty="No signals yet" />
+            <Rows headers={signalHeaders} rows={signals.map((signal) => [time(signal.createdAt), signal.marketTicker, signal.status, `${(signal.edge * 100).toFixed(1)} pp`, `$${signal.limitPrice.toFixed(2)}`, signal.contracts, <HoverText key={signal.id} label={signalSummary(signal)} detail={signal.explanation} />])} empty="No signals yet" />
           </Panel>
         ) : null}
 
         {data && tab === "paper trades" ? (
           <Panel title="Paper trades">
             <p className="muted">Paper trades are simulated against market prices and liquidity rules. Filled contracts are tracked separately from unfilled contracts so this does not assume perfect fills.</p>
-            <Rows rows={data.paperOrders.map((order) => [time(order.timestamp), order.marketTicker, order.status, order.filledContracts, order.unfilledContracts, order.simulatedAvgFillPrice ? `$${order.simulatedAvgFillPrice.toFixed(2)}` : "n/a", order.reason])} empty="No paper orders yet" />
+            <Rows headers={paperOrderHeaders} rows={paperOrders.map((order) => [time(order.timestamp), order.marketTicker, order.status, order.filledContracts, order.unfilledContracts, order.simulatedAvgFillPrice ? `$${order.simulatedAvgFillPrice.toFixed(2)}` : "n/a", <HoverText key={order.id} label={shorten(order.reason, 54)} detail={order.reason} />])} empty="No paper orders yet" />
             <h2 className="subhead">Paper positions</h2>
-            <Rows rows={data.paperPositions.map((position) => [position.marketTicker, position.side, position.contracts, `$${position.avgEntryPrice.toFixed(2)}`, position.closedAt ? "settled" : "open", money(position.realizedPnl), position.settlementId ?? "pending"])} empty="No paper positions yet" />
+            <Rows headers={paperPositionHeaders} rows={paperPositions.map((position) => [position.marketTicker, position.side, position.contracts, `$${position.avgEntryPrice.toFixed(2)}`, position.closedAt ? "settled" : "open", money(position.realizedPnl), position.settlementId ?? "pending"])} empty="No paper positions yet" />
             <h2 className="subhead">Settlements</h2>
-            <Rows rows={data.settlements.map((settlement) => [time(settlement.createdAt), settlement.marketTicker, settlement.result.toUpperCase(), settlement.source])} empty="No settled markets yet" />
+            <Rows headers={settlementHeaders} rows={settlements.map((settlement) => [time(settlement.createdAt), settlement.marketTicker, settlement.result.toUpperCase(), settlement.source])} empty="No settled markets yet" />
           </Panel>
         ) : null}
 
         {data && tab === "performance" ? (
           <section className="grid">
-            <Metric title="Total trades" value={data.performance.totalTrades} detail={`${data.performance.rejectedOrders} rejected orders`} />
-            <Metric title="Contracts" value={data.performance.simulatedContracts} detail="Filled simulated contracts" />
-            <Metric title="Average entry" value={`$${data.performance.averageEntryPrice.toFixed(2)}`} detail="Weighted by contracts" />
-            <Metric title="Capital deployed" value={money(data.performance.totalCost)} detail="Total simulated entry cost" />
-            <Metric title="Realized P/L" value={money(data.performance.realizedPnl)} detail={`${data.performance.settledTrades} settled positions`} />
-            <Metric title="Win rate" value={`${(data.performance.winRate * 100).toFixed(1)}%`} detail="Closed winning positions / closed positions" />
-            <Metric title="ROI" value={`${(data.performance.roi * 100).toFixed(1)}%`} detail="Realized P/L / settled entry cost" />
-            <Metric title="Max drawdown" value={money(data.performance.maxDrawdown)} detail={`${data.performance.longestLosingStreak} longest losing streak`} />
+            <Metric title="Total trades" value={performance.totalTrades} detail={`${performance.rejectedOrders} rejected orders`} />
+            <Metric title="Contracts" value={performance.simulatedContracts} detail="Filled simulated contracts" />
+            <Metric title="Average entry" value={`$${performance.averageEntryPrice.toFixed(2)}`} detail="Weighted by contracts" />
+            <Metric title="Capital deployed" value={money(performance.totalCost)} detail="Total simulated entry cost" />
+            <Metric title="Realized P/L" value={money(performance.realizedPnl)} detail={`${performance.settledTrades} settled positions`} />
+            <Metric title="Win rate" value={`${(performance.winRate * 100).toFixed(1)}%`} detail="Closed winning positions / closed positions" />
+            <Metric title="ROI" value={`${(performance.roi * 100).toFixed(1)}%`} detail="Realized P/L / settled entry cost" />
+            <Metric title="Max drawdown" value={money(performance.maxDrawdown)} detail={`${performance.longestLosingStreak} longest losing streak`} />
             <div className="panel wide">
               <h2>Calibration queue</h2>
               <p className="muted">Estimated probability vs actual outcome will populate after settled markets are ingested.</p>
@@ -317,15 +459,15 @@ export default function Page() {
             />
             <div className="panel wide">
               <h2>Scan reports</h2>
-              <Rows rows={data.scanReports.slice(0, 10).map((scan) => [time(scan.startedAt), scan.trigger, scan.status, `${scan.counts.marketsDiscovered} markets`, `${scan.counts.mappingsAccepted}/${scan.counts.mappingsRejected} mappings`, `${scan.counts.signalsFired}/${scan.counts.signalsSkipped} signals`, `${scan.counts.stationObservations} station obs`, `${scan.counts.ensembles ?? 0} ensembles`])} empty="No scans recorded yet" />
+              <Rows headers={scanReportHeaders} rows={scanReports.slice(0, 10).map((scan) => [time(scan.startedAt), scan.trigger, scan.status, scan.counts.marketsDiscovered, `${scan.counts.mappingsAccepted}/${scan.counts.mappingsRejected}`, `${scan.counts.signalsFired}/${scan.counts.signalsSkipped}`, scan.counts.stationObservations, scan.counts.ensembles ?? 0])} empty="No scans recorded yet" />
             </div>
             <div className="panel">
               <h2>Provider status</h2>
-              <Rows rows={(data.scanReports[0]?.providerResults ?? []).map((result) => [result.provider, result.stationId ?? "", result.status, result.message])} empty="No provider checks yet" />
+              <Rows headers={providerHeaders} rows={(scanReports[0]?.providerResults ?? []).map((result) => [result.provider, result.stationId ?? "", result.status, <HoverText key={`${result.provider}-${result.stationId ?? "none"}`} label={shorten(result.message, 60)} detail={result.message} />])} empty="No provider checks yet" />
             </div>
             <div className="panel wide">
               <h2>Decision log</h2>
-              <Rows rows={(data.scanReports[0]?.decisions ?? []).slice(0, 50).map((decision) => [decision.stage, decision.status, decision.itemId, decision.reason])} empty="No decisions recorded for latest scan" />
+              <Rows headers={decisionHeaders} rows={(scanReports[0]?.decisions ?? []).slice(0, 50).map((decision) => [decision.stage, decision.status, decision.itemId, <HoverText key={`${decision.stage}-${decision.itemId}`} label={shorten(decision.reason, 70)} detail={decision.reason} />])} empty="No decisions recorded for latest scan" />
             </div>
           </section>
         ) : null}
@@ -335,7 +477,7 @@ export default function Page() {
             <div className="panel">
               <h2>Locations</h2>
               <p className="muted">These are the monitored Kalshi-style settlement locations. More locations broaden market coverage but also require strict station/date parsing.</p>
-              <Rows rows={data.locations.map((loc) => [`${loc.city}, ${loc.state}`, "settlement station", `${loc.pollingIntervalMinutes} min`])} empty="No locations configured" />
+              <Rows headers={locationHeaders} rows={locations.map((loc) => [`${loc.city}, ${loc.state}`, "settlement station", `${loc.pollingIntervalMinutes} min`])} empty="No locations configured" />
             </div>
             <div className="panel">
               <h2>Mode controls</h2>
@@ -446,10 +588,37 @@ function HoldingCard({ position }: { position: DashboardData["paperPositions"][n
   );
 }
 
-function Rows({ rows, empty }: { rows: Array<Array<React.ReactNode>>; empty: string }) {
+function HelpTip({ text }: { text: string }) {
+  return (
+    <span className="help-tip" tabIndex={0} aria-label={text} title={text}>
+      <CircleHelp size={13} />
+    </span>
+  );
+}
+
+function HoverText({ label, detail }: { label: string; detail: string }) {
+  return (
+    <span className="hover-text" tabIndex={0} title={detail}>
+      {label}
+      <HelpTip text={detail} />
+    </span>
+  );
+}
+
+function Rows({ headers, rows, empty }: { headers?: ColumnHeader[]; rows: Array<Array<React.ReactNode>>; empty: string }) {
   if (rows.length === 0) return <p className="muted">{empty}</p>;
   return (
     <div className="rows">
+      {headers ? (
+        <div className="row row-header">
+          {headers.map((header) => (
+            <span key={header.label}>
+              {header.label}
+              <HelpTip text={header.help} />
+            </span>
+          ))}
+        </div>
+      ) : null}
       {rows.map((row, index) => (
         <div className="row" key={index}>
           {row.map((cell, cellIndex) => (
@@ -459,6 +628,16 @@ function Rows({ rows, empty }: { rows: Array<Array<React.ReactNode>>; empty: str
       ))}
     </div>
   );
+}
+
+function signalSummary(signal: DashboardData["signals"][number]) {
+  if (signal.status === "FIRED") return `Buy ${signal.contracts} at $${signal.limitPrice.toFixed(2)}; edge ${(signal.edge * 100).toFixed(1)} pp`;
+  return shorten(signal.skipReason ?? signal.explanation, 72);
+}
+
+function shorten(value: string, maxLength: number) {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 1).trim()}...`;
 }
 
 function StatusLine({ label, value, danger = false }: { label: string; value: string; danger?: boolean }) {

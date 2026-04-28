@@ -249,6 +249,10 @@ button {
   margin: 0 0 14px;
   font-size: 17px;
   line-height: 1.25;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .panel h2.subhead {
@@ -443,6 +447,7 @@ button {
 .rows {
   display: grid;
   gap: 8px;
+  overflow-x: auto;
 }
 
 .row {
@@ -458,9 +463,61 @@ button {
   line-height: 1.35;
 }
 
+.row-header {
+  background: rgba(16, 19, 20, 0.78);
+  border-color: var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
 .row span {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.row-header span,
+.hover-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.help-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  color: var(--accent-2);
+  cursor: help;
+  vertical-align: middle;
+}
+
+.help-tip svg {
+  pointer-events: none;
+}
+
+.help-tip:hover,
+.help-tip:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+
+.hover-text {
+  width: fit-content;
+  max-width: 100%;
+  color: var(--text);
+  cursor: help;
+}
+
+.hover-text:hover,
+.hover-text:focus-visible {
+  color: var(--accent-2);
+  outline: none;
 }
 
 .status-line,
