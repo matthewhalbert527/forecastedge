@@ -12,7 +12,7 @@ import { BackgroundWorker } from "./jobs/background-worker.js";
 import { ForecastEdgePipeline } from "./jobs/pipeline.js";
 
 export function buildServer() {
-  const app = Fastify({ logger: true });
+  const app = Fastify({ logger: true, pluginTimeout: 120_000 });
   const store = new MemoryStore();
   const audit = new AuditLog();
   const prisma = getPrisma();
