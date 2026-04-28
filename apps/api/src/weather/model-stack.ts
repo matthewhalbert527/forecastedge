@@ -8,13 +8,16 @@ interface OpenMeteoPayload {
 }
 
 export async function fetchModelForecasts(location: LocationConfig): Promise<ModelForecastPoint[]> {
-  const [ecmwf] = await Promise.allSettled([fetchOpenMeteoModel(location, "ecmwf_ifs", env.OPEN_METEO_ECMWF_MODEL)]);
-  const points: ModelForecastPoint[] = [];
-  if (ecmwf.status === "fulfilled") points.push(...ecmwf.value);
-  return points;
+  try {
+    const ecmwf = await fetchOpenMeteoModel(location, "ecmwf_ifs", env.OPEN_METEO_ECMWF_MODEL);
+    if (ecmwf.length > 0) return ecmwf;
+  } catch {
+    // Fall through to the generic Open-Meteo model; the pipeline logs count and model label.
+  }
+  return fetchOpenMeteoModel(location, "open_meteo_global", null);
 }
 
-async function fetchOpenMeteoModel(location: LocationConfig, model: ModelForecastPoint["model"], modelParameter: string) {
+async function fetchOpenMeteoModel(location: LocationConfig, model: ModelForecastPoint["model"], modelParameter: string | null) {
   const url = new URL(`${env.OPEN_METEO_BASE_URL}/forecast`);
   url.searchParams.set("latitude", String(location.latitude));
   url.searchParams.set("longitude", String(location.longitude));
@@ -22,7 +25,7 @@ async function fetchOpenMeteoModel(location: LocationConfig, model: ModelForecas
   url.searchParams.set("temperature_unit", "fahrenheit");
   url.searchParams.set("wind_speed_unit", "mph");
   url.searchParams.set("precipitation_unit", "inch");
-  url.searchParams.set("models", modelParameter);
+  if (modelParameter) url.searchParams.set("models", modelParameter);
   url.searchParams.set("daily", "temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,wind_gusts_10m_max");
 
   const response = await fetch(url);
