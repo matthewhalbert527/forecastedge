@@ -4,7 +4,7 @@ import { KALSHI_SETTLEMENT_STATIONS, WEATHER_DATASET_REFERENCES } from "@forecas
 import { AuditLog } from "./audit/audit-log.js";
 import { KalshiDemoBroker } from "./brokers/demo-broker.js";
 import { LiveBrokerSafetyShell } from "./brokers/live-broker.js";
-import { env, listenPort } from "./config/env.js";
+import { activeRiskLimits, env, listenPort } from "./config/env.js";
 import { MemoryStore } from "./data/store.js";
 import { PersistentStore } from "./data/persistent-store.js";
 import { ensureDatabaseSchema, getPrisma } from "./db/prisma.js";
@@ -44,6 +44,7 @@ export function buildServer() {
         demoConfigured: demoBroker.isConfigured(),
         prodCredentialConfigured: Boolean(env.KALSHI_PROD_ACCESS_KEY)
       },
+      riskLimits: activeRiskLimits,
       backgroundWorker: worker.status()
     };
   }

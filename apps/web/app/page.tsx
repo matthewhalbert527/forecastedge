@@ -60,6 +60,7 @@ type DashboardData = {
     decisions: Array<{ stage: string; itemId: string; status: string; reason: string }>;
   }>;
   safety: { liveTradingEnabled: boolean; killSwitchEnabled: boolean; requireManualConfirmation: boolean; demoConfigured: boolean; prodCredentialConfigured: boolean };
+  riskLimits?: { maxStakePerTrade: number; maxDailyTrades: number; maxOpenExposure: number; maxOpenPositions: number; maxContractsPerTrade: number };
   backgroundWorker?: {
     enabled: boolean;
     running: boolean;
@@ -240,7 +241,7 @@ export default function Page() {
               />
             ) : null}
 
-            {view === "buy" ? <BuyView candidates={model.strong} watch={model.watch} buyAction={() => runAction("buy", "/api/quotes/refresh-once")} buyOne={buyOne} busy={busyAction === "buy"} buyingTicker={buyingTicker} /> : null}
+            {view === "buy" ? <BuyView candidates={model.strong} watch={model.watch} heldStrongCount={model.heldStrong.length} riskBlockedStrongCount={model.riskBlockedStrong.length} buyAction={() => runAction("buy", "/api/quotes/refresh-once")} buyOne={buyOne} busy={busyAction === "buy"} buyingTicker={buyingTicker} /> : null}
             {view === "holdings" ? <HoldingsView positions={model.openPositions} /> : null}
             {view === "results" ? <ResultsView results={model.results} performance={performance} settleAction={() => runAction("settle", "/api/settlements/run-once")} busy={busyAction === "settle"} /> : null}
             {view === "details" ? <DetailsView data={data} model={model} /> : null}
@@ -252,12 +253,13 @@ export default function Page() {
 }
 
 function CockpitView({ model, performance, buyAction, buyBusy }: { model: DashboardModel; performance: DashboardData["performance"]; buyAction: () => void; buyBusy: boolean }) {
+  const unavailableStrongText = unavailableStrongSummary(model);
   return (
     <section className="page-grid">
       <div className="hero-panel">
         <div>
-          <h3>{model.strong.length > 0 ? `${model.strong.length} model-approved bets` : "No model-approved bets"}</h3>
-          <p>{model.strong[0] ? `${model.strong[0].marketTicker} leads the board at ${formatPct(model.strong[0].edge)} edge.` : "The next quote refresh will update the buy board."}</p>
+          <h3>{model.strong.length > 0 ? `${model.strong.length} buyable model-approved bets` : unavailableStrongText ? "Strong bets unavailable" : "No buyable model-approved bets"}</h3>
+          <p>{model.strong[0] ? `${model.strong[0].marketTicker} leads the buy board at ${formatPct(model.strong[0].edge)} edge.` : unavailableStrongText ?? "The next quote refresh will update the buy board."}</p>
         </div>
         <button className="buy-button large" onClick={buyAction} disabled={buyBusy || model.strong.length === 0}>
           <ShoppingCart size={18} />
@@ -265,7 +267,7 @@ function CockpitView({ model, performance, buyAction, buyBusy }: { model: Dashbo
         </button>
       </div>
 
-      <Metric label="Strong buys" value={model.strong.length} detail={`${model.watch.length} watch`} />
+      <Metric label="Strong buys" value={model.strong.length} detail={`${model.watch.length} watch${model.heldStrong.length > 0 ? `, ${model.heldStrong.length} held` : ""}${model.riskBlockedStrong.length > 0 ? `, ${model.riskBlockedStrong.length} risk-blocked` : ""}`} />
       <Metric label="Open holdings" value={model.openPositions.length} detail={`${money(model.openCost)} at risk`} />
       <Metric label="Max payout" value={money(model.maxOpenPayout)} detail={`${model.openContracts} contracts`} />
       <Metric label="Settled P/L" value={money(model.realizedPnl)} detail={`${model.results.length || performance.settledTrades} settled`} />
@@ -283,13 +285,21 @@ function CockpitView({ model, performance, buyAction, buyBusy }: { model: Dashbo
   );
 }
 
-function BuyView({ candidates, watch, buyAction, buyOne, busy, buyingTicker }: { candidates: CandidateView[]; watch: CandidateView[]; buyAction: () => void; buyOne: (marketTicker: string) => void; busy: boolean; buyingTicker: string | null }) {
+function unavailableStrongSummary(model: DashboardModel) {
+  if (model.strong.length > 0) return null;
+  const parts = [];
+  if (model.heldStrong.length > 0) parts.push(`${model.heldStrong.length} already held`);
+  if (model.riskBlockedStrong.length > 0) parts.push(`${model.riskBlockedStrong.length} blocked by risk limits`);
+  return parts.length > 0 ? `Model still sees strong signals, but ${parts.join(" and ")}.` : null;
+}
+
+function BuyView({ candidates, watch, heldStrongCount, riskBlockedStrongCount, buyAction, buyOne, busy, buyingTicker }: { candidates: CandidateView[]; watch: CandidateView[]; heldStrongCount: number; riskBlockedStrongCount: number; buyAction: () => void; buyOne: (marketTicker: string) => void; busy: boolean; buyingTicker: string | null }) {
   return (
     <section className="stack">
       <div className="section-head">
         <div>
           <h3>Buy board</h3>
-          <p>{candidates.length} bets currently clear the model threshold.</p>
+          <p>{candidates.length} buyable bets currently clear the model threshold{heldStrongCount > 0 ? `; ${heldStrongCount} strong signals are already held` : ""}{riskBlockedStrongCount > 0 ? `; ${riskBlockedStrongCount} are risk-blocked` : ""}.</p>
         </div>
         <button className="buy-button" onClick={buyAction} disabled={busy || candidates.length === 0}>
           <Play size={16} />
@@ -666,8 +676,13 @@ function buildDashboardModel(data: DashboardData | null) {
   const candidates = [...(data?.trainingCandidates ?? [])].sort((a, b) => (b.edge ?? -1) - (a.edge ?? -1));
   const settlements = new Map((data?.settlements ?? []).map((settlement) => [settlement.marketTicker, settlement]));
   const positions = data ? paperPositions(data.paperPositions, data.paperOrders, settlements) : [];
-  const strong = candidates.filter((candidate) => candidate.status === "WOULD_BUY").map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker), markets.get(candidate.marketTicker)));
-  const watch = candidates.filter((candidate) => candidate.status === "WATCH").map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker), markets.get(candidate.marketTicker)));
+  const openPositionTickers = new Set(positions.filter((position) => !position.closedAt).map((position) => position.marketTicker));
+  const strongCandidates = candidates.filter((candidate) => candidate.status === "WOULD_BUY");
+  const riskState = buildRiskState(data, positions);
+  const strong = strongCandidates.filter((candidate) => !openPositionTickers.has(candidate.marketTicker) && candidateRiskBlockers(candidate, riskState).length === 0).map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker), markets.get(candidate.marketTicker)));
+  const heldStrong = strongCandidates.filter((candidate) => openPositionTickers.has(candidate.marketTicker)).map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker), markets.get(candidate.marketTicker)));
+  const riskBlockedStrong = strongCandidates.filter((candidate) => !openPositionTickers.has(candidate.marketTicker) && candidateRiskBlockers(candidate, riskState).length > 0).map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker), markets.get(candidate.marketTicker)));
+  const watch = candidates.filter((candidate) => candidate.status === "WATCH" && !openPositionTickers.has(candidate.marketTicker)).map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker), markets.get(candidate.marketTicker)));
   const openPositions = positions.filter((position) => !position.closedAt).map((position) => holdingView(position, mappings.get(position.marketTicker), markets.get(position.marketTicker)));
   const results = positions.filter((position) => position.closedAt).map((position) => resultView(position, mappings.get(position.marketTicker), settlements.get(position.marketTicker)));
   const openContracts = openPositions.reduce((sum, position) => sum + position.contracts, 0);
@@ -675,6 +690,8 @@ function buildDashboardModel(data: DashboardData | null) {
   const realizedPnl = results.reduce((sum, result) => sum + result.net, 0);
   return {
     strong,
+    heldStrong,
+    riskBlockedStrong,
     watch,
     openPositions,
     results,
@@ -683,6 +700,34 @@ function buildDashboardModel(data: DashboardData | null) {
     realizedPnl,
     maxOpenPayout: openContracts
   };
+}
+
+function buildRiskState(data: DashboardData | null, positions: DashboardData["paperPositions"]) {
+  const openPositions = positions.filter((position) => !position.closedAt);
+  const today = new Date().toISOString().slice(0, 10);
+  return {
+    limits: data?.riskLimits ?? null,
+    tradesToday: (data?.paperOrders ?? []).filter((order) => order.timestamp.slice(0, 10) === today).length,
+    openPositions: openPositions.length,
+    openExposure: openPositions.reduce((sum, position) => sum + position.avgEntryPrice * position.contracts, 0)
+  };
+}
+
+function candidateRiskBlockers(candidate: DashboardData["trainingCandidates"][number], riskState: ReturnType<typeof buildRiskState>) {
+  const limits = riskState.limits;
+  if (!limits) return [];
+
+  const blockers: string[] = [];
+  if (riskState.tradesToday >= limits.maxDailyTrades) blockers.push("daily trade limit reached");
+  if (riskState.openPositions >= limits.maxOpenPositions) blockers.push("open position limit reached");
+  if (candidate.entryPrice === null) blockers.push("entry unavailable");
+  if (candidate.entryPrice !== null) {
+    const contracts = Math.max(1, Math.min(limits.maxContractsPerTrade, Math.floor(limits.maxStakePerTrade / Math.max(candidate.entryPrice, 0.01))));
+    const maxCost = contracts * candidate.entryPrice;
+    if (maxCost > limits.maxStakePerTrade) blockers.push("entry exceeds max stake");
+    if (riskState.openExposure + maxCost > limits.maxOpenExposure) blockers.push("open exposure limit reached");
+  }
+  return blockers;
 }
 
 function paperPositions(positions: DashboardData["paperPositions"], orders: DashboardData["paperOrders"], settlements: Map<string, DashboardData["settlements"][number]>): DashboardData["paperPositions"] {
