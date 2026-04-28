@@ -1,5 +1,5 @@
 import cors from "@fastify/cors";
-import Fastify from "fastify";
+import Fastify, { type FastifyReply } from "fastify";
 import { KALSHI_SETTLEMENT_STATIONS, WEATHER_DATASET_REFERENCES } from "@forecastedge/core";
 import { AuditLog } from "./audit/audit-log.js";
 import { KalshiDemoBroker } from "./brokers/demo-broker.js";
@@ -60,22 +60,15 @@ export function buildServer() {
 
   app.get("/api/dashboard", async () => dashboardResponse());
   app.get("/api/learning/summary", async () => pipeline.learningSummary());
-  app.get("/api/dataset/export", async (_request, reply) => {
-    const dataset = await pipeline.exportLearningDataset();
+  function datasetDownload(reply: FastifyReply) {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     return reply
-      .header("Content-Type", "application/json; charset=utf-8")
-      .header("Content-Disposition", `attachment; filename="forecastedge-dataset-${stamp}.json"`)
-      .send(dataset);
-  });
-  app.get("/api/learning/export", async (_request, reply) => {
-    const dataset = await pipeline.exportLearningDataset();
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    return reply
-      .header("Content-Type", "application/json; charset=utf-8")
-      .header("Content-Disposition", `attachment; filename="forecastedge-dataset-${stamp}.json"`)
-      .send(dataset);
-  });
+      .header("Content-Type", "application/x-ndjson; charset=utf-8")
+      .header("Content-Disposition", `attachment; filename="forecastedge-dataset-${stamp}.ndjson"`)
+      .send(pipeline.exportLearningDatasetStream());
+  }
+  app.get("/api/dataset/export", async (_request, reply) => datasetDownload(reply));
+  app.get("/api/learning/export", async (_request, reply) => datasetDownload(reply));
   app.post("/api/backtests/run", async (request) => {
     const body = request.body && typeof request.body === "object" ? request.body as Record<string, unknown> : {};
     return pipeline.runStoredBacktest(body);

@@ -12,6 +12,7 @@ import {
   type Signal,
   type TrainingCandidate
 } from "@forecastedge/core";
+import { Readable } from "node:stream";
 import { AuditLog } from "../audit/audit-log.js";
 import { activeRiskLimits, env } from "../config/env.js";
 import type { PersistentStore } from "../data/persistent-store.js";
@@ -379,6 +380,28 @@ export class ForecastEdgePipeline {
       };
     }
     return this.persistentStore.exportLearningDataset();
+  }
+
+  exportLearningDatasetStream() {
+    if (this.persistentStore) return this.persistentStore.exportLearningDatasetStream();
+    return Readable.from([
+      JSON.stringify({
+        type: "manifest",
+        schemaVersion: 2,
+        generatedAt: new Date().toISOString(),
+        format: "ndjson",
+        description: "ForecastEdge in-memory export. Configure DATABASE_URL for complete persistent history.",
+        counts: {
+          scanReports: this.store.scanReports.length,
+          quoteSnapshots: 0,
+          candidateSnapshots: this.store.trainingCandidates.length,
+          paperTradeExamples: this.store.paperOrders.length
+        }
+      }) + "\n",
+      JSON.stringify({ type: "row", table: "scan_reports", data: this.store.scanReports }) + "\n",
+      JSON.stringify({ type: "row", table: "candidate_decision_snapshots", data: this.store.trainingCandidates }) + "\n",
+      JSON.stringify({ type: "row", table: "paper_orders", data: this.store.paperOrders }) + "\n"
+    ], { encoding: "utf8" });
   }
 
   async refreshQuoteCandidates(trigger: "manual" | "quote_refresh" = "manual") {

@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { Readable } from "node:stream";
 import {
   buildPaperPositionsFromOrders,
   summarizePaperOrders,
@@ -402,6 +403,10 @@ export class PersistentStore {
     };
   }
 
+  exportLearningDatasetStream() {
+    return Readable.from(this.learningDatasetLines(), { encoding: "utf8" });
+  }
+
   async runStoredBacktest(parameters: Record<string, unknown> = {}) {
     const summary = await this.backtestStoredWouldBuys();
     const run = await this.prisma.strategyRun.create({
@@ -417,6 +422,156 @@ export class PersistentStore {
       startedAt: run.startedAt.toISOString(),
       completedAt: run.completedAt?.toISOString() ?? null,
       summary
+    };
+  }
+
+  private async *learningDatasetLines() {
+    const counts = await this.datasetCounts();
+    yield ndjsonLine({
+      type: "manifest",
+      schemaVersion: 2,
+      generatedAt: new Date().toISOString(),
+      format: "ndjson",
+      description: "ForecastEdge complete learning export. Each line is one JSON object with a type, table, and row payload.",
+      counts
+    });
+
+    yield* streamTable("locations", (skip, take) => this.prisma.location.findMany({ orderBy: { createdAt: "asc" }, skip, take }));
+    yield* streamTable("scan_reports", (skip, take) => this.prisma.scanReport.findMany({ orderBy: { startedAt: "asc" }, skip, take }));
+    yield* streamTable("quote_snapshots", (skip, take) => this.prisma.marketQuoteSnapshot.findMany({ orderBy: [{ observedAt: "asc" }, { marketTicker: "asc" }], skip, take }));
+    yield* streamTable("candidate_decision_snapshots", (skip, take) => this.prisma.candidateDecisionSnapshot.findMany({ orderBy: [{ observedAt: "asc" }, { marketTicker: "asc" }], skip, take }));
+    yield* streamTable("paper_trade_training_examples", (skip, take) => this.prisma.paperTradeTrainingExample.findMany({ orderBy: { openedAt: "asc" }, skip, take }));
+    yield* streamTable("paper_orders", (skip, take) => this.prisma.paperOrder.findMany({ orderBy: { timestamp: "asc" }, skip, take }));
+    yield* streamTable("paper_positions", (skip, take) => this.prisma.paperPosition.findMany({ orderBy: { openedAt: "asc" }, skip, take }));
+    yield* streamTable("settlements", (skip, take) => this.prisma.settlement.findMany({ orderBy: { createdAt: "asc" }, skip, take }));
+    yield* streamTable("signals", (skip, take) => this.prisma.signal.findMany({ orderBy: { createdAt: "asc" }, skip, take }));
+    yield* streamTable("markets", (skip, take) => this.prisma.kalshiMarket.findMany({ orderBy: { updatedAt: "asc" }, skip, take }));
+    yield* streamTable("mappings", (skip, take) => this.prisma.marketMapping.findMany({ orderBy: { createdAt: "asc" }, skip, take }));
+    yield* streamTable("forecast_snapshots", (skip, take) => this.prisma.forecastSnapshot.findMany({ orderBy: { createdAt: "asc" }, skip, take }));
+    yield* streamTable("station_observations", (skip, take) => this.prisma.stationObservation.findMany({ orderBy: { observedAt: "asc" }, skip, take }));
+    yield* streamTable("model_forecasts", (skip, take) => this.prisma.modelForecast.findMany({ orderBy: { createdAt: "asc" }, skip, take }));
+    yield* streamTable("ensemble_forecasts", (skip, take) => this.prisma.ensembleForecast.findMany({ orderBy: { createdAt: "asc" }, skip, take }));
+    yield* streamTable("strategy_runs", (skip, take) => this.prisma.strategyRun.findMany({ orderBy: { startedAt: "asc" }, skip, take }));
+    yield* this.modelTrainingRowLines();
+  }
+
+  private async *modelTrainingRowLines() {
+    const settlements = new Map((await this.prisma.settlement.findMany()).map((settlement) => [settlement.marketTicker, settlement]));
+    yield ndjsonLine({ type: "table_start", table: "model_training_rows" });
+    const batchSize = 500;
+    for (let skip = 0; ; skip += batchSize) {
+      const candidates = await this.prisma.candidateDecisionSnapshot.findMany({
+        orderBy: [{ observedAt: "asc" }, { marketTicker: "asc" }],
+        skip,
+        take: batchSize
+      });
+      if (candidates.length === 0) break;
+      for (const candidate of candidates) {
+        const settlement = settlements.get(candidate.marketTicker) ?? null;
+        const contracts = candidate.entryPrice === null ? null : simulatedContracts(candidate.entryPrice);
+        const cost = candidate.entryPrice === null || contracts === null ? null : Number((candidate.entryPrice * contracts).toFixed(4));
+        const payout = settlement && contracts !== null ? settlementPayout("YES", settlement.result, contracts) : null;
+        const pnl = payout === null || cost === null ? null : Number((payout - cost).toFixed(4));
+        yield ndjsonLine({
+          type: "row",
+          table: "model_training_rows",
+          data: {
+            scanId: candidate.scanId,
+            scanTrigger: candidate.scanTrigger,
+            scanCadenceMinutes: candidate.scanCadenceMinutes,
+            observedAt: candidate.observedAt,
+            marketTicker: candidate.marketTicker,
+            city: candidate.city,
+            stationId: candidate.stationId,
+            variable: candidate.variable,
+            targetDate: candidate.targetDate,
+            threshold: candidate.threshold,
+            thresholdOperator: candidate.thresholdOperator,
+            forecastValue: candidate.forecastValue,
+            entryPrice: candidate.entryPrice,
+            yesProbability: candidate.yesProbability,
+            impliedProbability: candidate.impliedProbability,
+            edge: candidate.edge,
+            spread: candidate.spread,
+            liquidityScore: candidate.liquidityScore,
+            decision: candidate.status,
+            blockers: candidate.blockers,
+            reason: candidate.reason,
+            settledResult: settlement?.result ?? null,
+            settledPrice: settlement?.settledPrice ?? null,
+            outcomeYes: settlement ? settlement.result === "yes" : null,
+            simulatedContracts: contracts,
+            simulatedCost: cost,
+            simulatedPayout: payout,
+            simulatedPnl: pnl
+          }
+        });
+      }
+    }
+    yield ndjsonLine({ type: "table_end", table: "model_training_rows" });
+  }
+
+  private async datasetCounts() {
+    const [
+      locations,
+      scanReports,
+      fullScans,
+      quoteRefreshScans,
+      quoteSnapshots,
+      candidateSnapshots,
+      paperTradeExamples,
+      paperOrders,
+      paperPositions,
+      settlements,
+      signals,
+      markets,
+      mappings,
+      forecastSnapshots,
+      stationObservations,
+      modelForecasts,
+      ensembles,
+      strategyRuns
+    ] = await Promise.all([
+      this.prisma.location.count(),
+      this.prisma.scanReport.count(),
+      this.prisma.scanReport.count({ where: { trigger: { not: "quote_refresh" } } }),
+      this.prisma.scanReport.count({ where: { trigger: "quote_refresh" } }),
+      this.prisma.marketQuoteSnapshot.count(),
+      this.prisma.candidateDecisionSnapshot.count(),
+      this.prisma.paperTradeTrainingExample.count(),
+      this.prisma.paperOrder.count(),
+      this.prisma.paperPosition.count(),
+      this.prisma.settlement.count(),
+      this.prisma.signal.count(),
+      this.prisma.kalshiMarket.count(),
+      this.prisma.marketMapping.count(),
+      this.prisma.forecastSnapshot.count(),
+      this.prisma.stationObservation.count(),
+      this.prisma.modelForecast.count(),
+      this.prisma.ensembleForecast.count(),
+      this.prisma.strategyRun.count()
+    ]);
+
+    return {
+      locations,
+      scanReports,
+      fullScans,
+      quoteRefreshScans,
+      quoteSnapshots,
+      candidateSnapshots,
+      paperTradeExamples,
+      paperOrders,
+      paperPositions,
+      settlements,
+      signals,
+      markets,
+      mappings,
+      forecastSnapshots,
+      stationObservations,
+      modelForecasts,
+      ensembleForecasts: ensembles,
+      strategyRuns,
+      modelTrainingRows: candidateSnapshots
     };
   }
 
@@ -856,6 +1011,23 @@ function marketWrite(market: KalshiMarketCandidate) {
     liquidityScore: 0,
     rawPayload: toJson(market.rawPayload)
   };
+}
+
+async function* streamTable<T>(table: string, fetchPage: (skip: number, take: number) => Promise<T[]>) {
+  yield ndjsonLine({ type: "table_start", table });
+  const batchSize = 500;
+  for (let skip = 0; ; skip += batchSize) {
+    const rows = await fetchPage(skip, batchSize);
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      yield ndjsonLine({ type: "row", table, data: row });
+    }
+  }
+  yield ndjsonLine({ type: "table_end", table });
+}
+
+function ndjsonLine(value: unknown) {
+  return `${JSON.stringify(value)}\n`;
 }
 
 function mappingWrite(mapping: MarketMapping) {

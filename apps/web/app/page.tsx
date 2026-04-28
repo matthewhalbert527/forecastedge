@@ -345,7 +345,7 @@ function DetailsView({ data, model }: { data: DashboardData; model: DashboardMod
       <div className="section-head">
         <div>
           <h3>Technical details</h3>
-          <p>Backend data is collapsed by default.</p>
+          <p>Backend data is collapsed by default. Dataset download streams every saved scan row.</p>
         </div>
         <a className="ghost-button" href={`${apiUrl}/api/dataset/export`}>
           <Download size={16} />
