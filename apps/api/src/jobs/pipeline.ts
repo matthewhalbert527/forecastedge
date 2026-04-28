@@ -6,13 +6,17 @@ import {
   generateSignal,
   parseKalshiWeatherMarket,
   simulatePaperOrder,
-  summarizePaperOrders
+  summarizePaperOrders,
+  type KalshiMarketCandidate,
+  type MarketMapping,
+  type Signal,
+  type TrainingCandidate
 } from "@forecastedge/core";
 import { AuditLog } from "../audit/audit-log.js";
 import { activeRiskLimits, env } from "../config/env.js";
 import type { PersistentStore } from "../data/persistent-store.js";
 import { MemoryStore } from "../data/store.js";
-import { discoverWeatherMarkets, getOrderBook } from "../kalshi/client.js";
+import { discoverWeatherMarkets, getMarketDetails, getOrderBook } from "../kalshi/client.js";
 import { reconcilePaperSettlements } from "./settlements.js";
 import { fetchAccuWeatherDailyForecast } from "../weather/accuweather.js";
 import { fetchNwsLatestStationObservation } from "../weather/nws-station.js";
@@ -309,11 +313,173 @@ export class ForecastEdgePipeline {
     return this.persistentStore ? this.persistentStore.dashboardSummary(this.store) : this.summary();
   }
 
+  async refreshQuoteCandidates(trigger: "manual" | "quote_refresh" = "manual") {
+    const report = this.store.startScan(trigger);
+    const existingCandidates = this.store.trainingCandidates.length > 0
+      ? this.store.trainingCandidates
+      : buildTrainingCandidates({
+        scanId: report.id,
+        markets: this.store.markets,
+        mappings: this.store.mappings,
+        ensembles: this.store.ensembles,
+        config: trainingCandidateConfig()
+      });
+    const candidateTickers = existingCandidates
+      .filter((candidate) => candidate.status === "WOULD_BUY" || candidate.status === "WATCH")
+      .map((candidate) => candidate.marketTicker);
+    const tickers = [...new Set(candidateTickers)].slice(0, 50);
+
+    if (tickers.length === 0) {
+      report.providerResults.push({ provider: "kalshi_quotes", locationId: "quotes", status: "skipped", message: "No would-buy or watch candidates to refresh yet" });
+      report.counts.trainingCandidates = existingCandidates.length;
+      this.finishReport(report);
+      await this.persist(report);
+      return { refreshedMarkets: 0, wouldBuy: 0, paperOrders: 0, summary: this.summary() };
+    }
+
+    const refreshedMarkets: KalshiMarketCandidate[] = [];
+    for (const ticker of tickers) {
+      try {
+        const market = await getMarketDetails(ticker);
+        if (!market) {
+          report.providerResults.push({ provider: "kalshi_quotes", locationId: ticker, status: "error", message: "Market details unavailable" });
+          continue;
+        }
+        refreshedMarkets.push(market);
+        report.providerResults.push({ provider: "kalshi_quotes", locationId: ticker, status: "ok", message: `Refreshed quote for ${ticker}` });
+      } catch (error) {
+        report.providerResults.push({ provider: "kalshi_quotes", locationId: ticker, status: "error", message: errorMessage(error) });
+      }
+    }
+
+    this.mergeMarkets(refreshedMarkets);
+    const refreshedMappings = refreshedMarkets.map((market) => parseKalshiWeatherMarket(market));
+    this.mergeMappings(refreshedMappings);
+    report.counts.marketsDiscovered = refreshedMarkets.length;
+    report.counts.mappingsAccepted = refreshedMappings.filter((mapping) => mapping.accepted).length;
+    report.counts.mappingsRejected = refreshedMappings.filter((mapping) => !mapping.accepted).length;
+
+    this.store.trainingCandidates = buildTrainingCandidates({
+      scanId: report.id,
+      markets: this.store.markets,
+      mappings: this.store.mappings,
+      ensembles: this.store.ensembles,
+      config: trainingCandidateConfig()
+    });
+    report.counts.trainingCandidates = this.store.trainingCandidates.length;
+
+    const refreshedTickerSet = new Set(tickers);
+    const wouldBuy = this.store.trainingCandidates.filter((candidate) => refreshedTickerSet.has(candidate.marketTicker) && candidate.status === "WOULD_BUY");
+    for (const candidate of wouldBuy.slice(0, 30)) {
+      report.decisions.push({
+        stage: "training_candidate",
+        itemId: candidate.id,
+        status: "accepted",
+        reason: candidate.reason,
+        metadata: { trainingCandidate: candidate }
+      });
+    }
+
+    if (env.APP_MODE === "paper") {
+      await this.placePaperOrdersForCandidates(wouldBuy, report);
+    }
+
+    this.finishReport(report);
+    await this.persist(report);
+    return {
+      refreshedMarkets: refreshedMarkets.length,
+      wouldBuy: wouldBuy.length,
+      paperOrders: report.counts.paperOrders,
+      summary: this.summary()
+    };
+  }
+
   async runSettlementsOnly() {
     if (!this.persistentStore) return { checked: 0, settled: 0, skipped: 0, errors: 1, reason: "DATABASE_URL is not configured" };
     const result = await reconcilePaperSettlements(this.persistentStore, this.audit);
     await this.persistentStore.persistAudit(this.audit.list(250));
     return result;
+  }
+
+  private mergeMarkets(markets: KalshiMarketCandidate[]) {
+    const byTicker = new Map(this.store.markets.map((market) => [market.ticker, market]));
+    for (const market of markets) byTicker.set(market.ticker, market);
+    this.store.markets = [...byTicker.values()];
+  }
+
+  private mergeMappings(mappings: MarketMapping[]) {
+    const byTicker = new Map(this.store.mappings.map((mapping) => [mapping.marketTicker, mapping]));
+    for (const mapping of mappings) byTicker.set(mapping.marketTicker, mapping);
+    this.store.mappings = [...byTicker.values()];
+  }
+
+  private async placePaperOrdersForCandidates(candidates: TrainingCandidate[], report: ReturnType<MemoryStore["startScan"]>) {
+    let placed = 0;
+    for (const candidate of candidates) {
+      if (placed >= env.QUOTE_REFRESH_MAX_PAPER_ORDERS) break;
+      if (this.hasPaperExposure(candidate.marketTicker)) continue;
+      const mapping = this.store.mappings.find((item) => item.marketTicker === candidate.marketTicker);
+      const market = this.store.markets.find((item) => item.ticker === candidate.marketTicker);
+      if (!mapping || !market || candidate.entryPrice === null || candidate.edge === null) continue;
+
+      const now = new Date();
+      const contracts = Math.max(1, Math.min(activeRiskLimits.maxContractsPerTrade, Math.floor(env.MAX_STAKE_PER_TRADE_PAPER / Math.max(candidate.entryPrice, 0.01))));
+      const signal = candidateSignal(candidate, contracts, now);
+      const risk = checkRisk(
+        { maxCost: signal.maxCost, contracts: signal.contracts },
+        this.riskState(),
+        activeRiskLimits,
+        mapping,
+        market,
+        now.toISOString(),
+        latestForecastObservedAt(this.store.ensembles, mapping) ?? now.toISOString(),
+        now
+      );
+
+      if (!risk.allowed) {
+        const skipped = { ...signal, status: "SKIPPED" as const, skipReason: risk.reasons.join("; "), explanation: `${signal.explanation}. Risk blocked: ${risk.reasons.join("; ")}` };
+        this.store.signals.unshift(skipped);
+        report.counts.signalsSkipped += 1;
+        report.decisions.push({ stage: "signal", itemId: skipped.id, status: "skipped", reason: skipped.skipReason ?? skipped.explanation, metadata: { signal: skipped, risk, trainingCandidate: candidate } });
+        continue;
+      }
+
+      this.store.signals.unshift(signal);
+      report.counts.signalsFired += 1;
+      report.decisions.push({ stage: "signal", itemId: signal.id, status: "fired", reason: signal.explanation, metadata: { signal, risk, trainingCandidate: candidate } });
+
+      const orderBook = await getOrderBook(signal.marketTicker);
+      const order = simulatePaperOrder(signal, orderBook, undefined, now);
+      this.store.paperOrders.unshift(order);
+      report.counts.paperOrders += 1;
+      placed += 1;
+      report.decisions.push({
+        stage: "paper_order",
+        itemId: order.id,
+        status: order.status === "FILLED" ? "filled" : order.status === "PARTIAL" ? "partial" : "rejected",
+        reason: order.reason,
+        metadata: order
+      });
+      this.audit.record({ actor: "system", type: "paper_order", message: `${order.status}: ${order.reason}`, metadata: order });
+    }
+  }
+
+  private hasPaperExposure(marketTicker: string) {
+    return this.store.paperOrders.some((order) => order.marketTicker === marketTicker && order.filledContracts > 0);
+  }
+
+  private riskState() {
+    const today = new Date().toISOString().slice(0, 10);
+    const filledOrders = this.store.paperOrders.filter((order) => order.filledContracts > 0);
+    return {
+      realizedPnlToday: 0,
+      tradesToday: this.store.paperOrders.filter((order) => order.timestamp.slice(0, 10) === today).length,
+      openExposure: filledOrders.reduce((sum, order) => sum + (order.simulatedAvgFillPrice ?? order.limitPrice) * order.filledContracts, 0),
+      openPositions: new Set(filledOrders.map((order) => `${order.marketTicker}:${order.side}`)).size,
+      losingStreak: 0,
+      exposureByCity: {},
+      exposureByWeatherType: {}
+    };
   }
 
   private finishReport(report: ReturnType<MemoryStore["startScan"]>) {
@@ -340,6 +506,45 @@ export class ForecastEdgePipeline {
       });
     }
   }
+}
+
+function trainingCandidateConfig() {
+  return {
+    minEdge: env.MIN_EDGE_PERCENTAGE_POINTS / 100,
+    maxSpread: activeRiskLimits.maxSpread,
+    minLiquidityScore: activeRiskLimits.minLiquidityScore
+  };
+}
+
+function candidateSignal(candidate: TrainingCandidate, contracts: number, now: Date): Signal {
+  const limitPrice = candidate.entryPrice ?? 1;
+  return {
+    id: `quote_signal_${candidate.marketTicker}_${now.getTime()}`,
+    marketTicker: candidate.marketTicker,
+    side: "YES",
+    action: "BUY",
+    contracts,
+    limitPrice,
+    maxCost: Number((contracts * limitPrice).toFixed(4)),
+    edge: candidate.edge ?? 0,
+    confidence: "medium",
+    explanation: `Quote refresh would buy ${candidate.marketTicker}: ${candidate.reason}`,
+    status: "FIRED",
+    skipReason: null,
+    linkedDeltaId: candidate.id,
+    createdAt: now.toISOString()
+  };
+}
+
+function latestForecastObservedAt(ensembles: Array<{ createdAt: string; targetDate: string; variable: string; stationId: string | null; city: string }>, mapping: MarketMapping) {
+  const ensemble = ensembles.find((item) => {
+    const sameDate = item.targetDate === mapping.targetDate;
+    const sameVariable = item.variable === mapping.variable;
+    const sameStation = mapping.station?.stationId && item.stationId === mapping.station.stationId;
+    const sameCity = mapping.location?.city && item.city.toLowerCase() === mapping.location.city.toLowerCase();
+    return sameDate && sameVariable && Boolean(sameStation || sameCity);
+  });
+  return ensemble?.createdAt ?? null;
 }
 
 function errorMessage(error: unknown) {

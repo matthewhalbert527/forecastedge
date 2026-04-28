@@ -30,7 +30,7 @@ export interface ScanReport {
   startedAt: string;
   completedAt: string | null;
   status: "running" | "completed" | "completed_with_errors" | "failed";
-  trigger: "manual" | "scheduled" | "startup";
+  trigger: "manual" | "scheduled" | "startup" | "quote_refresh";
   providerResults: Array<{
     provider: string;
     locationId: string;

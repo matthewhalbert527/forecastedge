@@ -22,6 +22,12 @@ services:
         value: "true"
       - key: BACKGROUND_POLL_INTERVAL_MINUTES
         value: "15"
+      - key: RUN_QUOTE_REFRESH_WORKER
+        value: "true"
+      - key: QUOTE_REFRESH_INTERVAL_MINUTES
+        value: "1"
+      - key: QUOTE_REFRESH_MAX_PAPER_ORDERS
+        value: "3"
       - key: FORECAST_CACHE_MINUTES
         value: "45"
       - key: OPEN_METEO_COOLDOWN_MINUTES

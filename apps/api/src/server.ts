@@ -22,6 +22,8 @@ export function buildServer() {
     enabled: env.RUN_BACKGROUND_WORKER,
     runOnStartup: env.RUN_ON_STARTUP,
     intervalMinutes: env.BACKGROUND_POLL_INTERVAL_MINUTES,
+    quoteRefreshEnabled: env.RUN_QUOTE_REFRESH_WORKER,
+    quoteRefreshIntervalMinutes: env.QUOTE_REFRESH_INTERVAL_MINUTES,
     logger: app.log
   });
   const demoBroker = new KalshiDemoBroker();
@@ -66,6 +68,7 @@ export function buildServer() {
   }));
 
   app.post("/api/run-once", async () => pipeline.runOnce("manual"));
+  app.post("/api/quotes/refresh-once", async () => pipeline.refreshQuoteCandidates("quote_refresh"));
   app.post("/api/settlements/run-once", async () => pipeline.runSettlementsOnly());
   app.post("/api/demo/dry-run-order", async (request) => demoBroker.dryRunOrder(request.body));
   app.post("/api/live/dry-run-order", async (request) => {

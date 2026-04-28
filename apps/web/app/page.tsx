@@ -702,6 +702,7 @@ function summarizeBlockers(signals: DashboardData["signals"]) {
 }
 
 function summarizeLatestRun(scan: DashboardData["scanReports"][number]) {
+  if (scan.trigger === "quote_refresh") return `Quote refresh checked ${scan.counts.trainingCandidates ?? 0} candidates and recorded ${scan.counts.paperOrders} paper order${scan.counts.paperOrders === 1 ? "" : "s"}.`;
   if (scan.counts.paperOrders > 0) return `${scan.counts.paperOrders} paper order${scan.counts.paperOrders === 1 ? "" : "s"} recorded on the latest scan.`;
   if (scan.counts.signalsFired > 0) return `${scan.counts.signalsFired} signal${scan.counts.signalsFired === 1 ? "" : "s"} fired, but no paper order was recorded. Check the decision log.`;
   if (scan.counts.signalsSkipped > 0) return `${scan.counts.signalsSkipped} signal${scan.counts.signalsSkipped === 1 ? "" : "s"} scored, but every one was skipped. Open Decisions to see the blockers.`;
@@ -739,12 +740,19 @@ function valueForVariable(variable: string, value: number) {
 }
 
 function scanHealth(scan: DashboardData["scanReports"][number]) {
-  const failedProviders = scan.providerResults.filter((result) => result.status !== "ok").length;
+  const failedProviders = scan.providerResults.filter((result) => result.status === "error").length;
+  const skippedProviders = scan.providerResults.filter((result) => result.status === "skipped").length;
   if (scan.status.includes("error")) {
     return { label: "Scan has errors", tone: "danger" as const, detail: "Open Provider status and Decision log before trusting any signal from this run." };
   }
   if (failedProviders > 0) {
-    return { label: "Provider degraded", tone: "warn" as const, detail: `${failedProviders} provider check failed or degraded. Signals may be skipped because data freshness is uncertain.` };
+    return { label: "Provider degraded", tone: "warn" as const, detail: `${failedProviders} provider check failed. Signals may be skipped because data freshness is uncertain.` };
+  }
+  if (scan.trigger === "quote_refresh") {
+    return { label: "Quote refresh OK", tone: "ok" as const, detail: `Latest lightweight refresh updated market quotes without running a full weather scan.` };
+  }
+  if (skippedProviders > 0) {
+    return { label: "Scan OK", tone: "ok" as const, detail: `${skippedProviders} provider checks were intentionally skipped because cached or optional data was used.` };
   }
   if (scan.counts.marketsDiscovered === 0) {
     return { label: "No markets found", tone: "warn" as const, detail: "Kalshi discovery returned no markets, so the scanner has nothing to map or trade." };
