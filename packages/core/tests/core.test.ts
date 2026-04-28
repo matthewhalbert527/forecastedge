@@ -169,7 +169,25 @@ describe("risk limits", () => {
 });
 
 describe("paper broker", () => {
-  it("simulates partial fills from reciprocal order book liquidity", () => {
+  it("can simulate partial fills from reciprocal order book liquidity", () => {
+    const [delta] = detectForecastDeltas(snapshot("old", 82), snapshot("new", 88));
+    const mapping = parseKalshiWeatherMarket(market);
+    const estimate = estimateMarketProbability(mapping, delta!, market);
+    const risk = { allowed: true, reasons: [] };
+    const signal = generateSignal(delta!, market, mapping, estimate, risk, undefined, new Date("2026-05-01T12:01:00Z"));
+    const orderBook: NormalizedOrderBook = {
+      marketTicker: market.ticker,
+      yesBids: [[0.08, 10]].map(([price, contracts]) => ({ price, contracts })),
+      noBids: [{ price: 0.9, contracts: 2 }],
+      observedAt: "2026-05-01T12:01:00Z"
+    };
+    const order = simulatePaperOrder(signal, orderBook, { staleQuoteMs: 120_000, slippageCents: 1, fillApprovedSignalsHypothetically: false }, new Date("2026-05-01T12:01:01Z"));
+    expect(order.status).toBe("PARTIAL");
+    expect(order.filledContracts).toBe(2);
+    expect(order.unfilledContracts).toBeGreaterThan(0);
+  });
+
+  it("holds the full approved paper signal when displayed liquidity is thin", () => {
     const [delta] = detectForecastDeltas(snapshot("old", 82), snapshot("new", 88));
     const mapping = parseKalshiWeatherMarket(market);
     const estimate = estimateMarketProbability(mapping, delta!, market);
@@ -182,9 +200,23 @@ describe("paper broker", () => {
       observedAt: "2026-05-01T12:01:00Z"
     };
     const order = simulatePaperOrder(signal, orderBook, undefined, new Date("2026-05-01T12:01:01Z"));
-    expect(order.status).toBe("PARTIAL");
-    expect(order.filledContracts).toBe(2);
-    expect(order.unfilledContracts).toBeGreaterThan(0);
+    expect(order.status).toBe("FILLED");
+    expect(order.filledContracts).toBe(signal.contracts);
+    expect(order.unfilledContracts).toBe(0);
+    expect(order.reason).toContain("shortfall held hypothetically");
+  });
+
+  it("holds the approved paper signal at limit when the order book is unavailable", () => {
+    const [delta] = detectForecastDeltas(snapshot("old", 82), snapshot("new", 88));
+    const mapping = parseKalshiWeatherMarket(market);
+    const estimate = estimateMarketProbability(mapping, delta!, market);
+    const risk = { allowed: true, reasons: [] };
+    const signal = generateSignal(delta!, market, mapping, estimate, risk, undefined, new Date("2026-05-01T12:01:00Z"));
+    const order = simulatePaperOrder(signal, null, undefined, new Date("2026-05-01T12:01:01Z"));
+    expect(order.status).toBe("FILLED");
+    expect(order.filledContracts).toBe(signal.contracts);
+    expect(order.simulatedAvgFillPrice).toBe(signal.limitPrice);
+    expect(order.reason).toContain("order book unavailable");
   });
 });
 
