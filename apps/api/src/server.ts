@@ -31,17 +31,7 @@ export function buildServer() {
 
   app.register(cors, { origin: true });
 
-  app.get("/health", async () => ({
-    ok: true,
-    mode: env.APP_MODE,
-    liveTradingEnabled: env.LIVE_TRADING_ENABLED,
-    killSwitchEnabled: env.KILL_SWITCH_ENABLED,
-    backgroundWorker: worker.status(),
-    demoConfigured: demoBroker.isConfigured(),
-    timestamp: new Date().toISOString()
-  }));
-
-  app.get("/api/dashboard", async () => {
+  async function dashboardResponse() {
     const summary = await pipeline.persistedSummary();
     return {
       ...summary,
@@ -56,7 +46,19 @@ export function buildServer() {
       },
       backgroundWorker: worker.status()
     };
-  });
+  }
+
+  app.get("/health", async () => ({
+    ok: true,
+    mode: env.APP_MODE,
+    liveTradingEnabled: env.LIVE_TRADING_ENABLED,
+    killSwitchEnabled: env.KILL_SWITCH_ENABLED,
+    backgroundWorker: worker.status(),
+    demoConfigured: demoBroker.isConfigured(),
+    timestamp: new Date().toISOString()
+  }));
+
+  app.get("/api/dashboard", async () => dashboardResponse());
 
   app.get("/api/settlement-stations", async () => KALSHI_SETTLEMENT_STATIONS);
   app.get("/api/data-sources", async () => WEATHER_DATASET_REFERENCES);
@@ -67,9 +69,18 @@ export function buildServer() {
     auditLogs: audit.list(250)
   }));
 
-  app.post("/api/run-once", async () => pipeline.runOnce("manual"));
-  app.post("/api/quotes/refresh-once", async () => pipeline.refreshQuoteCandidates("quote_refresh"));
-  app.post("/api/settlements/run-once", async () => pipeline.runSettlementsOnly());
+  app.post("/api/run-once", async () => {
+    await pipeline.runOnce("manual");
+    return dashboardResponse();
+  });
+  app.post("/api/quotes/refresh-once", async () => {
+    const result = await pipeline.refreshQuoteCandidates("quote_refresh");
+    return { ...result, summary: await dashboardResponse() };
+  });
+  app.post("/api/settlements/run-once", async () => {
+    const result = await pipeline.runSettlementsOnly();
+    return { ...result, summary: await dashboardResponse() };
+  });
   app.post("/api/demo/dry-run-order", async (request) => demoBroker.dryRunOrder(request.body));
   app.post("/api/live/dry-run-order", async (request) => {
     const body = request.body as { order?: unknown; uiConfirmed?: boolean } | undefined;

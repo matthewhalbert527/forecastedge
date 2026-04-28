@@ -109,14 +109,8 @@ export default function Page() {
     try {
       const response = await fetch(`${apiUrl}${endpoint}`, { method: "POST" });
       if (!response.ok) throw new Error(`Request failed with ${response.status}`);
-      const payload = await response.json();
-      const nextData = dashboardFromPayload(payload);
-      if (nextData) setData(nextData);
-      try {
-        await refresh();
-      } catch (refreshError) {
-        if (!nextData) throw refreshError;
-      }
+      await response.json().catch(() => null);
+      await refresh();
       if (action === "buy") setView("holdings");
       if (action === "settle") setView("results");
     } catch (err) {
@@ -157,7 +151,7 @@ export default function Page() {
           ))}
         </nav>
         <div className="sidebar-status">
-          <StatusDot tone={data?.safety.killSwitchEnabled ? "watch" : "good"} label={data?.safety.killSwitchEnabled ? "Paper safe" : "Ready"} />
+          <StatusDot tone={data?.safety?.killSwitchEnabled ? "watch" : "good"} label={data?.safety?.killSwitchEnabled ? "Paper safe" : "Ready"} />
           <span>{worker?.quoteRefresh?.enabled ? `Quotes every ${worker.quoteRefresh.intervalMinutes} min` : "Quote refresh idle"}</span>
         </div>
       </aside>
@@ -524,12 +518,6 @@ type ResultView = ReturnType<typeof resultView>;
 
 function useDashboardModel(data: DashboardData | null) {
   return useMemo(() => buildDashboardModel(data), [data]);
-}
-
-function dashboardFromPayload(payload: unknown) {
-  const candidate = payload && typeof payload === "object" && "summary" in payload ? (payload as { summary?: unknown }).summary : payload;
-  if (!candidate || typeof candidate !== "object") return null;
-  return Array.isArray((candidate as { scanReports?: unknown }).scanReports) ? candidate as DashboardData : null;
 }
 
 function buildDashboardModel(data: DashboardData | null) {
