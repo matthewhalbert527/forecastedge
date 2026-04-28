@@ -8,13 +8,72 @@ interface OpenMeteoPayload {
 }
 
 export async function fetchModelForecasts(location: LocationConfig): Promise<ModelForecastPoint[]> {
+  const points: ModelForecastPoint[] = [];
+  const [hrrr] = await Promise.allSettled([fetchOpenMeteoHrrr(location)]);
+  if (hrrr.status === "fulfilled") points.push(...hrrr.value);
+
   try {
     const ecmwf = await fetchOpenMeteoModel(location, "ecmwf_ifs", env.OPEN_METEO_ECMWF_MODEL);
-    if (ecmwf.length > 0) return ecmwf;
+    if (ecmwf.length > 0) {
+      points.push(...ecmwf);
+      return points;
+    }
   } catch {
     // Fall through to the generic Open-Meteo model; the pipeline logs count and model label.
   }
-  return fetchOpenMeteoModel(location, "open_meteo_global", null);
+  points.push(...await fetchOpenMeteoModel(location, "open_meteo_global", null));
+  return points;
+}
+
+async function fetchOpenMeteoHrrr(location: LocationConfig) {
+  const url = new URL(env.OPEN_METEO_GFS_BASE_URL);
+  url.searchParams.set("latitude", String(location.latitude));
+  url.searchParams.set("longitude", String(location.longitude));
+  url.searchParams.set("timezone", location.timezone);
+  url.searchParams.set("temperature_unit", "fahrenheit");
+  url.searchParams.set("wind_speed_unit", "mph");
+  url.searchParams.set("precipitation_unit", "inch");
+  url.searchParams.set("models", "best_match");
+  url.searchParams.set("forecast_hours", "18");
+  url.searchParams.set("hourly", "temperature_2m,precipitation,precipitation_probability,wind_gusts_10m");
+
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`hrrr model forecast failed: ${response.status} ${response.statusText}`);
+  const payload = (await response.json()) as OpenMeteoPayload;
+  const hourly = payload.hourly ?? {};
+  const grouped = groupHourlyByDate(hourly);
+  const now = new Date();
+
+  return [...grouped.entries()].map(([targetDate, rows]) => {
+    const temps = rows.map((row) => row.temperatureF).filter((value): value is number => value !== null);
+    const gusts = rows.map((row) => row.windGustMph).filter((value): value is number => value !== null);
+    const precip = rows.map((row) => row.precipitationAmountIn).filter((value): value is number => value !== null);
+    const pop = rows.map((row) => row.precipitationProbabilityPct).filter((value): value is number => value !== null);
+    const forecastValidAt = `${targetDate}T18:00:00.000Z`;
+    const horizonHours = Math.max(0, Math.round((new Date(forecastValidAt).getTime() - now.getTime()) / 3_600_000));
+    return {
+      id: `hrrr_${location.id}_${targetDate}_${Date.now()}`,
+      locationId: location.id,
+      city: location.city,
+      state: location.state,
+      stationId: location.stationId ?? null,
+      model: "hrrr",
+      modelRunAt: now.toISOString(),
+      forecastValidAt,
+      targetDate,
+      horizonHours,
+      highTempF: temps.length ? Math.max(...temps) : null,
+      lowTempF: temps.length ? Math.min(...temps) : null,
+      precipitationAmountIn: precip.length ? round(precip.reduce((sum, value) => sum + value, 0)) : null,
+      precipitationProbabilityPct: pop.length ? Math.max(...pop) : null,
+      windGustMph: gusts.length ? Math.max(...gusts) : null,
+      uncertaintyStdDevF: defaultUncertainty("hrrr", horizonHours),
+      freshnessMinutes: 0,
+      confidence: horizonHours <= 18 ? "high" : "medium",
+      rawPayload: { modelParameter: "best_match", source: "open_meteo_gfs_hrrr", generationtime_ms: payload.generationtime_ms },
+      createdAt: now.toISOString()
+    } satisfies ModelForecastPoint;
+  });
 }
 
 async function fetchOpenMeteoModel(location: LocationConfig, model: ModelForecastPoint["model"], modelParameter: string | null) {
@@ -103,4 +162,26 @@ function toArray(value: unknown): unknown[] {
 function numberAt(value: unknown, index: number): number | null {
   const item = Array.isArray(value) ? value[index] : null;
   return typeof item === "number" && Number.isFinite(item) ? item : null;
+}
+
+function groupHourlyByDate(hourly: Record<string, unknown[]>) {
+  const grouped = new Map<string, Array<{ temperatureF: number | null; precipitationAmountIn: number | null; precipitationProbabilityPct: number | null; windGustMph: number | null }>>();
+  for (const [index, value] of toArray(hourly.time).entries()) {
+    const targetDate = String(value).slice(0, 10);
+    if (!targetDate) continue;
+    grouped.set(targetDate, [
+      ...(grouped.get(targetDate) ?? []),
+      {
+        temperatureF: numberAt(hourly.temperature_2m, index),
+        precipitationAmountIn: numberAt(hourly.precipitation, index),
+        precipitationProbabilityPct: numberAt(hourly.precipitation_probability, index),
+        windGustMph: numberAt(hourly.wind_gusts_10m, index)
+      }
+    ]);
+  }
+  return grouped;
+}
+
+function round(value: number) {
+  return Number(value.toFixed(4));
 }

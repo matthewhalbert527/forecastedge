@@ -48,6 +48,7 @@ Important defaults:
 - `RUN_BACKGROUND_WORKER=false` locally, `true` on Render
 - `BACKGROUND_POLL_INTERVAL_MINUTES=30`
 - `ENABLE_MODEL_STACK=true`
+- `OPEN_METEO_GFS_BASE_URL=https://api.open-meteo.com/v1/gfs`
 - `OPEN_METEO_ECMWF_MODEL=ecmwf_ifs025`
 - `KALSHI_PROD_BASE_URL=https://api.elections.kalshi.com/trade-api/v2`
 - `KALSHI_DEMO_BASE_URL=https://demo-api.kalshi.co/trade-api/v2`
@@ -141,7 +142,7 @@ The frontend never receives private keys.
 ## Known Limitations
 
 - Open-Meteo is implemented first; NWS alerts are available as an adapter but not yet merged into provider agreement logic.
-- The model stack currently persists ECMWF-style Open-Meteo model runs and builds weighted station ensembles. HRRR, Meteomatics US1k, GraphCast, GenCast, WeatherMesh-4, Earth-2, and ICON are represented in the model architecture but require real data adapters and calibration before they can affect trading decisions.
+- The model stack currently persists ECMWF-style Open-Meteo model runs plus short-range HRRR/GFS best-match rows from Open-Meteo’s NOAA endpoint and builds weighted station ensembles. Meteomatics US1k, GraphCast, GenCast, WeatherMesh-4, Earth-2, and ICON are represented in the model architecture but require real data adapters and calibration before they can affect trading decisions.
 - Market title parsing is intentionally conservative and only recognizes a small city alias set.
 - Paper settlement uses Kalshi official binary market results when available; unresolved or scalar/ambiguous results are skipped and audited.
 - Mark-to-market for open paper positions is still limited; open exposure is based on entry cost.
@@ -159,7 +160,7 @@ After several days of paper data:
 2. Persist NWS Daily Climate Report settlement values by station.
 3. Build station-specific calibration buckets by horizon, station, season, and market type.
 4. Estimate forecast error standard deviations from observed station outcomes instead of defaults.
-5. Add HRRR same-day ingestion for 0-18 hour airport high/low edge detection.
+5. Use HRRR same-day deltas as a signal input after enough settlement calibration exists.
 6. Add commercial Meteomatics US1k behind optional credentials for hyper-local settlement station forecasts.
 7. Add AI-model forecast adapters when real GraphCast/GenCast/WeatherNext feeds are available.
 8. Tune edge thresholds against drawdown, not just win rate.
