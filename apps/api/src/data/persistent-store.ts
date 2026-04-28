@@ -368,21 +368,24 @@ export class PersistentStore {
 
   private async persistSignals(signals: Signal[], report: ScanReport) {
     const signalDecisions = new Map(report.decisions.filter((decision) => decision.stage === "signal").map((decision) => [decision.itemId, decision]));
+    const validDeltaIds = new Set((await this.prisma.forecastDelta.findMany({ select: { id: true } })).map((delta) => delta.id));
     for (const signal of signals.slice(0, 250)) {
-      const probability = (signalDecisions.get(signal.id)?.metadata as { probability?: { yesProbability?: number; impliedProbability?: number } } | undefined)?.probability;
+      const decisionMetadata = signalDecisions.get(signal.id)?.metadata as { probability?: { yesProbability?: number; impliedProbability?: number }; trainingCandidate?: { yesProbability?: number | null; impliedProbability?: number | null } } | undefined;
+      const probability = decisionMetadata?.probability;
+      const trainingCandidate = decisionMetadata?.trainingCandidate;
       await this.prisma.signal.upsert({
         where: { id: signal.id },
         create: {
           id: signal.id,
           marketTicker: signal.marketTicker,
-          forecastDeltaId: signal.linkedDeltaId,
+          forecastDeltaId: validDeltaIds.has(signal.linkedDeltaId) ? signal.linkedDeltaId : null,
           side: signal.side,
           action: signal.action,
           contracts: signal.contracts,
           limitPrice: signal.limitPrice,
           maxCost: signal.maxCost,
-          modelProbability: probability?.yesProbability ?? 0,
-          impliedProbability: probability?.impliedProbability ?? signal.limitPrice,
+          modelProbability: probability?.yesProbability ?? trainingCandidate?.yesProbability ?? 0,
+          impliedProbability: probability?.impliedProbability ?? trainingCandidate?.impliedProbability ?? signal.limitPrice,
           edge: signal.edge,
           confidence: signal.confidence,
           explanation: signal.explanation,
