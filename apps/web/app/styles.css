@@ -633,7 +633,9 @@ button {
 }
 
 .backtest-controls input,
-.backtest-controls select {
+.backtest-controls select,
+.backtest-runner input,
+.backtest-runner select {
   min-width: 0;
   min-height: 36px;
   border: 1px solid var(--border-strong);
@@ -644,6 +646,81 @@ button {
   font: inherit;
   font-size: 13px;
   font-weight: 700;
+}
+
+.backtest-runner {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.runner-main {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.8fr) minmax(0, 1.5fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.backtest-runner label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+  text-transform: uppercase;
+  font-weight: 850;
+}
+
+.preset-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-self: end;
+}
+
+.preset-summary span {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.advanced-dropdown {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.advanced-dropdown summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+  list-style: none;
+}
+
+.advanced-dropdown summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 9px;
+  padding-top: 8px;
 }
 
 .status-pill.good {
@@ -851,6 +928,11 @@ button {
 
   .backtest-controls.sync-controls,
   .chart-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .runner-main,
+  .advanced-grid {
     grid-template-columns: 1fr;
   }
 }

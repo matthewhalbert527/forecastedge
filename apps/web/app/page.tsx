@@ -12,6 +12,7 @@ import {
   Gauge,
   Play,
   RefreshCw,
+  SlidersHorizontal,
   ShoppingCart,
   ThermometerSun,
   Trophy
@@ -134,10 +135,53 @@ type BacktestTrade = {
   impliedProbabilityMove?: number | null;
 };
 
+type BacktestPresetKey = "balanced" | "strict" | "exploratory";
 type View = "cockpit" | "buy" | "holdings" | "results" | "backtest" | "details";
 type BusyAction = "scan" | "buy" | "settle" | "backtest" | null;
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? process.env.WEB_PUBLIC_API_URL ?? "http://localhost:4000";
+
+const backtestPresets: Record<BacktestPresetKey, BacktestParameters> = {
+  balanced: {
+    selection: "first_signal",
+    status: "WOULD_BUY",
+    minEdge: 0.05,
+    maxEntryPrice: null,
+    minLiquidityScore: null,
+    maxSpread: null,
+    stakePerTrade: 5,
+    maxContracts: 10,
+    slippageCents: 1,
+    startDate: null,
+    endDate: null
+  },
+  strict: {
+    selection: "best_edge",
+    status: "WOULD_BUY",
+    minEdge: 0.08,
+    maxEntryPrice: 0.75,
+    minLiquidityScore: 0.2,
+    maxSpread: 0.1,
+    stakePerTrade: 5,
+    maxContracts: 8,
+    slippageCents: 2,
+    startDate: null,
+    endDate: null
+  },
+  exploratory: {
+    selection: "each_signal",
+    status: "WOULD_BUY",
+    minEdge: 0,
+    maxEntryPrice: null,
+    minLiquidityScore: null,
+    maxSpread: null,
+    stakePerTrade: 5,
+    maxContracts: 10,
+    slippageCents: 1,
+    startDate: null,
+    endDate: null
+  }
+};
 
 const emptyPerformance: DashboardData["performance"] = {
   totalTrades: 0,
@@ -439,16 +483,17 @@ function ResultsView({ results, performance, settleAction, busy }: { results: Re
 }
 
 function BacktestView({ latest, runBacktest, busy }: { latest: BacktestSummary | null; runBacktest: (parameters: BacktestParameters) => void; busy: boolean }) {
-  const [selection, setSelection] = useState<BacktestParameters["selection"]>(latest?.parameters?.selection ?? "first_signal");
-  const [minEdge, setMinEdge] = useState(latest?.parameters?.minEdge !== null && latest?.parameters?.minEdge !== undefined ? String(latest.parameters.minEdge) : "0.05");
-  const [maxEntryPrice, setMaxEntryPrice] = useState(latest?.parameters?.maxEntryPrice !== null && latest?.parameters?.maxEntryPrice !== undefined ? String(latest.parameters.maxEntryPrice) : "");
-  const [minLiquidityScore, setMinLiquidityScore] = useState(latest?.parameters?.minLiquidityScore !== null && latest?.parameters?.minLiquidityScore !== undefined ? String(latest.parameters.minLiquidityScore) : "");
-  const [maxSpread, setMaxSpread] = useState(latest?.parameters?.maxSpread !== null && latest?.parameters?.maxSpread !== undefined ? String(latest.parameters.maxSpread) : "");
-  const [stakePerTrade, setStakePerTrade] = useState(String(latest?.parameters?.stakePerTrade ?? 5));
-  const [maxContracts, setMaxContracts] = useState(String(latest?.parameters?.maxContracts ?? 10));
-  const [slippageCents, setSlippageCents] = useState(String(latest?.parameters?.slippageCents ?? 1));
-  const [startDate, setStartDate] = useState(latest?.parameters?.startDate ?? "");
-  const [endDate, setEndDate] = useState(latest?.parameters?.endDate ?? "");
+  const [preset, setPreset] = useState<BacktestPresetKey>("balanced");
+  const [selection, setSelection] = useState<BacktestParameters["selection"]>(backtestPresets.balanced.selection);
+  const [minEdge, setMinEdge] = useState(String(backtestPresets.balanced.minEdge ?? ""));
+  const [maxEntryPrice, setMaxEntryPrice] = useState("");
+  const [minLiquidityScore, setMinLiquidityScore] = useState("");
+  const [maxSpread, setMaxSpread] = useState("");
+  const [stakePerTrade, setStakePerTrade] = useState(String(backtestPresets.balanced.stakePerTrade));
+  const [maxContracts, setMaxContracts] = useState(String(backtestPresets.balanced.maxContracts));
+  const [slippageCents, setSlippageCents] = useState(String(backtestPresets.balanced.slippageCents));
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
   const [syncTickers, setSyncTickers] = useState("");
   const [syncSeries, setSyncSeries] = useState("KXHIGHCHI");
   const [syncSource, setSyncSource] = useState<"historical" | "live">("historical");
@@ -457,21 +502,40 @@ function BacktestView({ latest, runBacktest, busy }: { latest: BacktestSummary |
   const [syncing, setSyncing] = useState(false);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    runBacktest({
+  function applyPreset(key: BacktestPresetKey) {
+    const next = backtestPresets[key];
+    setPreset(key);
+    setSelection(next.selection);
+    setMinEdge(next.minEdge === null ? "" : String(next.minEdge));
+    setMaxEntryPrice(next.maxEntryPrice === null ? "" : String(next.maxEntryPrice));
+    setMinLiquidityScore(next.minLiquidityScore === null ? "" : String(next.minLiquidityScore));
+    setMaxSpread(next.maxSpread === null ? "" : String(next.maxSpread));
+    setStakePerTrade(String(next.stakePerTrade));
+    setMaxContracts(String(next.maxContracts));
+    setSlippageCents(String(next.slippageCents));
+    setStartDate(next.startDate ?? "");
+    setEndDate(next.endDate ?? "");
+  }
+
+  function parametersFromForm(): BacktestParameters {
+    return {
       selection,
       status: "WOULD_BUY",
       minEdge: formNumber(minEdge),
       maxEntryPrice: formNumber(maxEntryPrice),
       minLiquidityScore: formNumber(minLiquidityScore),
       maxSpread: formNumber(maxSpread),
-      stakePerTrade: formNumber(stakePerTrade) ?? 5,
-      maxContracts: formNumber(maxContracts) ?? 10,
-      slippageCents: formNumber(slippageCents) ?? 1,
+      stakePerTrade: formNumber(stakePerTrade) ?? backtestPresets.balanced.stakePerTrade,
+      maxContracts: formNumber(maxContracts) ?? backtestPresets.balanced.maxContracts,
+      slippageCents: formNumber(slippageCents) ?? backtestPresets.balanced.slippageCents,
       startDate: startDate || null,
       endDate: endDate || null
-    });
+    };
+  }
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    runBacktest(parametersFromForm());
   }
 
   async function syncHistorical(event: FormEvent<HTMLFormElement>) {
@@ -548,55 +612,79 @@ function BacktestView({ latest, runBacktest, busy }: { latest: BacktestSummary |
         {syncNotice ? <span className="form-note">{syncNotice}</span> : null}
       </form>
 
-      <form className="backtest-controls" onSubmit={submit}>
-        <label>
-          Selection
-          <select value={selection} onChange={(event) => setSelection(event.target.value as BacktestParameters["selection"])}>
-            <option value="first_signal">First signal per market</option>
-            <option value="best_edge">Best edge per market</option>
-            <option value="each_signal">Every eligible signal</option>
-          </select>
-        </label>
-        <label>
-          Min edge
-          <input inputMode="decimal" value={minEdge} onChange={(event) => setMinEdge(event.target.value)} placeholder="0.05" />
-        </label>
-        <label>
-          Max entry
-          <input inputMode="decimal" value={maxEntryPrice} onChange={(event) => setMaxEntryPrice(event.target.value)} placeholder="optional" />
-        </label>
-        <label>
-          Min liquidity
-          <input inputMode="decimal" value={minLiquidityScore} onChange={(event) => setMinLiquidityScore(event.target.value)} placeholder="optional" />
-        </label>
-        <label>
-          Max spread
-          <input inputMode="decimal" value={maxSpread} onChange={(event) => setMaxSpread(event.target.value)} placeholder="optional" />
-        </label>
-        <label>
-          Stake
-          <input inputMode="decimal" value={stakePerTrade} onChange={(event) => setStakePerTrade(event.target.value)} />
-        </label>
-        <label>
-          Max contracts
-          <input inputMode="numeric" value={maxContracts} onChange={(event) => setMaxContracts(event.target.value)} />
-        </label>
-        <label>
-          Slippage
-          <input inputMode="decimal" value={slippageCents} onChange={(event) => setSlippageCents(event.target.value)} />
-        </label>
-        <label>
-          From
-          <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
-        </label>
-        <label>
-          To
-          <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
-        </label>
-        <button className="buy-button" disabled={busy}>
-          <Play size={16} />
-          {busy ? "Running" : "Run backtest"}
-        </button>
+      <form className="backtest-runner" onSubmit={submit}>
+        <div className="runner-main">
+          <label>
+            Preset
+            <select value={preset} onChange={(event) => applyPreset(event.target.value as BacktestPresetKey)}>
+              <option value="balanced">Balanced replay</option>
+              <option value="strict">Strict quality</option>
+              <option value="exploratory">Explore all signals</option>
+            </select>
+          </label>
+          <div className="preset-summary">
+            <span>{selectionLabel(selection)}</span>
+            <span>{formatPct(formNumber(minEdge))} min edge</span>
+            <span>{money(formNumber(stakePerTrade) ?? 0)} stake</span>
+            <span>{formNumber(slippageCents) ?? 0}c slippage</span>
+          </div>
+          <button className="buy-button" disabled={busy}>
+            <Play size={16} />
+            {busy ? "Running" : "Run backtest"}
+          </button>
+        </div>
+        <details className="advanced-dropdown">
+          <summary>
+            <SlidersHorizontal size={15} />
+            Change inputs
+          </summary>
+          <div className="advanced-grid">
+            <label>
+              Selection
+              <select value={selection} onChange={(event) => setSelection(event.target.value as BacktestParameters["selection"])}>
+                <option value="first_signal">First signal per market</option>
+                <option value="best_edge">Best edge per market</option>
+                <option value="each_signal">Every eligible signal</option>
+              </select>
+            </label>
+            <label>
+              Min edge
+              <input inputMode="decimal" value={minEdge} onChange={(event) => setMinEdge(event.target.value)} placeholder="0.05" />
+            </label>
+            <label>
+              Max entry
+              <input inputMode="decimal" value={maxEntryPrice} onChange={(event) => setMaxEntryPrice(event.target.value)} placeholder="optional" />
+            </label>
+            <label>
+              Min liquidity
+              <input inputMode="decimal" value={minLiquidityScore} onChange={(event) => setMinLiquidityScore(event.target.value)} placeholder="optional" />
+            </label>
+            <label>
+              Max spread
+              <input inputMode="decimal" value={maxSpread} onChange={(event) => setMaxSpread(event.target.value)} placeholder="optional" />
+            </label>
+            <label>
+              Stake
+              <input inputMode="decimal" value={stakePerTrade} onChange={(event) => setStakePerTrade(event.target.value)} />
+            </label>
+            <label>
+              Max contracts
+              <input inputMode="numeric" value={maxContracts} onChange={(event) => setMaxContracts(event.target.value)} />
+            </label>
+            <label>
+              Slippage
+              <input inputMode="decimal" value={slippageCents} onChange={(event) => setSlippageCents(event.target.value)} />
+            </label>
+            <label>
+              From
+              <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
+            </label>
+            <label>
+              To
+              <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+            </label>
+          </div>
+        </details>
       </form>
 
       {latest ? (
@@ -1219,6 +1307,12 @@ function labelForTrigger(trigger: string) {
 
 function labelize(value: string) {
   return value.replace(/([A-Z])/g, " $1").replaceAll("_", " ").trim();
+}
+
+function selectionLabel(value: BacktestParameters["selection"]) {
+  if (value === "best_edge") return "Best edge";
+  if (value === "each_signal") return "Every signal";
+  return "First signal";
 }
 
 function valueForVariable(variable: string, value: number) {
