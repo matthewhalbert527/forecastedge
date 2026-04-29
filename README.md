@@ -241,9 +241,19 @@ Run the bounded optimizer explicitly with:
 curl -X POST http://localhost:4000/api/jobs/optimize_strategy_candidates/run
 ```
 
+Codex nightly research export:
+
+```bash
+npm run research:nightly-export -- --lookback-hours=24
+```
+
+This calls `/api/research/nightly-export`, writes `tmp/nightly-research/latest.json`, and gives Codex a compact payload with strategy status, optimizer recommendations, data-quality warnings, paper-trading degradation, recent candidates, rejected strategy reasons, and required validation steps. The endpoint accepts `x-job-token` or `Authorization: Bearer ...` when `SCHEDULED_JOB_TOKEN` is configured.
+
 For production, set `SCHEDULED_JOB_TOKEN` on both `forecastedge-api` and `forecastedge-nightly-optimizer`. When set, scheduled job POSTs must include the matching `x-job-token` header.
 
 `render.yaml` includes a `forecastedge-nightly-optimizer` cron service scheduled as `0 8 * * *`. Render cron schedules are UTC, so this corresponds to 3am America/Chicago during daylight time. The cron job calls `https://forecastedge-api.onrender.com/api/jobs/optimize_strategy_candidates/run` once and exits.
+
+The Codex-side automation lives at `$CODEX_HOME/automations/backtest-work-3/automation.toml` and is scheduled for 3am local time. Its job is to pull the research export, decide whether a code/config improvement is justified, run validation, push to `origin/main`, and verify Render. The Render cron scores candidates inside the app; the Codex automation is the code-changing layer.
 
 Historical refresh is opt-in and bounded by:
 

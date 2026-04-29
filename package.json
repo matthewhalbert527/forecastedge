@@ -20,6 +20,7 @@
     "test": "npm run test --workspaces --if-present",
     "smoke": "npm run smoke --workspace @forecastedge/api",
     "job:run": "node scripts/run-scheduled-job.mjs",
+    "research:nightly-export": "node scripts/fetch-nightly-research.mjs",
     "db:generate": "prisma generate",
     "db:push": "prisma db push"
   },

@@ -363,6 +363,212 @@ export class PersistentStore {
     };
   }
 
+  async nightlyResearchExport(options: { since: Date; until: Date; lookbackHours: number }) {
+    const { since, until, lookbackHours } = options;
+    const [
+      decisionDashboard,
+      learning,
+      recentScans,
+      recentCandidates,
+      recentPaperExamples,
+      allSettledPaperExamples,
+      recentOrders,
+      recentSettlements,
+      recentStrategyRuns,
+      recentOptimizerRuns,
+      auditWarnings,
+      quoteSnapshots,
+      candidateSnapshots,
+      paperExamples,
+      settledPaperExamples,
+      signalCounts,
+      candidateStatusCounts
+    ] = await Promise.all([
+      this.strategyDecisionDashboard(),
+      this.learningSummary(),
+      this.prisma.scanReport.findMany({
+        where: { startedAt: { gte: since, lte: until } },
+        orderBy: { startedAt: "desc" },
+        take: 30,
+        select: { id: true, startedAt: true, completedAt: true, status: true, trigger: true, counts: true, providerResults: true, decisions: true }
+      }),
+      this.prisma.candidateDecisionSnapshot.findMany({
+        where: { observedAt: { gte: since, lte: until } },
+        orderBy: { observedAt: "desc" },
+        take: 100,
+        select: {
+          id: true,
+          observedAt: true,
+          scanTrigger: true,
+          marketTicker: true,
+          city: true,
+          stationId: true,
+          variable: true,
+          targetDate: true,
+          forecastValue: true,
+          entryPrice: true,
+          yesProbability: true,
+          impliedProbability: true,
+          edge: true,
+          spread: true,
+          liquidityScore: true,
+          status: true,
+          blockers: true,
+          reason: true
+        }
+      }),
+      this.prisma.paperTradeTrainingExample.findMany({
+        where: { OR: [{ openedAt: { gte: since, lte: until } }, { settledAt: { gte: since, lte: until } }] },
+        orderBy: { openedAt: "desc" },
+        take: 100,
+        select: {
+          orderId: true,
+          marketTicker: true,
+          side: true,
+          openedAt: true,
+          settledAt: true,
+          status: true,
+          filledContracts: true,
+          limitPrice: true,
+          entryPrice: true,
+          cost: true,
+          modelProbability: true,
+          impliedProbability: true,
+          edge: true,
+          settlementResult: true,
+          payout: true,
+          pnl: true,
+          roi: true
+        }
+      }),
+      this.prisma.paperTradeTrainingExample.findMany({
+        where: { status: { in: ["won", "lost"] } },
+        orderBy: { openedAt: "asc" },
+        select: { orderId: true, marketTicker: true, openedAt: true, status: true, cost: true, payout: true, pnl: true, roi: true }
+      }),
+      this.prisma.paperOrder.findMany({
+        where: { timestamp: { gte: since, lte: until } },
+        orderBy: { timestamp: "desc" },
+        take: 100,
+        select: { id: true, timestamp: true, marketTicker: true, side: true, requestedContracts: true, limitPrice: true, simulatedAvgFillPrice: true, filledContracts: true, unfilledContracts: true, status: true, reason: true }
+      }),
+      this.prisma.settlement.findMany({
+        where: { createdAt: { gte: since, lte: until } },
+        orderBy: { createdAt: "desc" },
+        take: 100,
+        select: { marketTicker: true, result: true, settledPrice: true, source: true, createdAt: true }
+      }),
+      this.prisma.strategyRun.findMany({
+        where: { startedAt: { gte: since, lte: until } },
+        orderBy: { startedAt: "desc" },
+        take: 30,
+        select: { id: true, strategyVersionId: true, approvalStatus: true, dataQualityScore: true, warnings: true, startedAt: true, completedAt: true, summary: true }
+      }),
+      this.prisma.strategyOptimizationRun.findMany({
+        where: { startedAt: { gte: since, lte: until } },
+        orderBy: { startedAt: "desc" },
+        take: 10,
+        select: { id: true, status: true, recommendation: true, champion: true, bestCandidate: true, challengers: true, searchSpace: true, startedAt: true, completedAt: true }
+      }),
+      this.prisma.auditLog.findMany({
+        where: { createdAt: { gte: since, lte: until }, type: { in: ["error", "live_order_blocked"] } },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+        select: { id: true, type: true, message: true, metadata: true, createdAt: true }
+      }),
+      this.prisma.marketQuoteSnapshot.count({ where: { observedAt: { gte: since, lte: until } } }),
+      this.prisma.candidateDecisionSnapshot.count({ where: { observedAt: { gte: since, lte: until } } }),
+      this.prisma.paperTradeTrainingExample.count({ where: { openedAt: { gte: since, lte: until } } }),
+      this.prisma.paperTradeTrainingExample.count({ where: { settledAt: { gte: since, lte: until }, status: { in: ["won", "lost"] } } }),
+      this.prisma.signal.groupBy({
+        by: ["status"],
+        where: { createdAt: { gte: since, lte: until } },
+        _count: { _all: true }
+      }),
+      this.prisma.candidateDecisionSnapshot.groupBy({
+        by: ["status"],
+        where: { observedAt: { gte: since, lte: until } },
+        _count: { _all: true }
+      })
+    ]);
+
+    const recentPaperStats = paperOutcomeStats(recentPaperExamples);
+    const allTimePaperStats = paperOutcomeStats(allSettledPaperExamples);
+    const blockerSummary = topCandidateBlockers(recentCandidates);
+    const criticalWarnings = decisionDashboard.warningsRequiringReview.filter((warning) => warning.severity === "critical");
+    const bestCandidate = jsonRecord(decisionDashboard.latestOptimizerReport?.bestCandidate);
+
+    return {
+      schemaVersion: 1,
+      generatedAt: new Date().toISOString(),
+      window: {
+        since: since.toISOString(),
+        until: until.toISOString(),
+        lookbackHours
+      },
+      source: "postgres",
+      collection: {
+        ...learning.collection,
+        window: {
+          scanReports: recentScans.length,
+          quoteSnapshots,
+          candidateSnapshots,
+          paperTradeExamples: paperExamples,
+          settledPaperTradeExamples: settledPaperExamples,
+          paperOrders: recentOrders.length,
+          settlements: recentSettlements.length,
+          strategyRuns: recentStrategyRuns.length,
+          optimizerRuns: recentOptimizerRuns.length
+        }
+      },
+      dataFreshness: decisionDashboard.dataFreshness,
+      strategyDecisionEngine: decisionDashboard,
+      optimizer: {
+        latest: decisionDashboard.latestOptimizerReport,
+        runsInWindow: recentOptimizerRuns
+      },
+      backtest: {
+        latestHealth: decisionDashboard.latestBacktestHealth,
+        runsInWindow: recentStrategyRuns.map(strategyRunResearchRow)
+      },
+      paperTrading: {
+        latestHealth: decisionDashboard.latestPaperTradingHealth,
+        windowStats: recentPaperStats,
+        allTimeStats: allTimePaperStats,
+        examplesInWindow: recentPaperExamples,
+        ordersInWindow: recentOrders
+      },
+      signals: {
+        countsByStatus: groupCountRows(signalCounts)
+      },
+      candidates: {
+        countsByStatus: groupCountRows(candidateStatusCounts),
+        topBlockers: blockerSummary,
+        recentSamples: recentCandidates
+      },
+      scans: recentScans.map(scanResearchRow),
+      settlements: recentSettlements,
+      warnings: {
+        strategyWarnings: decisionDashboard.warningsRequiringReview,
+        criticalStrategyWarnings: criticalWarnings,
+        auditWarnings
+      },
+      codexBrief: {
+        objective: "Use this export to decide whether ForecastEdge's algorithm/config should change after a day of collected data.",
+        recommendedAction: codexRecommendedAction({
+          criticalWarnings: criticalWarnings.length,
+          latestPaperHealth: decisionDashboard.latestPaperTradingHealth,
+          bestCandidateStatus: typeof bestCandidate?.approvalStatus === "string" ? bestCandidate.approvalStatus : null,
+          optimizerRecommendation: decisionDashboard.latestOptimizerReport?.recommendation ?? null,
+          settledWindowTrades: recentPaperStats.settledTrades
+        }),
+        changePolicy: "Only edit code/config when data quality is reliable, approval gates pass, nearby parameters are not fragile, and paper fills preserve the edge. If those checks fail, document why and leave code unchanged.",
+        validationRequired: ["npm run typecheck", "npm run lint", "npm test", "npm run build:api", "npm run build:web", "npm run smoke"],
+        deploymentPolicy: "After any code/config change, commit, push to origin/main, and verify Render services are live."
+      }
+    };
+  }
+
   private async dataSourceVersion() {
     const [candidateCount, candleCount, tradeCount, latestCandidate, latestCandle, latestTrade] = await Promise.all([
       this.prisma.candidateDecisionSnapshot.count(),
@@ -1834,6 +2040,130 @@ function paperHealthFromSummary(summary: Record<string, unknown> | null) {
     observedPnlPerTrade: numberField(paperValidation, "observedPnlPerTrade"),
     liveEdgeDegraded: Boolean(paperValidation.liveEdgeDegraded)
   };
+}
+
+function paperOutcomeStats(examples: Array<{ status: string; pnl: number | null; cost?: number | null; payout?: number | null; roi: number | null }>) {
+  const settled = examples.filter((example) => example.status === "won" || example.status === "lost");
+  const wins = settled.filter((example) => example.status === "won").length;
+  const losses = settled.filter((example) => example.status === "lost").length;
+  const grossProfit = settled.reduce((sum, example) => sum + Math.max(0, example.pnl ?? 0), 0);
+  const amountLost = Math.abs(settled.reduce((sum, example) => sum + Math.min(0, example.pnl ?? 0), 0));
+  const netPnl = grossProfit - amountLost;
+  const totalCost = settled.reduce((sum, example) => sum + (example.cost ?? 0), 0);
+  return {
+    settledTrades: settled.length,
+    wins,
+    losses,
+    winRate: settled.length > 0 ? roundMetric(wins / settled.length) : 0,
+    grossProfit: roundMetric(grossProfit) ?? 0,
+    amountLost: roundMetric(amountLost) ?? 0,
+    netPnl: roundMetric(netPnl) ?? 0,
+    roi: totalCost > 0 ? roundMetric(netPnl / totalCost) : 0,
+    medianRoi: median(settled.map((example) => example.roi)),
+    averagePnl: settled.length > 0 ? roundMetric(netPnl / settled.length) : 0
+  };
+}
+
+function median(values: Array<number | null>) {
+  const realValues = values.filter((value): value is number => value !== null && Number.isFinite(value)).sort((a, b) => a - b);
+  if (realValues.length === 0) return null;
+  const midpoint = Math.floor(realValues.length / 2);
+  const medianValue = realValues.length % 2 === 0 ? ((realValues[midpoint - 1] ?? 0) + (realValues[midpoint] ?? 0)) / 2 : realValues[midpoint] ?? null;
+  return roundMetric(medianValue);
+}
+
+function groupCountRows(rows: Array<Record<string, unknown> & { _count?: { _all?: number } }>) {
+  return Object.fromEntries(rows.map((row) => [String(row.status ?? "unknown"), row._count?._all ?? 0]));
+}
+
+function topCandidateBlockers(candidates: Array<{ status: string; blockers: Prisma.JsonValue; reason: string }>) {
+  const counts = new Map<string, number>();
+  for (const candidate of candidates) {
+    if (candidate.status === "WOULD_BUY") continue;
+    const blockers = jsonArray(candidate.blockers);
+    const reasons = blockers.length > 0 ? blockers.map((blocker) => String(blocker)) : [candidate.reason || "unknown blocker"];
+    for (const reason of reasons) counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12)
+    .map(([reason, count]) => ({ reason, count }));
+}
+
+function scanResearchRow(scan: {
+  id: string;
+  startedAt: Date;
+  completedAt: Date | null;
+  status: string;
+  trigger: string;
+  counts: Prisma.JsonValue;
+  providerResults: Prisma.JsonValue;
+  decisions: Prisma.JsonValue;
+}) {
+  const providerResults = jsonArray(scan.providerResults);
+  const decisions = jsonArray(scan.decisions);
+  return {
+    id: scan.id,
+    startedAt: scan.startedAt.toISOString(),
+    completedAt: scan.completedAt?.toISOString() ?? null,
+    status: scan.status,
+    trigger: scan.trigger,
+    counts: scan.counts,
+    providerErrors: providerResults
+      .map(jsonRecord)
+      .filter((result): result is Record<string, unknown> => result?.status === "error")
+      .slice(0, 12),
+    reviewDecisions: decisions
+      .map(jsonRecord)
+      .filter((decision): decision is Record<string, unknown> => decision?.status === "error" || decision?.status === "rejected")
+      .slice(0, 20)
+  };
+}
+
+function strategyRunResearchRow(run: {
+  id: string;
+  strategyVersionId: string | null;
+  approvalStatus: string;
+  dataQualityScore: number | null;
+  warnings: Prisma.JsonValue | null;
+  startedAt: Date;
+  completedAt: Date | null;
+  summary: Prisma.JsonValue | null;
+}) {
+  const summary = jsonRecord(run.summary);
+  const expectancy = jsonRecord(summary?.expectancy);
+  const approval = jsonRecord(summary?.approval);
+  return {
+    id: run.id,
+    strategyVersionId: run.strategyVersionId,
+    approvalStatus: run.approvalStatus,
+    dataQualityScore: run.dataQualityScore,
+    startedAt: run.startedAt.toISOString(),
+    completedAt: run.completedAt?.toISOString() ?? null,
+    evaluatedMarkets: numberField(summary, "evaluatedMarkets"),
+    roi: numberField(summary, "roi"),
+    totalPnl: numberField(summary, "totalPnl"),
+    maxDrawdown: numberField(summary, "maxDrawdown"),
+    expectedValuePerTrade: numberField(expectancy, "expectedValuePerTrade"),
+    profitFactor: numberField(expectancy, "profitFactor"),
+    riskOfRuin: numberField(expectancy, "riskOfRuin"),
+    approvalStatusFromSummary: typeof approval?.status === "string" ? approval.status : null,
+    warnings: jsonArray(run.warnings)
+  };
+}
+
+function codexRecommendedAction(input: {
+  criticalWarnings: number;
+  latestPaperHealth: ReturnType<typeof paperHealthFromSummary>;
+  bestCandidateStatus: string | null;
+  optimizerRecommendation: string | null;
+  settledWindowTrades: number;
+}) {
+  if (input.criticalWarnings > 0) return "Investigate critical strategy/data-quality warnings before changing the algorithm.";
+  if (input.latestPaperHealth?.liveEdgeDegraded) return "Focus on slippage, fill quality, and paper/live degradation before loosening strategy thresholds.";
+  if (input.bestCandidateStatus && input.bestCandidateStatus !== "Rejected") return `Review optimizer candidate with status ${input.bestCandidateStatus}; make a focused config/code change only if the report survives realism checks. ${input.optimizerRecommendation ?? ""}`.trim();
+  if (input.settledWindowTrades < 5) return "Collect more settled paper trades before changing algorithm behavior.";
+  return "No automatic code change is justified by the latest export; document findings or improve observability/tests.";
 }
 
 function buildOptimizerPlan(parameters: Record<string, unknown>) {

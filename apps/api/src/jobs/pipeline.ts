@@ -373,6 +373,35 @@ export class ForecastEdgePipeline {
     };
   }
 
+  async nightlyResearchExport(lookbackHours = 24) {
+    const now = new Date();
+    const boundedLookbackHours = Math.min(168, Math.max(1, Math.floor(lookbackHours)));
+    const since = new Date(now.getTime() - boundedLookbackHours * 60 * 60 * 1000);
+    if (this.persistentStore) return this.persistentStore.nightlyResearchExport({ since, until: now, lookbackHours: boundedLookbackHours });
+    const summary = this.summary();
+    return {
+      schemaVersion: 1,
+      generatedAt: now.toISOString(),
+      window: {
+        since: since.toISOString(),
+        until: now.toISOString(),
+        lookbackHours: boundedLookbackHours
+      },
+      source: "memory",
+      collection: summary.learning.collection,
+      strategyDecisionEngine: await this.strategyDecisionDashboard(),
+      recentScans: summary.scanReports.slice(0, 10),
+      recentPaperOrders: summary.paperOrders.slice(0, 20),
+      candidateSamples: summary.trainingCandidates.slice(0, 25),
+      codexBrief: {
+        objective: "Evaluate whether today's ForecastEdge data justifies a focused algorithm/config change.",
+        recommendedAction: "Do not change production strategy code from memory-only data; configure DATABASE_URL and use the persistent export.",
+        changePolicy: "Only edit algorithm code when data quality, walk-forward validation, and paper-trading evidence support the change. Otherwise document the blocker.",
+        validationRequired: ["npm run typecheck", "npm run lint", "npm test", "npm run build:api", "npm run build:web", "npm run smoke"]
+      }
+    };
+  }
+
   async runStoredBacktest(parameters: Record<string, unknown> = {}) {
     if (!this.persistentStore) {
       return { id: "memory_backtest", startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), summary: this.summary().learning.backtest };

@@ -74,6 +74,15 @@ export function buildServer() {
   app.get("/api/dashboard", async () => dashboardResponse());
   app.get("/api/learning/summary", async () => pipeline.learningSummary());
   app.get("/api/strategy/decision-dashboard", async () => pipeline.strategyDecisionDashboard());
+  app.get("/api/research/nightly-export", async (request, reply) => {
+    if (env.SCHEDULED_JOB_TOKEN) {
+      const token = request.headers["x-job-token"] ?? bearerToken(request.headers.authorization);
+      const queryToken = typeof (request.query as Record<string, unknown> | undefined)?.token === "string" ? (request.query as { token: string }).token : undefined;
+      if (token !== env.SCHEDULED_JOB_TOKEN && queryToken !== env.SCHEDULED_JOB_TOKEN) return reply.code(401).send({ error: "Unauthorized research export request" });
+    }
+    const query = request.query && typeof request.query === "object" ? request.query as Record<string, unknown> : {};
+    return pipeline.nightlyResearchExport(integerParam(query.lookbackHours) ?? 24);
+  });
   app.get("/api/jobs", async () => scheduledJobs.list());
   app.post("/api/jobs/:jobId/run", async (request, reply) => {
     if (env.SCHEDULED_JOB_TOKEN) {
@@ -221,6 +230,12 @@ function stringList(value: unknown) {
 function integerParam(value: unknown) {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
   return Number.isInteger(parsed) ? parsed : null;
+}
+
+function bearerToken(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const match = value.match(/^Bearer\s+(.+)$/i);
+  return match?.[1];
 }
 
 function periodParam(value: unknown): 1 | 60 | 1440 {

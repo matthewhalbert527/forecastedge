@@ -9,5 +9,9 @@ const dashboard = await app.inject({ method: "GET", url: "/api/dashboard" });
 if (dashboard.statusCode !== 200) {
   throw new Error(`dashboard failed: ${dashboard.statusCode} ${dashboard.body}`);
 }
+const researchExport = await app.inject({ method: "GET", url: "/api/research/nightly-export?lookbackHours=24" });
+if (researchExport.statusCode !== 200) {
+  throw new Error(`research export failed: ${researchExport.statusCode} ${researchExport.body}`);
+}
 await app.close();
 console.log("API smoke passed");
