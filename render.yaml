@@ -4,7 +4,8 @@ services:
     runtime: node
     plan: starter
     buildCommand: npm install --include=dev && npm run db:generate && npm run build:api
-    startCommand: npm run db:push && npm run start:api
+    preDeployCommand: npm run db:push
+    startCommand: npm run start:api
     envVars:
       - key: NODE_ENV
         value: production
