@@ -10,8 +10,10 @@ import {
   Database,
   Download,
   Gauge,
+  ListChecks,
   Play,
   RefreshCw,
+  ShieldCheck,
   SlidersHorizontal,
   ShoppingCart,
   ThermometerSun,
@@ -70,6 +72,48 @@ type DashboardData = {
     lastRunAt: string | null;
     quoteRefresh?: { enabled: boolean; running: boolean; intervalMinutes: number; lastRunAt: string | null };
   };
+  scheduledJobs?: Array<{ id: string; label: string; description: string; running: boolean; lastRun: { status: string; completedAt: string; message: string } | null }>;
+  strategyDecisionEngine?: StrategyDecisionData;
+};
+
+type StrategyDecisionData = {
+  statuses: { draft: number; backtestPassed: number; walkForwardPassed: number; paperTesting: number; paperApproved: number; rejected: number };
+  approvedStrategies: StrategyRow[];
+  paperTestingStrategies: StrategyRow[];
+  rejectedStrategies: StrategyRow[];
+  latestBacktestHealth: { runId?: string; approvalStatus?: string; evaluatedMarkets?: number | null; roi?: number | null; totalPnl?: number | null; dataQualityScore?: number | null; completedAt?: string | null } | BacktestSummary | null;
+  latestPaperTradingHealth: { paperTrades: number | null; settledPaperTrades: number | null; expectedWinRate: number | null; observedWinRate: number | null; expectedPnlPerTrade: number | null; observedPnlPerTrade: number | null; liveEdgeDegraded: boolean } | null;
+  latestOptimizerReport: {
+    id: string;
+    status: string;
+    recommendation: string;
+    champion: unknown;
+    bestCandidate: { optimizerCandidateId?: string; approvalStatus?: string; score?: number; roi?: number; evaluatedMarkets?: number; parameters?: Record<string, unknown> } | null;
+    challengers: Array<{ optimizerCandidateId?: string; approvalStatus?: string; score?: number; roi?: number; evaluatedMarkets?: number }>;
+    startedAt: string;
+    completedAt: string | null;
+  } | null;
+  dataFreshness: { latestQuoteAt: string | null; latestCandidateAt: string | null; latestForecastAt: string | null; latestHistoricalCandleAt: string | null; latestHistoricalTradeAt: string | null };
+  warningsRequiringReview: Array<{ runId: string; approvalStatus: string; severity: string; message: string; code: string; startedAt: string }>;
+};
+
+type StrategyRow = {
+  id: string;
+  strategyKey: string;
+  configHash: string;
+  codeVersion: string | null;
+  dataSourceVersion: string;
+  approvalStatus: string;
+  backtestDate: string | null;
+  validationDate: string | null;
+  paperTradingStartDate: string | null;
+  notes: string | null;
+  latestRunId: string | null;
+  latestRunAt: string | null;
+  evaluatedMarkets: number | null;
+  roi: number | null;
+  totalPnl: number | null;
+  summary: string | null;
 };
 
 type BacktestSummary = {
@@ -92,10 +136,29 @@ type BacktestSummary = {
   maxDrawdown?: number;
   equityCurve?: Array<{ observedAt: string; equity: number; pnl: number }>;
   longestLosingStreak?: number;
+  expectancy?: {
+    expectedValuePerTrade: number;
+    averageWin: number;
+    averageLoss: number;
+    payoffRatio: number | null;
+    breakEvenWinRate: number | null;
+    profitFactor: number | null;
+    riskOfRuin: number;
+    medianTradeReturn: number;
+    outlierAdjustedReturn: number;
+    singleTradePnlShare: number;
+    rareLongShotWin: boolean;
+  };
+  dataQuality?: { score: number; reliability: string; warnings: string[] };
+  overfitting?: { parameterFragility: string; warnings: Array<{ code: string; severity: string; message: string }>; concentration: { topCityShare: number; topDateShare: number; topEventPnlShare: number }; feeSensitivity: { rawRoi: number | null; feeAdjustedRoi: number | null; collapsePct: number | null } };
+  paperValidation?: { paperTrades: number; settledPaperTrades: number; expectedWinRate: number | null; observedWinRate: number | null; expectedPnlPerTrade: number | null; observedPnlPerTrade: number | null; liveEdgeDegraded: boolean; skippedTrades: number; signalNoFill: number; fillEdgeDisappeared: number };
+  approval?: { status: string; approvedForRecommendation: boolean; gates: Array<{ name: string; passed: boolean; actual: number | string | null; threshold: number | string; reason: string }>; warnings: Array<{ code: string; severity: string; message: string }>; explanation: { summary: string; edge: string; performsBest: string; failsWhen: string; liquidityConditions: string; riskLimits: string; paperOnly: boolean } };
   trades?: BacktestTrade[];
 };
 
 type BacktestParameters = {
+  strategyKey?: string;
+  validationMode?: "backtest" | "walk_forward" | "paper";
   selection: "first_signal" | "best_edge" | "each_signal";
   status: string;
   minEdge: number | null;
@@ -107,12 +170,18 @@ type BacktestParameters = {
   slippageCents: number;
   startDate: string | null;
   endDate: string | null;
+  paperTradingStartDate?: string | null;
+  notes?: string | null;
 };
 
 type BacktestTrade = {
   marketTicker: string;
   observedAt: string;
   status: string;
+  city?: string | null;
+  variable?: string | null;
+  targetDate?: string | null;
+  eventKey?: string | null;
   entryPrice: number;
   rawEntryPrice?: number;
   entrySource?: string;
@@ -136,7 +205,7 @@ type BacktestTrade = {
 };
 
 type BacktestPresetKey = "balanced" | "strict" | "exploratory";
-type View = "cockpit" | "buy" | "holdings" | "results" | "backtest" | "details";
+type View = "cockpit" | "buy" | "holdings" | "results" | "backtest" | "research" | "details";
 type BusyAction = "scan" | "buy" | "settle" | "backtest" | null;
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? process.env.WEB_PUBLIC_API_URL ?? "http://localhost:4000";
@@ -205,6 +274,7 @@ const navItems: Array<{ key: View; label: string; icon: typeof Gauge }> = [
   { key: "holdings", label: "Holdings", icon: BriefcaseBusiness },
   { key: "results", label: "Results", icon: Trophy },
   { key: "backtest", label: "Backtest", icon: BarChart3 },
+  { key: "research", label: "Research", icon: ShieldCheck },
   { key: "details", label: "Details", icon: Database }
 ];
 
@@ -379,6 +449,7 @@ export default function Page() {
             {view === "holdings" ? <HoldingsView positions={model.openPositions} /> : null}
             {view === "results" ? <ResultsView results={model.results} performance={performance} settleAction={() => runAction("settle", "/api/settlements/run-once")} busy={busyAction === "settle"} /> : null}
             {view === "backtest" ? <BacktestView latest={backtest ?? data.learning?.backtest ?? null} runBacktest={runBacktest} busy={busyAction === "backtest"} /> : null}
+            {view === "research" ? <ResearchView strategy={data.strategyDecisionEngine ?? null} jobs={data.scheduledJobs ?? []} latest={backtest ?? data.learning?.backtest ?? null} /> : null}
             {view === "details" ? <DetailsView data={data} model={model} /> : null}
           </>
         ) : null}
@@ -412,9 +483,6 @@ function CockpitView({ model, performance, buyAction, buyBusy }: { model: Dashbo
       </Panel>
       <Panel title="Currently held">
         <HoldingList positions={model.openPositions.slice(0, 5)} />
-      </Panel>
-      <Panel title="Recent results">
-        <ResultList results={model.results.slice(0, 4)} />
       </Panel>
     </section>
   );
@@ -465,6 +533,7 @@ function HoldingsView({ positions }: { positions: HoldingView[] }) {
 }
 
 function ResultsView({ results, performance, settleAction, busy }: { results: ResultView[]; performance: DashboardData["performance"]; settleAction: () => void; busy: boolean }) {
+  const analytics = resultAnalytics(results);
   return (
     <section className="stack">
       <div className="section-head">
@@ -477,13 +546,21 @@ function ResultsView({ results, performance, settleAction, busy }: { results: Re
           {busy ? "Checking" : "Check results"}
         </button>
       </div>
-      <ResultList results={results} expanded />
+      <section className="result-graphs" aria-label="Settled paper result charts">
+        <ResultStatsPanel title="Yesterday" stats={analytics.yesterday} />
+        <ResultStatsPanel title="All time" stats={analytics.allTime} />
+      </section>
+      <Disclosure title={`Settled results (${results.length})`}>
+        <ResultList results={results} expanded />
+      </Disclosure>
     </section>
   );
 }
 
 function BacktestView({ latest, runBacktest, busy }: { latest: BacktestSummary | null; runBacktest: (parameters: BacktestParameters) => void; busy: boolean }) {
   const [preset, setPreset] = useState<BacktestPresetKey>("balanced");
+  const [strategyKey, setStrategyKey] = useState("candidate_snapshot_v2");
+  const [validationMode, setValidationMode] = useState<NonNullable<BacktestParameters["validationMode"]>>("backtest");
   const [selection, setSelection] = useState<BacktestParameters["selection"]>(backtestPresets.balanced.selection);
   const [minEdge, setMinEdge] = useState(String(backtestPresets.balanced.minEdge ?? ""));
   const [maxEntryPrice, setMaxEntryPrice] = useState("");
@@ -494,6 +571,8 @@ function BacktestView({ latest, runBacktest, busy }: { latest: BacktestSummary |
   const [slippageCents, setSlippageCents] = useState(String(backtestPresets.balanced.slippageCents));
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [paperTradingStartDate, setPaperTradingStartDate] = useState("");
+  const [notes, setNotes] = useState("");
   const [syncTickers, setSyncTickers] = useState("");
   const [syncSeries, setSyncSeries] = useState("KXHIGHCHI");
   const [syncSource, setSyncSource] = useState<"historical" | "live">("historical");
@@ -519,6 +598,8 @@ function BacktestView({ latest, runBacktest, busy }: { latest: BacktestSummary |
 
   function parametersFromForm(): BacktestParameters {
     return {
+      strategyKey,
+      validationMode,
       selection,
       status: "WOULD_BUY",
       minEdge: formNumber(minEdge),
@@ -529,7 +610,9 @@ function BacktestView({ latest, runBacktest, busy }: { latest: BacktestSummary |
       maxContracts: formNumber(maxContracts) ?? backtestPresets.balanced.maxContracts,
       slippageCents: formNumber(slippageCents) ?? backtestPresets.balanced.slippageCents,
       startDate: startDate || null,
-      endDate: endDate || null
+      endDate: endDate || null,
+      paperTradingStartDate: paperTradingStartDate || null,
+      notes: notes || null
     };
   }
 
@@ -623,6 +706,7 @@ function BacktestView({ latest, runBacktest, busy }: { latest: BacktestSummary |
             </select>
           </label>
           <div className="preset-summary">
+            <span>{validationMode === "walk_forward" ? "Walk-forward" : validationMode === "paper" ? "Paper validation" : "Backtest"}</span>
             <span>{selectionLabel(selection)}</span>
             <span>{formatPct(formNumber(minEdge))} min edge</span>
             <span>{money(formNumber(stakePerTrade) ?? 0)} stake</span>
@@ -639,6 +723,18 @@ function BacktestView({ latest, runBacktest, busy }: { latest: BacktestSummary |
             Change inputs
           </summary>
           <div className="advanced-grid">
+            <label>
+              Strategy key
+              <input value={strategyKey} onChange={(event) => setStrategyKey(event.target.value)} />
+            </label>
+            <label>
+              Validation
+              <select value={validationMode} onChange={(event) => setValidationMode(event.target.value as NonNullable<BacktestParameters["validationMode"]>)}>
+                <option value="backtest">Backtest</option>
+                <option value="walk_forward">Walk-forward</option>
+                <option value="paper">Paper validation</option>
+              </select>
+            </label>
             <label>
               Selection
               <select value={selection} onChange={(event) => setSelection(event.target.value as BacktestParameters["selection"])}>
@@ -683,6 +779,14 @@ function BacktestView({ latest, runBacktest, busy }: { latest: BacktestSummary |
               To
               <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
             </label>
+            <label>
+              Paper since
+              <input type="date" value={paperTradingStartDate} onChange={(event) => setPaperTradingStartDate(event.target.value)} />
+            </label>
+            <label className="wide-field">
+              Notes
+              <input value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="validation note" />
+            </label>
           </div>
         </details>
       </form>
@@ -696,11 +800,16 @@ function BacktestView({ latest, runBacktest, busy }: { latest: BacktestSummary |
             <Metric label="Drawdown" value={money(latest.maxDrawdown ?? 0)} detail={`${latest.longestLosingStreak ?? 0} longest loss streak`} />
             <Metric label="Avg edge" value={formatPct(latest.averageEdge ?? null)} detail={`Avg entry ${price(latest.averageEntryPrice ?? null)}`} />
             <Metric label="Liquidity" value={latest.averageLiquidityScore === null || latest.averageLiquidityScore === undefined ? "n/a" : latest.averageLiquidityScore.toFixed(3)} detail={`Profit factor ${latest.profitFactor === null || latest.profitFactor === undefined ? "n/a" : latest.profitFactor.toFixed(2)}`} />
+            <Metric label="Approval" value={latest.approval?.status ?? "Draft"} detail={latest.approval?.approvedForRecommendation ? "eligible for recommendation" : "not promotable"} />
+            <Metric label="Expectancy" value={money(latest.expectancy?.expectedValuePerTrade ?? 0)} detail={`Risk of ruin ${formatPct(latest.expectancy?.riskOfRuin ?? null)}`} />
+            <Metric label="Data quality" value={latest.dataQuality ? `${latest.dataQuality.score}/100` : "n/a"} detail={latest.dataQuality?.reliability ?? "not scored"} />
+            <Metric label="Outliers" value={formatPct(latest.expectancy?.singleTradePnlShare ?? null)} detail={latest.expectancy?.rareLongShotWin ? "rare win dependency" : "concentration clear"} />
           </section>
           <section className="chart-grid">
             <MiniLineChart title="Equity curve" points={(latest.equityCurve ?? []).map((point) => point.equity)} format={money} />
             <MiniLineChart title="Implied probability move" points={(latest.trades ?? []).slice().reverse().map((trade) => trade.impliedProbabilityMove ?? 0)} format={formatPct} />
           </section>
+          <ApprovalPanel latest={latest} />
           <Disclosure title="Recent simulated trades">
             <SimpleTable
               columns={["Time", "Ticker", "Entry", "Contracts", "Move", "Result", "P/L"]}
@@ -719,6 +828,174 @@ function BacktestView({ latest, runBacktest, busy }: { latest: BacktestSummary |
         </>
       ) : <EmptyState>No backtest has run yet</EmptyState>}
     </section>
+  );
+}
+
+function ApprovalPanel({ latest }: { latest: BacktestSummary }) {
+  const approval = latest.approval;
+  const warnings = [...(latest.overfitting?.warnings ?? []), ...(approval?.warnings ?? [])];
+  if (!approval && !latest.expectancy && !latest.dataQuality) return null;
+  return (
+    <section className="approval-grid">
+      <Panel title="Recommendation">
+        {approval ? (
+          <div className="recommendation-copy">
+            <StatusPill tone={approval.status === "Rejected" ? "danger" : approval.status === "Paper Approved" ? "good" : "watch"}>{approval.status}</StatusPill>
+            <p>{approval.explanation.summary}</p>
+            <p>{approval.explanation.edge}</p>
+            <p>{approval.explanation.failsWhen}</p>
+          </div>
+        ) : <EmptyState>No approval decision yet</EmptyState>}
+      </Panel>
+      <Panel title="Approval gates">
+        <SimpleTable
+          columns={["Gate", "Status", "Actual", "Threshold"]}
+          rows={(approval?.gates ?? []).map((gate) => [
+            gate.name,
+            <StatusPill key={`${gate.name}-status`} tone={gate.passed ? "good" : "danger"}>{gate.passed ? "pass" : "fail"}</StatusPill>,
+            String(gate.actual ?? "n/a"),
+            String(gate.threshold)
+          ])}
+          empty="No gate results"
+        />
+      </Panel>
+      <Panel title="Paper validation">
+        <SimpleTable
+          columns={["Metric", "Value"]}
+          rows={latest.paperValidation ? [
+            ["Paper trades", String(latest.paperValidation.paperTrades)],
+            ["Settled paper trades", String(latest.paperValidation.settledPaperTrades)],
+            ["Expected win rate", formatPct(latest.paperValidation.expectedWinRate)],
+            ["Observed win rate", formatPct(latest.paperValidation.observedWinRate)],
+            ["Expected P/L trade", moneyOrPending(latest.paperValidation.expectedPnlPerTrade)],
+            ["Observed P/L trade", moneyOrPending(latest.paperValidation.observedPnlPerTrade)],
+            ["Signals no fill", String(latest.paperValidation.signalNoFill)],
+            ["Edge disappeared", String(latest.paperValidation.fillEdgeDisappeared)]
+          ] : []}
+          empty="No paper validation sample yet"
+        />
+      </Panel>
+      <Panel title="Warnings">
+        <SimpleTable
+          columns={["Severity", "Code", "Message"]}
+          rows={warnings.map((warning) => [warning.severity, warning.code, warning.message])}
+          empty={latest.dataQuality?.warnings.length ? latest.dataQuality.warnings.join("; ") : "No strategy warnings"}
+        />
+      </Panel>
+    </section>
+  );
+}
+
+function ResearchView({ strategy, jobs, latest }: { strategy: StrategyDecisionData | null; jobs: NonNullable<DashboardData["scheduledJobs"]>; latest: BacktestSummary | null }) {
+  const statuses = strategy?.statuses;
+  return (
+    <section className="stack details-stack">
+      <div className="section-head">
+        <div>
+          <h3>Research decision engine</h3>
+          <p>Only strategies that pass data quality, out-of-sample validation, paper checks, and risk gates should graduate from here.</p>
+        </div>
+        <ShieldCheck size={22} />
+      </div>
+      <section className="page-grid">
+        <Metric label="Paper approved" value={statuses?.paperApproved ?? 0} detail="eligible strategy versions" />
+        <Metric label="Paper testing" value={(statuses?.paperTesting ?? 0) + (statuses?.walkForwardPassed ?? 0)} detail="needs live-condition validation" />
+        <Metric label="Rejected" value={statuses?.rejected ?? 0} detail="review failed gates" />
+        <Metric label="Warnings" value={strategy?.warningsRequiringReview.length ?? 0} detail="requiring research review" />
+      </section>
+      <section className="research-grid">
+        <Panel title="Approved strategies">
+          <StrategyTable rows={strategy?.approvedStrategies ?? []} empty="No paper-approved strategies yet" />
+        </Panel>
+        <Panel title="Paper testing">
+          <StrategyTable rows={strategy?.paperTestingStrategies ?? []} empty="No strategies in paper testing" />
+        </Panel>
+        <Panel title="Rejected strategies">
+          <StrategyTable rows={strategy?.rejectedStrategies ?? []} empty="No rejected strategy versions" />
+        </Panel>
+        <Panel title="Latest health">
+          <SimpleTable
+            columns={["Metric", "Value"]}
+            rows={[
+              ["Latest status", latestBacktestStatus(strategy?.latestBacktestHealth ?? latest)],
+              ["Latest ROI", formatPct(latestBacktestRoi(strategy?.latestBacktestHealth ?? latest))],
+              ["Data quality", latestBacktestDataQuality(strategy?.latestBacktestHealth ?? latest)],
+              ["Paper edge", strategy?.latestPaperTradingHealth?.liveEdgeDegraded ? "degraded" : strategy?.latestPaperTradingHealth ? "preserved" : "pending"],
+              ["Paper trades", String(strategy?.latestPaperTradingHealth?.paperTrades ?? 0)]
+            ]}
+            empty="No strategy health"
+          />
+        </Panel>
+        <Panel title="Latest optimizer">
+          <SimpleTable
+            columns={["Metric", "Value"]}
+            rows={strategy?.latestOptimizerReport ? [
+              ["Status", strategy.latestOptimizerReport.status],
+              ["Recommendation", strategy.latestOptimizerReport.recommendation],
+              ["Best candidate", strategy.latestOptimizerReport.bestCandidate?.optimizerCandidateId ?? "none"],
+              ["Best status", strategy.latestOptimizerReport.bestCandidate?.approvalStatus ?? "pending"],
+              ["Best ROI", formatPct(strategy.latestOptimizerReport.bestCandidate?.roi ?? null)],
+              ["Challengers", String(strategy.latestOptimizerReport.challengers.length)],
+              ["Completed", dateTimeOrPending(strategy.latestOptimizerReport.completedAt)]
+            ] : []}
+            empty="Optimizer has not run yet"
+          />
+        </Panel>
+        <Panel title="Data freshness">
+          <SimpleTable
+            columns={["Feed", "Latest"]}
+            rows={strategy ? [
+              ["Quotes", dateTimeOrPending(strategy.dataFreshness.latestQuoteAt)],
+              ["Candidates", dateTimeOrPending(strategy.dataFreshness.latestCandidateAt)],
+              ["Forecasts", dateTimeOrPending(strategy.dataFreshness.latestForecastAt)],
+              ["Historical candles", dateTimeOrPending(strategy.dataFreshness.latestHistoricalCandleAt)],
+              ["Historical trades", dateTimeOrPending(strategy.dataFreshness.latestHistoricalTradeAt)]
+            ] : []}
+            empty="No freshness data"
+          />
+        </Panel>
+        <Panel title="Scheduled-job hooks" action={<ListChecks size={18} />}>
+          <SimpleTable
+            columns={["Job", "State", "Last message"]}
+            rows={jobs.map((job) => [
+              job.label,
+              job.running ? "running" : job.lastRun?.status ?? "ready",
+              job.lastRun?.message ?? job.description
+            ])}
+            empty="No job registry"
+          />
+        </Panel>
+      </section>
+      <Disclosure title="Warnings requiring review">
+        <SimpleTable
+          columns={["Time", "Status", "Severity", "Code", "Message"]}
+          rows={(strategy?.warningsRequiringReview ?? []).map((warning) => [
+            dateTime(warning.startedAt),
+            warning.approvalStatus,
+            warning.severity,
+            warning.code,
+            warning.message
+          ])}
+          empty="No warnings requiring review"
+        />
+      </Disclosure>
+    </section>
+  );
+}
+
+function StrategyTable({ rows, empty }: { rows: StrategyRow[]; empty: string }) {
+  return (
+    <SimpleTable
+      columns={["Strategy", "Status", "Trades", "ROI", "Summary"]}
+      rows={rows.slice(0, 8).map((row) => [
+        `${row.strategyKey} (${row.configHash})`,
+        row.approvalStatus,
+        String(row.evaluatedMarkets ?? 0),
+        formatPct(row.roi),
+        row.summary ?? row.notes ?? "No summary"
+      ])}
+      empty={empty}
+    />
   );
 }
 
@@ -947,6 +1224,45 @@ function ResultList({ results, expanded = false }: { results: ResultView[]; expa
           </div>
         </article>
       ))}
+    </div>
+  );
+}
+
+type ResultStats = {
+  wins: number;
+  losses: number;
+  grossProfit: number;
+  grossLoss: number;
+};
+
+function ResultStatsPanel({ title, stats }: { title: string; stats: ResultStats }) {
+  const maxCount = Math.max(1, stats.wins, stats.losses);
+  const maxMoney = Math.max(1, stats.grossProfit, stats.grossLoss);
+  return (
+    <section className="result-chart-panel">
+      <div className="result-chart-head">
+        <strong>{title}</strong>
+        <span>{stats.wins + stats.losses} settled</span>
+      </div>
+      <div className="result-bars">
+        <ResultBar label="Wins" value={stats.wins} display={String(stats.wins)} max={maxCount} tone="good" />
+        <ResultBar label="Losses" value={stats.losses} display={String(stats.losses)} max={maxCount} tone="danger" />
+        <ResultBar label="Profit" value={stats.grossProfit} display={money(stats.grossProfit)} max={maxMoney} tone="good" />
+        <ResultBar label="Amount lost" value={stats.grossLoss} display={money(stats.grossLoss)} max={maxMoney} tone="danger" />
+      </div>
+    </section>
+  );
+}
+
+function ResultBar({ label, value, display, max, tone }: { label: string; value: number; display: string; max: number; tone: "good" | "danger" }) {
+  const width = `${Math.max(value > 0 ? 6 : 0, Math.min(100, (value / Math.max(max, 1)) * 100))}%`;
+  return (
+    <div className="result-bar-row">
+      <span>{label}</span>
+      <div className="result-bar-track" aria-hidden="true">
+        <i className={tone} style={{ width }} />
+      </div>
+      <b className={tone === "good" ? "good-text" : "danger-text"}>{display}</b>
     </div>
   );
 }
@@ -1213,6 +1529,41 @@ function resultView(position: DashboardData["paperPositions"][number], mapping: 
   };
 }
 
+function resultAnalytics(results: ResultView[]) {
+  const yesterdayKey = localDateKey(addDays(new Date(), -1));
+  return {
+    yesterday: summarizeResultWindow(results.filter((result) => localDateKey(new Date(result.closedAt)) === yesterdayKey)),
+    allTime: summarizeResultWindow(results)
+  };
+}
+
+function summarizeResultWindow(results: ResultView[]): ResultStats {
+  return results.reduce<ResultStats>((stats, result) => {
+    if (result.net >= 0) {
+      stats.wins += 1;
+      stats.grossProfit += result.net;
+    } else {
+      stats.losses += 1;
+      stats.grossLoss += Math.abs(result.net);
+    }
+    return stats;
+  }, { wins: 0, losses: 0, grossProfit: 0, grossLoss: 0 });
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function localDateKey(date: Date) {
+  if (!Number.isFinite(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function displayName(ticker: string, city: string | null | undefined, state: string | undefined, title?: string | null) {
   if (city) return state ? `${city}, ${state}` : city;
   const titleCity = cityFromTitle(title);
@@ -1359,4 +1710,28 @@ function shortDate(isoDate: string) {
 
 function dateTime(iso: string) {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
+}
+
+function dateTimeOrPending(iso: string | null) {
+  return iso ? dateTime(iso) : "pending";
+}
+
+function latestBacktestStatus(value: StrategyDecisionData["latestBacktestHealth"] | BacktestSummary | null) {
+  if (!value) return "pending";
+  if ("approvalStatus" in value && value.approvalStatus) return value.approvalStatus;
+  if ("approval" in value && value.approval?.status) return value.approval.status;
+  return "not scored";
+}
+
+function latestBacktestRoi(value: StrategyDecisionData["latestBacktestHealth"] | BacktestSummary | null) {
+  if (!value) return null;
+  if ("roi" in value && typeof value.roi === "number") return value.roi;
+  return null;
+}
+
+function latestBacktestDataQuality(value: StrategyDecisionData["latestBacktestHealth"] | BacktestSummary | null) {
+  if (!value) return "pending";
+  if ("dataQualityScore" in value && typeof value.dataQualityScore === "number") return `${value.dataQualityScore}/100`;
+  if ("dataQuality" in value && value.dataQuality) return `${value.dataQuality.score}/100`;
+  return "not scored";
 }

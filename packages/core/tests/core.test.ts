@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
   checkRisk,
   buildEnsembles,
+  calculateExpectancyMetrics,
   defaultRiskLimits,
+  defaultStrategyApprovalThresholds,
   detectForecastDeltas,
+  detectAntiOverfitting,
+  evaluateStrategyApproval,
   estimateMarketProbability,
   generateSignal,
   parseKalshiWeatherMarket,
   buildPaperPositionsFromOrders,
+  scoreDataQuality,
   summarizePaperOrders,
   simulatePaperOrder
 } from "../src/index.js";
@@ -355,5 +360,144 @@ describe("model ensemble", () => {
     expect(high?.prediction).toBeGreaterThan(87);
     expect(high?.contributingModels).toEqual(expect.arrayContaining(["hrrr", "ecmwf_ifs"]));
     expect(high?.confidence).toBe("high");
+  });
+});
+
+describe("strategy decision engine", () => {
+  const strategyTrades = Array.from({ length: 40 }, (_, index) => {
+    const win = index % 2 === 0;
+    return {
+      marketTicker: `KXHIGHCHI-26MAY${String(index + 1).padStart(2, "0")}-B85`,
+      observedAt: `2026-05-${String((index % 28) + 1).padStart(2, "0")}T12:00:00Z`,
+      pnl: win ? 0.6 : -0.3,
+      cost: win ? 0.4 : 0.3,
+      payout: win ? 1 : 0,
+      roi: win ? 1.5 : -1,
+      contracts: 1,
+      entryPrice: win ? 0.4 : 0.3,
+      rawEntryPrice: win ? 0.39 : 0.29,
+      liquidityScore: 0.2,
+      city: index < 20 ? "Chicago" : "Miami",
+      variable: "high_temp",
+      targetDate: `2026-05-${String((index % 28) + 1).padStart(2, "0")}`,
+      eventKey: `event_${index}`
+    };
+  });
+
+  it("calculates expectancy and approves robust walk-forward runs", () => {
+    const thresholds = { ...defaultStrategyApprovalThresholds, maxDrawdown: 100 };
+    const metrics = calculateExpectancyMetrics(strategyTrades, thresholds);
+    const dataQuality = scoreDataQuality({
+      totalMarkets: strategyTrades.length,
+      missingMarketPrices: 0,
+      missingForecastSnapshots: 0,
+      staleForecasts: 0,
+      settlementAmbiguities: 0,
+      lowLiquidityMarkets: 0,
+      suspiciousPriceGaps: 0,
+      duplicateMarketRows: 0,
+      incompleteMarketHistories: 0,
+      latestMarketDataAt: "2026-05-30T00:00:00Z",
+      latestForecastAt: "2026-05-30T00:00:00Z"
+    });
+    const overfitting = detectAntiOverfitting({
+      trades: strategyTrades,
+      candidateSnapshots: 80,
+      eligibleSnapshots: 50,
+      parameters: { minEdge: 0.05 },
+      thresholds
+    });
+    const decision = evaluateStrategyApproval({ validationMode: "walk_forward", thresholds, metrics, dataQuality, overfitting });
+    expect(metrics.expectedValuePerTrade).toBeGreaterThan(0);
+    expect(metrics.profitFactor).toBeGreaterThan(1);
+    expect(decision.status).toBe("Walk-Forward Passed");
+    expect(decision.approvedForRecommendation).toBe(true);
+  });
+
+  it("rejects strategies where one long-shot win explains profitability", () => {
+    const trades = [
+      ...Array.from({ length: 35 }, (_, index) => ({
+        ...strategyTrades[index % strategyTrades.length]!,
+        marketTicker: `loss_${index}`,
+        pnl: -0.1,
+        cost: 0.1,
+        payout: 0,
+        roi: -1,
+        eventKey: `loss_event_${index}`
+      })),
+      {
+        ...strategyTrades[0]!,
+        marketTicker: "rare_longshot",
+        pnl: 10,
+        cost: 0.05,
+        payout: 10.05,
+        roi: 200,
+        eventKey: "one_event"
+      }
+    ];
+    const thresholds = { ...defaultStrategyApprovalThresholds, maxDrawdown: 100 };
+    const metrics = calculateExpectancyMetrics(trades, thresholds);
+    const dataQuality = scoreDataQuality({
+      totalMarkets: trades.length,
+      missingMarketPrices: 0,
+      missingForecastSnapshots: 0,
+      staleForecasts: 0,
+      settlementAmbiguities: 0,
+      lowLiquidityMarkets: 0,
+      suspiciousPriceGaps: 0,
+      duplicateMarketRows: 0,
+      incompleteMarketHistories: 0,
+      latestMarketDataAt: "2026-05-30T00:00:00Z",
+      latestForecastAt: "2026-05-30T00:00:00Z"
+    });
+    const overfitting = detectAntiOverfitting({ trades, candidateSnapshots: 60, eligibleSnapshots: 36, parameters: {}, thresholds });
+    const decision = evaluateStrategyApproval({ validationMode: "backtest", thresholds, metrics, dataQuality, overfitting });
+    expect(metrics.rareLongShotWin).toBe(true);
+    expect(decision.status).toBe("Rejected");
+  });
+
+  it("keeps paper validation in testing until enough paper fills exist", () => {
+    const thresholds = { ...defaultStrategyApprovalThresholds, maxDrawdown: 100 };
+    const metrics = calculateExpectancyMetrics(strategyTrades, thresholds);
+    const dataQuality = scoreDataQuality({
+      totalMarkets: strategyTrades.length,
+      missingMarketPrices: 0,
+      missingForecastSnapshots: 0,
+      staleForecasts: 0,
+      settlementAmbiguities: 0,
+      lowLiquidityMarkets: 0,
+      suspiciousPriceGaps: 0,
+      duplicateMarketRows: 0,
+      incompleteMarketHistories: 0,
+      latestMarketDataAt: "2026-05-30T00:00:00Z",
+      latestForecastAt: "2026-05-30T00:00:00Z"
+    });
+    const overfitting = detectAntiOverfitting({ trades: strategyTrades, candidateSnapshots: 80, eligibleSnapshots: 50, parameters: {}, thresholds });
+    const decision = evaluateStrategyApproval({
+      validationMode: "paper",
+      thresholds,
+      metrics,
+      dataQuality,
+      overfitting,
+      paperValidation: {
+        paperTrades: 3,
+        settledPaperTrades: 2,
+        expectedEntryPrice: 0.4,
+        actualFillPrice: 0.41,
+        expectedSlippage: 0.01,
+        actualSlippage: 0.01,
+        expectedWinRate: metrics.winRate,
+        observedWinRate: metrics.winRate,
+        expectedPnlPerTrade: metrics.expectedValuePerTrade,
+        observedPnlPerTrade: metrics.expectedValuePerTrade,
+        skippedTrades: 0,
+        signalNoFill: 0,
+        fillEdgeDisappeared: 0,
+        liveEdgeDegraded: false,
+        warnings: []
+      }
+    });
+    expect(decision.status).toBe("Paper Testing");
+    expect(decision.approvedForRecommendation).toBe(false);
   });
 });

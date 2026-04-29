@@ -1,8 +1,15 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import {
   buildPaperPositionsFromOrders,
+  calculateExpectancyMetrics,
+  defaultStrategyApprovalThresholds,
+  detectAntiOverfitting,
+  evaluateStrategyApproval,
+  scoreDataQuality,
   summarizePaperOrders,
+  summarizePaperValidation,
   type EnsembleForecast,
   type ForecastDelta,
   type KalshiMarketCandidate,
@@ -10,8 +17,12 @@ import {
   type ModelForecastPoint,
   type NormalizedForecastSnapshot,
   type PaperOrder,
+  type PaperValidationTrade,
   type Settlement,
   type Signal,
+  type StrategyApprovalDecision,
+  type StrategyTradeResult,
+  type StrategyValidationMode,
   type TrainingCandidate
 } from "@forecastedge/core";
 import type { AuditEntry } from "../audit/audit-log.js";
@@ -157,7 +168,10 @@ export class PersistentStore {
       }
     });
 
-    const learning = await this.learningSummary();
+    const [learning, strategyDecisionEngine] = await Promise.all([
+      this.learningSummary(),
+      this.strategyDecisionDashboard()
+    ]);
 
     return {
       locations: fallback.locations,
@@ -195,6 +209,7 @@ export class PersistentStore {
       ensembles: typedEnsembles,
       performance: summarizePaperOrders(typedOrders, typedPositions, typedSettlements),
       learning,
+      strategyDecisionEngine,
       auditLogs: auditLogs.map((log) => ({
         id: log.id,
         timestamp: log.createdAt.toISOString(),
@@ -282,6 +297,124 @@ export class PersistentStore {
     };
   }
 
+  async strategyDecisionDashboard() {
+    const [versions, runs, latestOptimizer, latestQuote, latestCandidate, latestForecast, latestHistoricalCandle, latestHistoricalTrade] = await Promise.all([
+      this.prisma.strategyVersion.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 100,
+        include: { runs: { orderBy: { startedAt: "desc" }, take: 1 } }
+      }),
+      this.prisma.strategyRun.findMany({ orderBy: { startedAt: "desc" }, take: 25 }),
+      this.prisma.strategyOptimizationRun.findFirst({ orderBy: { startedAt: "desc" } }),
+      this.prisma.marketQuoteSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
+      this.prisma.candidateDecisionSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
+      this.prisma.forecastSnapshot.findFirst({ orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
+      this.prisma.kalshiMarketCandlestick.findFirst({ orderBy: { endPeriodAt: "desc" }, select: { endPeriodAt: true } }),
+      this.prisma.kalshiMarketTrade.findFirst({ orderBy: { createdTime: "desc" }, select: { createdTime: true } })
+    ]);
+    const latestByStrategy = latestVersionsByStrategy(versions);
+    const strategyRows = latestByStrategy.map((version) => strategyVersionDashboardRow(version));
+    const latestRun = runs[0] ?? null;
+    const latestSummary = jsonRecord(latestRun?.summary);
+    const warnings = runs.flatMap((run) => strategyRunWarnings(run)).slice(0, 20);
+
+    return {
+      statuses: {
+        draft: strategyRows.filter((row) => row.approvalStatus === "Draft").length,
+        backtestPassed: strategyRows.filter((row) => row.approvalStatus === "Backtest Passed").length,
+        walkForwardPassed: strategyRows.filter((row) => row.approvalStatus === "Walk-Forward Passed").length,
+        paperTesting: strategyRows.filter((row) => row.approvalStatus === "Paper Testing").length,
+        paperApproved: strategyRows.filter((row) => row.approvalStatus === "Paper Approved").length,
+        rejected: strategyRows.filter((row) => row.approvalStatus === "Rejected").length
+      },
+      approvedStrategies: strategyRows.filter((row) => row.approvalStatus === "Paper Approved"),
+      paperTestingStrategies: strategyRows.filter((row) => row.approvalStatus === "Paper Testing" || row.approvalStatus === "Walk-Forward Passed" || row.approvalStatus === "Backtest Passed"),
+      rejectedStrategies: strategyRows.filter((row) => row.approvalStatus === "Rejected"),
+      latestBacktestHealth: latestRun ? {
+        runId: latestRun.id,
+        strategyVersionId: latestRun.strategyVersionId,
+        approvalStatus: latestRun.approvalStatus,
+        evaluatedMarkets: numberField(latestSummary, "evaluatedMarkets"),
+        roi: numberField(latestSummary, "roi"),
+        totalPnl: numberField(latestSummary, "totalPnl"),
+        dataQualityScore: latestRun.dataQualityScore,
+        completedAt: latestRun.completedAt?.toISOString() ?? null
+      } : null,
+      latestPaperTradingHealth: paperHealthFromSummary(latestSummary),
+      latestOptimizerReport: latestOptimizer ? {
+        id: latestOptimizer.id,
+        status: latestOptimizer.status,
+        recommendation: latestOptimizer.recommendation,
+        searchSpace: latestOptimizer.searchSpace,
+        champion: latestOptimizer.champion,
+        bestCandidate: latestOptimizer.bestCandidate,
+        challengers: latestOptimizer.challengers,
+        startedAt: latestOptimizer.startedAt.toISOString(),
+        completedAt: latestOptimizer.completedAt?.toISOString() ?? null
+      } : null,
+      dataFreshness: {
+        latestQuoteAt: latestQuote?.observedAt.toISOString() ?? null,
+        latestCandidateAt: latestCandidate?.observedAt.toISOString() ?? null,
+        latestForecastAt: latestForecast?.createdAt.toISOString() ?? null,
+        latestHistoricalCandleAt: latestHistoricalCandle?.endPeriodAt.toISOString() ?? null,
+        latestHistoricalTradeAt: latestHistoricalTrade?.createdTime.toISOString() ?? null
+      },
+      warningsRequiringReview: warnings
+    };
+  }
+
+  private async dataSourceVersion() {
+    const [candidateCount, candleCount, tradeCount, latestCandidate, latestCandle, latestTrade] = await Promise.all([
+      this.prisma.candidateDecisionSnapshot.count(),
+      this.prisma.kalshiMarketCandlestick.count(),
+      this.prisma.kalshiMarketTrade.count(),
+      this.prisma.candidateDecisionSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
+      this.prisma.kalshiMarketCandlestick.findFirst({ orderBy: { endPeriodAt: "desc" }, select: { endPeriodAt: true } }),
+      this.prisma.kalshiMarketTrade.findFirst({ orderBy: { createdTime: "desc" }, select: { createdTime: true } })
+    ]);
+    return [
+      `candidate:${candidateCount}:${latestCandidate?.observedAt.toISOString() ?? "none"}`,
+      `candles:${candleCount}:${latestCandle?.endPeriodAt.toISOString() ?? "none"}`,
+      `trades:${tradeCount}:${latestTrade?.createdTime.toISOString() ?? "none"}`
+    ].join("|");
+  }
+
+  private async firstPaperTradeDate() {
+    const first = await this.prisma.paperTradeTrainingExample.findFirst({ orderBy: { openedAt: "asc" }, select: { openedAt: true } });
+    return first?.openedAt ?? null;
+  }
+
+  private async paperValidationFor(expectancy: ReturnType<typeof calculateExpectancyMetrics>) {
+    const examples = await this.prisma.paperTradeTrainingExample.findMany({
+      include: { order: true },
+      orderBy: { openedAt: "desc" },
+      take: 1000
+    });
+    const trades: PaperValidationTrade[] = examples.map((example) => {
+      const actualFillPrice = example.entryPrice ?? null;
+      const expectedEntryPrice = example.limitPrice;
+      const actualSlippage = actualFillPrice === null ? null : Number((actualFillPrice - example.limitPrice).toFixed(4));
+      return {
+        orderId: example.orderId,
+        marketTicker: example.marketTicker,
+        expectedEntryPrice,
+        actualFillPrice,
+        expectedSlippage: 0.01,
+        actualSlippage,
+        expectedPnl: expectedPaperPnl(example),
+        actualPnl: example.pnl,
+        expectedWinProbability: example.modelProbability,
+        status: paperValidationStatus(example.status),
+        skippedReason: example.filledContracts > 0 ? null : example.order.reason,
+        signalGenerated: true,
+        filled: example.filledContracts > 0,
+        edgeDisappeared: example.edge !== null && example.edge <= 0,
+        openedAt: example.openedAt.toISOString()
+      };
+    });
+    return summarizePaperValidation(trades, expectancy, defaultStrategyApprovalThresholds);
+  }
+
   async exportLearningDataset() {
     const [
       locations,
@@ -302,7 +435,9 @@ export class PersistentStore {
       historicalMarkets,
       marketCandlesticks,
       marketTrades,
-      strategyRuns
+      strategyVersions,
+      strategyRuns,
+      strategyOptimizationRuns
     ] = await Promise.all([
       this.prisma.location.findMany({ orderBy: { createdAt: "asc" } }),
       this.prisma.scanReport.findMany({ orderBy: { startedAt: "asc" } }),
@@ -322,7 +457,9 @@ export class PersistentStore {
       this.prisma.historicalKalshiMarket.findMany({ orderBy: { fetchedAt: "asc" } }),
       this.prisma.kalshiMarketCandlestick.findMany({ orderBy: [{ endPeriodAt: "asc" }, { marketTicker: "asc" }] }),
       this.prisma.kalshiMarketTrade.findMany({ orderBy: [{ createdTime: "asc" }, { marketTicker: "asc" }] }),
-      this.prisma.strategyRun.findMany({ orderBy: { startedAt: "asc" } })
+      this.prisma.strategyVersion.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.strategyRun.findMany({ orderBy: { startedAt: "asc" } }),
+      this.prisma.strategyOptimizationRun.findMany({ orderBy: { startedAt: "asc" } })
     ]);
 
     const settlementByTicker = new Map(settlements.map((settlement) => [settlement.marketTicker, settlement]));
@@ -413,7 +550,9 @@ export class PersistentStore {
         historicalKalshiMarkets: historicalMarkets,
         kalshiMarketCandlesticks: marketCandlesticks.map(serializeJsonSafe),
         kalshiMarketTrades: marketTrades,
-        strategyRuns
+        strategyVersions,
+        strategyRuns,
+        strategyOptimizationRuns
       },
       modelTrainingRows
     };
@@ -426,19 +565,86 @@ export class PersistentStore {
   async runStoredBacktest(parameters: Record<string, unknown> = {}) {
     const options = parseBacktestParameters(parameters);
     const summary = await this.backtestStoredWouldBuys(options);
+    const strategyVersion = await this.prisma.strategyVersion.create({
+      data: {
+        strategyKey: options.strategyKey,
+        configHash: strategyConfigHash(options),
+        config: toJson(options),
+        codeVersion: codeVersion(),
+        dataSourceVersion: await this.dataSourceVersion(),
+        backtestDate: new Date(),
+        validationDate: options.validationMode === "walk_forward" || options.validationMode === "paper" ? new Date() : null,
+        paperTradingStartDate: options.paperTradingStartDate ? new Date(`${options.paperTradingStartDate}T00:00:00Z`) : options.validationMode === "paper" ? await this.firstPaperTradeDate() : null,
+        notes: options.notes,
+        approvalStatus: summary.approval.status
+      }
+    });
     const run = await this.prisma.strategyRun.create({
       data: {
+        strategyVersionId: strategyVersion.id,
         mode: env.APP_MODE,
-        parameters: toJson({ strategy: "candidate_snapshot_v2", ...options }),
+        parameters: toJson({ strategy: options.strategyKey, ...options }),
+        approvalStatus: summary.approval.status,
+        dataQualityScore: summary.dataQuality.score,
+        warnings: toJson(summary.approval.warnings),
         completedAt: new Date(),
         summary: toJson(summary)
       }
     });
     return {
       id: run.id,
+      strategyVersionId: strategyVersion.id,
       startedAt: run.startedAt.toISOString(),
       completedAt: run.completedAt?.toISOString() ?? null,
       summary
+    };
+  }
+
+  async runStrategyOptimizer(parameters: Record<string, unknown> = {}) {
+    const startedAt = new Date();
+    const plan = buildOptimizerPlan(parameters);
+    const before = await this.strategyDecisionDashboard();
+    const champion = before.approvedStrategies[0] ?? before.paperTestingStrategies[0] ?? null;
+    const challengers = [];
+
+    for (const candidate of plan.candidates) {
+      const result = await this.runStoredBacktest({
+        ...candidate,
+        validationMode: plan.validationMode,
+        strategyKey: plan.strategyKey,
+        notes: `${plan.trigger} optimizer candidate ${candidate.optimizerCandidateId}`
+      });
+      challengers.push(optimizerResultFromRun(result, candidate));
+    }
+
+    const ranked = [...challengers].sort((a, b) => b.score - a.score);
+    const bestCandidate = ranked[0] ?? null;
+    const recommendation = optimizerRecommendation(champion, bestCandidate);
+    const status = bestCandidate && bestCandidate.approvalStatus !== "Rejected" ? "completed" : "completed_no_candidate";
+    const completedAt = new Date();
+    const row = await this.prisma.strategyOptimizationRun.create({
+      data: {
+        status,
+        recommendation,
+        searchSpace: toJson(plan.searchSpace),
+        champion: toJson(champion),
+        bestCandidate: toJson(bestCandidate),
+        challengers: toJson(ranked),
+        startedAt,
+        completedAt
+      }
+    });
+
+    return {
+      id: row.id,
+      status,
+      recommendation,
+      searchSpace: plan.searchSpace,
+      champion,
+      bestCandidate,
+      challengers: ranked,
+      startedAt: startedAt.toISOString(),
+      completedAt: completedAt.toISOString()
     };
   }
 
@@ -471,7 +677,9 @@ export class PersistentStore {
     yield* streamTable("historical_kalshi_markets", (skip, take) => this.prisma.historicalKalshiMarket.findMany({ orderBy: { fetchedAt: "asc" }, skip, take }));
     yield* streamTable("kalshi_market_candlesticks", (skip, take) => this.prisma.kalshiMarketCandlestick.findMany({ orderBy: [{ endPeriodAt: "asc" }, { marketTicker: "asc" }], skip, take }));
     yield* streamTable("kalshi_market_trades", (skip, take) => this.prisma.kalshiMarketTrade.findMany({ orderBy: [{ createdTime: "asc" }, { marketTicker: "asc" }], skip, take }));
+    yield* streamTable("strategy_versions", (skip, take) => this.prisma.strategyVersion.findMany({ orderBy: { createdAt: "asc" }, skip, take }));
     yield* streamTable("strategy_runs", (skip, take) => this.prisma.strategyRun.findMany({ orderBy: { startedAt: "asc" }, skip, take }));
+    yield* streamTable("strategy_optimization_runs", (skip, take) => this.prisma.strategyOptimizationRun.findMany({ orderBy: { startedAt: "asc" }, skip, take }));
     yield* this.modelTrainingRowLines();
   }
 
@@ -553,7 +761,9 @@ export class PersistentStore {
       historicalMarkets,
       marketCandlesticks,
       marketTrades,
-      strategyRuns
+      strategyVersions,
+      strategyRuns,
+      strategyOptimizationRuns
     ] = await Promise.all([
       this.prisma.location.count(),
       this.prisma.scanReport.count(),
@@ -575,7 +785,9 @@ export class PersistentStore {
       this.prisma.historicalKalshiMarket.count(),
       this.prisma.kalshiMarketCandlestick.count(),
       this.prisma.kalshiMarketTrade.count(),
-      this.prisma.strategyRun.count()
+      this.prisma.strategyVersion.count(),
+      this.prisma.strategyRun.count(),
+      this.prisma.strategyOptimizationRun.count()
     ]);
 
     return {
@@ -599,7 +811,9 @@ export class PersistentStore {
       historicalKalshiMarkets: historicalMarkets,
       kalshiMarketCandlesticks: marketCandlesticks,
       kalshiMarketTrades: marketTrades,
+      strategyVersions,
       strategyRuns,
+      strategyOptimizationRuns,
       modelTrainingRows: candidateSnapshots
     };
   }
@@ -1079,10 +1293,15 @@ export class PersistentStore {
       const cost = Number((entryPrice * contracts).toFixed(4));
       const payout = settlement.result === "yes" ? contracts : 0;
       const pnl = Number((payout - cost).toFixed(4));
+      const targetDate = snapshot.targetDate?.toISOString().slice(0, 10) ?? null;
       trades.push({
         marketTicker: snapshot.marketTicker,
         observedAt: snapshot.observedAt.toISOString(),
         status: snapshot.status,
+        city: snapshot.city,
+        variable: snapshot.variable,
+        targetDate,
+        eventKey: eventKeyForMarket(snapshot.marketTicker, targetDate),
         entryPrice,
         rawEntryPrice,
         entrySource: replay.entrySource,
@@ -1119,6 +1338,35 @@ export class PersistentStore {
     const averageLiquidityScore = average(sortedTrades.map((trade) => trade.liquidityScore));
     const winningPnl = sortedTrades.filter((trade) => trade.pnl > 0).reduce((sum, trade) => sum + trade.pnl, 0);
     const losingPnl = Math.abs(sortedTrades.filter((trade) => trade.pnl < 0).reduce((sum, trade) => sum + trade.pnl, 0));
+    const thresholds = defaultStrategyApprovalThresholds;
+    const expectancy = calculateExpectancyMetrics(sortedTrades, thresholds);
+    const dataQuality = scoreBacktestDataQuality({
+      trades: sortedTrades,
+      snapshots,
+      filteredSnapshots,
+      orderedSnapshots,
+      settlements,
+      marketTickers,
+      candlesticks,
+      marketTrades,
+      thresholds
+    });
+    const overfitting = detectAntiOverfitting({
+      trades: sortedTrades,
+      candidateSnapshots: snapshots.length,
+      eligibleSnapshots: filteredSnapshots.length,
+      parameters: options,
+      thresholds
+    });
+    const paperValidation = await this.paperValidationFor(expectancy);
+    const approval = evaluateStrategyApproval({
+      validationMode: options.validationMode,
+      thresholds,
+      metrics: expectancy,
+      dataQuality,
+      overfitting,
+      paperValidation
+    });
     return {
       method: backtestMethodLabel(options),
       parameters: options,
@@ -1139,6 +1387,12 @@ export class PersistentStore {
       maxDrawdown: equityCurve.maxDrawdown,
       equityCurve: equityCurve.points,
       longestLosingStreak: longestLosingStreak(sortedTrades),
+      expectancy,
+      dataQuality,
+      overfitting,
+      paperValidation,
+      approval,
+      thresholds,
       trades: sortedTrades.slice(-50).reverse()
     };
   }
@@ -1147,6 +1401,8 @@ export class PersistentStore {
 type BacktestSelection = "first_signal" | "best_edge" | "each_signal";
 
 type BacktestOptions = {
+  strategyKey: string;
+  validationMode: StrategyValidationMode;
   status: string;
   selection: BacktestSelection;
   minEdge: number | null;
@@ -1158,26 +1414,18 @@ type BacktestOptions = {
   slippageCents: number;
   startDate: string | null;
   endDate: string | null;
+  paperTradingStartDate: string | null;
+  notes: string | null;
 };
 
-type BacktestTrade = {
-  marketTicker: string;
-  observedAt: string;
+type BacktestTrade = StrategyTradeResult & {
   status: string;
-  entryPrice: number;
-  rawEntryPrice: number;
   entrySource: string;
   slippageCents: number;
-  contracts: number;
-  cost: number;
-  payout: number;
-  pnl: number;
-  roi: number;
   edge: number | null;
   modelProbability: number | null;
   impliedProbability: number | null;
   spread: number | null;
-  liquidityScore: number;
   settlementResult: string;
   priceBefore: number | null;
   priceAfter: number | null;
@@ -1188,6 +1436,8 @@ type BacktestTrade = {
 
 function defaultBacktestOptions(): BacktestOptions {
   return {
+    strategyKey: "candidate_snapshot_v2",
+    validationMode: "backtest",
     status: "WOULD_BUY",
     selection: "first_signal",
     minEdge: null,
@@ -1198,14 +1448,19 @@ function defaultBacktestOptions(): BacktestOptions {
     maxContracts: activeRiskLimits.maxContractsPerTrade,
     slippageCents: 1,
     startDate: null,
-    endDate: null
+    endDate: null,
+    paperTradingStartDate: null,
+    notes: null
   };
 }
 
 function parseBacktestParameters(parameters: Record<string, unknown>): BacktestOptions {
   const defaults = defaultBacktestOptions();
   const selection = stringParam(parameters.selection);
+  const validationMode = stringParam(parameters.validationMode);
   return {
+    strategyKey: stringParam(parameters.strategyKey) ?? defaults.strategyKey,
+    validationMode: validationMode === "walk_forward" || validationMode === "paper" || validationMode === "backtest" ? validationMode : defaults.validationMode,
     status: stringParam(parameters.status) ?? defaults.status,
     selection: selection === "best_edge" || selection === "each_signal" || selection === "first_signal" ? selection : defaults.selection,
     minEdge: nullableNumber(parameters.minEdge, 0, 1),
@@ -1216,7 +1471,9 @@ function parseBacktestParameters(parameters: Record<string, unknown>): BacktestO
     maxContracts: Math.floor(numberParam(parameters.maxContracts, 1, 1000) ?? defaults.maxContracts),
     slippageCents: numberParam(parameters.slippageCents, 0, 25) ?? defaults.slippageCents,
     startDate: dateParam(parameters.startDate),
-    endDate: dateParam(parameters.endDate)
+    endDate: dateParam(parameters.endDate),
+    paperTradingStartDate: dateParam(parameters.paperTradingStartDate),
+    notes: stringParam(parameters.notes)
   };
 }
 
@@ -1368,6 +1625,415 @@ function replayMarketPrices(snapshot: ReplaySnapshot, candles: ReplayCandle[], t
 
 function candleEntryPrice(candle: ReplayCandle | null) {
   return candle?.yesAskClose ?? candle?.priceClose ?? candle?.yesBidClose ?? candle?.pricePrevious ?? null;
+}
+
+function scoreBacktestDataQuality(input: {
+  trades: BacktestTrade[];
+  snapshots: Array<{ marketTicker: string; forecastValue: number | null; entryPrice: number | null }>;
+  filteredSnapshots: Array<{ marketTicker: string; entryPrice: number | null; liquidityScore: number }>;
+  orderedSnapshots: Array<{ marketTicker: string }>;
+  settlements: Array<{ marketTicker: string }>;
+  marketTickers: string[];
+  candlesticks: Array<{ marketTicker: string; endPeriodAt: Date; yesAskClose: number | null; yesBidClose: number | null; priceClose: number | null; pricePrevious: number | null }>;
+  marketTrades: Array<{ marketTicker: string; createdTime: Date; yesPrice: number | null }>;
+  thresholds: typeof defaultStrategyApprovalThresholds;
+}) {
+  const settlementTickers = new Set(input.settlements.map((settlement) => settlement.marketTicker));
+  const historyTickers = new Set([...input.candlesticks.map((candle) => candle.marketTicker), ...input.marketTrades.map((trade) => trade.marketTicker)]);
+  const missingMarketPrices = input.trades.filter((trade) => trade.entrySource === "candidate_snapshot").length + input.filteredSnapshots.filter((snapshot) => snapshot.entryPrice === null).length;
+  const missingForecastSnapshots = input.filteredSnapshots.filter((snapshot) => snapshot.entryPrice !== null && !input.snapshots.some((candidate) => candidate.marketTicker === snapshot.marketTicker && candidate.forecastValue !== null)).length;
+  const settlementAmbiguities = input.orderedSnapshots.filter((snapshot) => !settlementTickers.has(snapshot.marketTicker)).length;
+  const lowLiquidityMarkets = input.trades.filter((trade) => (trade.liquidityScore ?? 0) < input.thresholds.minLiquidityScore).length;
+  const suspiciousPriceGaps = input.trades.filter((trade) => {
+    if (trade.maxPriceAfter === null || trade.minPriceAfter === null) return false;
+    return trade.maxPriceAfter - trade.minPriceAfter > 0.7;
+  }).length;
+  const incompleteMarketHistories = input.marketTickers.filter((ticker) => !historyTickers.has(ticker)).length;
+
+  return scoreDataQuality({
+    totalMarkets: Math.max(input.marketTickers.length, input.filteredSnapshots.length, input.trades.length),
+    missingMarketPrices,
+    missingForecastSnapshots,
+    staleForecasts: 0,
+    settlementAmbiguities,
+    lowLiquidityMarkets,
+    suspiciousPriceGaps,
+    duplicateMarketRows: duplicateHistoricalRows(input.candlesticks, input.marketTrades),
+    incompleteMarketHistories,
+    latestMarketDataAt: latestIso([
+      ...input.candlesticks.map((candle) => candle.endPeriodAt),
+      ...input.marketTrades.map((trade) => trade.createdTime)
+    ]),
+    latestForecastAt: latestIso(input.trades.map((trade) => new Date(trade.observedAt)))
+  });
+}
+
+function duplicateHistoricalRows(
+  candlesticks: Array<{ marketTicker: string; endPeriodAt: Date }>,
+  trades: Array<{ marketTicker: string; createdTime: Date; yesPrice: number | null }>
+) {
+  const seenCandles = new Set<string>();
+  const seenTrades = new Set<string>();
+  let duplicates = 0;
+  for (const candle of candlesticks) {
+    const key = `${candle.marketTicker}:${candle.endPeriodAt.toISOString()}`;
+    if (seenCandles.has(key)) duplicates += 1;
+    seenCandles.add(key);
+  }
+  for (const trade of trades) {
+    const key = `${trade.marketTicker}:${trade.createdTime.toISOString()}:${trade.yesPrice ?? "null"}`;
+    if (seenTrades.has(key)) duplicates += 1;
+    seenTrades.add(key);
+  }
+  return duplicates;
+}
+
+function latestIso(dates: Date[]) {
+  const timestamps = dates.map((date) => date.getTime()).filter(Number.isFinite);
+  if (timestamps.length === 0) return null;
+  return new Date(Math.max(...timestamps)).toISOString();
+}
+
+function eventKeyForMarket(marketTicker: string, targetDate: string | null) {
+  const parts = marketTicker.split("-");
+  const eventTicker = parts.length >= 2 ? `${parts[0]}-${parts[1]}` : marketTicker;
+  return targetDate ? `${eventTicker}:${targetDate}` : eventTicker;
+}
+
+function strategyConfigHash(options: BacktestOptions) {
+  return createHash("sha256").update(JSON.stringify(stableJson(options))).digest("hex");
+}
+
+function stableJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stableJson(item)]));
+}
+
+function codeVersion() {
+  return process.env.RENDER_GIT_COMMIT ?? process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GIT_COMMIT ?? null;
+}
+
+function expectedPaperPnl(example: {
+  modelProbability: number | null;
+  entryPrice: number | null;
+  limitPrice: number;
+  filledContracts: number;
+}) {
+  const probability = example.modelProbability;
+  if (probability === null || example.filledContracts <= 0) return null;
+  const entry = example.entryPrice ?? example.limitPrice;
+  const winPnl = (1 - entry) * example.filledContracts;
+  const lossPnl = -entry * example.filledContracts;
+  return Number((probability * winPnl + (1 - probability) * lossPnl).toFixed(4));
+}
+
+function paperValidationStatus(status: string): PaperValidationTrade["status"] {
+  if (status === "won") return "won";
+  if (status === "lost") return "lost";
+  if (status === "rejected") return "rejected";
+  if (status === "open") return "open";
+  return "skipped";
+}
+
+function latestVersionsByStrategy<T extends { strategyKey: string; createdAt: Date }>(versions: T[]) {
+  const byStrategy = new Map<string, T>();
+  for (const version of versions) {
+    if (!byStrategy.has(version.strategyKey)) byStrategy.set(version.strategyKey, version);
+  }
+  return [...byStrategy.values()];
+}
+
+function strategyVersionDashboardRow(version: {
+  id: string;
+  strategyKey: string;
+  configHash: string;
+  codeVersion: string | null;
+  dataSourceVersion: string;
+  backtestDate: Date | null;
+  validationDate: Date | null;
+  paperTradingStartDate: Date | null;
+  notes: string | null;
+  approvalStatus: string;
+  createdAt: Date;
+  runs: Array<{ id: string; summary: Prisma.JsonValue | null; startedAt: Date; completedAt: Date | null }>;
+}) {
+  const latestRun = version.runs[0] ?? null;
+  const summary = jsonRecord(latestRun?.summary);
+  const approval = jsonRecord(summary?.approval);
+  const explanation = jsonRecord(approval?.explanation);
+  return {
+    id: version.id,
+    strategyKey: version.strategyKey,
+    configHash: version.configHash.slice(0, 12),
+    codeVersion: version.codeVersion,
+    dataSourceVersion: version.dataSourceVersion,
+    approvalStatus: version.approvalStatus,
+    backtestDate: version.backtestDate?.toISOString() ?? null,
+    validationDate: version.validationDate?.toISOString() ?? null,
+    paperTradingStartDate: version.paperTradingStartDate?.toISOString() ?? null,
+    notes: version.notes,
+    latestRunId: latestRun?.id ?? null,
+    latestRunAt: latestRun?.startedAt.toISOString() ?? null,
+    evaluatedMarkets: numberField(summary, "evaluatedMarkets"),
+    roi: numberField(summary, "roi"),
+    totalPnl: numberField(summary, "totalPnl"),
+    summary: typeof explanation?.summary === "string" ? explanation.summary : null
+  };
+}
+
+function strategyRunWarnings(run: {
+  id: string;
+  approvalStatus: string;
+  warnings: Prisma.JsonValue | null;
+  summary: Prisma.JsonValue | null;
+  startedAt: Date;
+}) {
+  const rows: Array<{ runId: string; approvalStatus: string; severity: string; message: string; code: string; startedAt: string }> = [];
+  const warnings = jsonArray(run.warnings);
+  for (const warning of warnings) {
+    const record = jsonRecord(warning);
+    const severity = typeof record?.severity === "string" ? record.severity : "warning";
+    if (severity === "info") continue;
+    rows.push({
+      runId: run.id,
+      approvalStatus: run.approvalStatus,
+      severity,
+      message: typeof record?.message === "string" ? record.message : "Strategy warning requires review.",
+      code: typeof record?.code === "string" ? record.code : "strategy_warning",
+      startedAt: run.startedAt.toISOString()
+    });
+  }
+  const summary = jsonRecord(run.summary);
+  const approval = jsonRecord(summary?.approval);
+  const gates = jsonArray(approval?.gates);
+  for (const gateValue of gates) {
+    const gateRecord = jsonRecord(gateValue);
+    if (!gateRecord || gateRecord.passed !== false) continue;
+    rows.push({
+      runId: run.id,
+      approvalStatus: run.approvalStatus,
+      severity: "critical",
+      message: typeof gateRecord.reason === "string" ? gateRecord.reason : "Approval gate failed.",
+      code: typeof gateRecord.name === "string" ? gateRecord.name : "approval_gate_failed",
+      startedAt: run.startedAt.toISOString()
+    });
+  }
+  return rows;
+}
+
+function paperHealthFromSummary(summary: Record<string, unknown> | null) {
+  const paperValidation = jsonRecord(summary?.paperValidation);
+  if (!paperValidation) return null;
+  return {
+    paperTrades: numberField(paperValidation, "paperTrades"),
+    settledPaperTrades: numberField(paperValidation, "settledPaperTrades"),
+    expectedWinRate: numberField(paperValidation, "expectedWinRate"),
+    observedWinRate: numberField(paperValidation, "observedWinRate"),
+    expectedPnlPerTrade: numberField(paperValidation, "expectedPnlPerTrade"),
+    observedPnlPerTrade: numberField(paperValidation, "observedPnlPerTrade"),
+    liveEdgeDegraded: Boolean(paperValidation.liveEdgeDegraded)
+  };
+}
+
+function buildOptimizerPlan(parameters: Record<string, unknown>) {
+  const baseMinEdge = env.MIN_EDGE_PERCENTAGE_POINTS / 100;
+  const maxRuns = Math.floor(numberParam(parameters.maxRuns, 1, 30) ?? env.STRATEGY_OPTIMIZER_MAX_RUNS);
+  const validationMode = optimizerValidationMode(parameters.validationMode);
+  const minEdges = optimizerNumberGrid(parameters.minEdgeGrid, env.STRATEGY_OPTIMIZER_MIN_EDGE_GRID, [
+    Math.max(0, baseMinEdge - 0.02),
+    baseMinEdge,
+    Math.min(0.2, baseMinEdge + 0.02),
+    Math.min(0.25, baseMinEdge + 0.04)
+  ], 0, 1);
+  const minLiquidityScores = optimizerNumberGrid(parameters.minLiquidityGrid, env.STRATEGY_OPTIMIZER_MIN_LIQUIDITY_GRID, [
+    activeRiskLimits.minLiquidityScore,
+    0.05,
+    0.1,
+    0.2
+  ], 0, 1);
+  const maxSpreads = optimizerNumberGrid(parameters.maxSpreadGrid, env.STRATEGY_OPTIMIZER_MAX_SPREAD_GRID, [
+    Math.max(0.02, activeRiskLimits.maxSpread * 0.75),
+    activeRiskLimits.maxSpread,
+    Math.min(0.25, activeRiskLimits.maxSpread * 1.25)
+  ], 0, 1);
+  const slippageCents = optimizerNumberGrid(parameters.slippageCentsGrid, env.STRATEGY_OPTIMIZER_SLIPPAGE_CENTS_GRID, [1, 2, 3], 0, 25).map((value) => Math.round(value));
+  const selections = optimizerSelectionGrid(parameters.selectionGrid, env.STRATEGY_OPTIMIZER_SELECTION_GRID);
+  const strategyKey = stringParam(parameters.strategyKey) ?? "candidate_snapshot_v2_optimizer";
+  const trigger = stringParam(parameters.trigger) ?? "manual_optimizer";
+  const startDate = dateParam(parameters.startDate);
+  const endDate = dateParam(parameters.endDate);
+
+  const candidates = [];
+  let index = 0;
+  for (const selection of selections) {
+    for (const minEdge of minEdges) {
+      for (const minLiquidityScore of minLiquidityScores) {
+        for (const maxSpread of maxSpreads) {
+          for (const slippage of slippageCents) {
+            candidates.push({
+              optimizerCandidateId: `candidate_${String(index + 1).padStart(2, "0")}`,
+              selection,
+              status: "WOULD_BUY",
+              minEdge,
+              maxEntryPrice: null,
+              minLiquidityScore,
+              maxSpread,
+              stakePerTrade: env.MAX_STAKE_PER_TRADE_PAPER,
+              maxContracts: activeRiskLimits.maxContractsPerTrade,
+              slippageCents: slippage,
+              startDate,
+              endDate
+            });
+            index += 1;
+            if (candidates.length >= maxRuns) {
+              return {
+                strategyKey,
+                trigger,
+                validationMode,
+                searchSpace: { maxRuns, minEdges, minLiquidityScores, maxSpreads, slippageCents, selections, startDate, endDate },
+                candidates
+              };
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    strategyKey,
+    trigger,
+    validationMode,
+    searchSpace: { maxRuns, minEdges, minLiquidityScores, maxSpreads, slippageCents, selections, startDate, endDate },
+    candidates
+  };
+}
+
+function optimizerResultFromRun(
+  result: { id: string; strategyVersionId?: string; summary: unknown },
+  candidate: ReturnType<typeof buildOptimizerPlan>["candidates"][number]
+) {
+  const summary = jsonRecord(result.summary);
+  const approval = jsonRecord(summary?.approval);
+  const dataQuality = jsonRecord(summary?.dataQuality);
+  const expectancy = jsonRecord(summary?.expectancy);
+  const warnings = jsonArray(approval?.warnings);
+  const approvalStatus = typeof approval?.status === "string" ? approval.status : "Draft";
+  const roi = numberField(summary, "roi") ?? 0;
+  const totalPnl = numberField(summary, "totalPnl") ?? 0;
+  const evaluatedMarkets = numberField(summary, "evaluatedMarkets") ?? 0;
+  const dataQualityScore = numberField(dataQuality, "score") ?? 0;
+  const expectedValuePerTrade = numberField(expectancy, "expectedValuePerTrade") ?? 0;
+  const riskOfRuin = numberField(expectancy, "riskOfRuin") ?? 1;
+  const maxDrawdown = numberField(summary, "maxDrawdown") ?? 0;
+  const score = optimizerScore({ approvalStatus, roi, totalPnl, evaluatedMarkets, dataQualityScore, expectedValuePerTrade, riskOfRuin, maxDrawdown, warnings: warnings.length });
+  return {
+    optimizerCandidateId: candidate.optimizerCandidateId,
+    runId: result.id,
+    strategyVersionId: result.strategyVersionId ?? null,
+    approvalStatus,
+    score,
+    evaluatedMarkets,
+    roi,
+    totalPnl,
+    dataQualityScore,
+    expectedValuePerTrade,
+    riskOfRuin,
+    maxDrawdown,
+    warnings: warnings.length,
+    parameters: candidate
+  };
+}
+
+function optimizerScore(input: {
+  approvalStatus: string;
+  roi: number;
+  totalPnl: number;
+  evaluatedMarkets: number;
+  dataQualityScore: number;
+  expectedValuePerTrade: number;
+  riskOfRuin: number;
+  maxDrawdown: number;
+  warnings: number;
+}) {
+  const statusScore = input.approvalStatus === "Paper Approved"
+    ? 1000
+    : input.approvalStatus === "Walk-Forward Passed"
+      ? 800
+      : input.approvalStatus === "Backtest Passed"
+        ? 600
+        : input.approvalStatus === "Paper Testing"
+          ? 500
+          : input.approvalStatus === "Rejected"
+            ? -1000
+            : 0;
+  return Number((
+    statusScore +
+    input.roi * 100 +
+    input.expectedValuePerTrade * 25 +
+    Math.min(100, input.evaluatedMarkets) +
+    input.dataQualityScore -
+    input.riskOfRuin * 100 -
+    input.maxDrawdown -
+    input.warnings * 25 +
+    Math.min(100, input.totalPnl)
+  ).toFixed(4));
+}
+
+function optimizerRecommendation(
+  champion: { approvalStatus: string; roi: number | null; summary: string | null; strategyKey: string; configHash: string } | null,
+  bestCandidate: ReturnType<typeof optimizerResultFromRun> | null
+) {
+  if (!bestCandidate) return "No optimizer candidates were evaluated.";
+  if (bestCandidate.approvalStatus === "Rejected") {
+    return `No challenger passed approval gates; best rejected candidate was ${bestCandidate.optimizerCandidateId}.`;
+  }
+  const championRoi = champion?.roi ?? null;
+  const roiDelta = championRoi === null ? null : bestCandidate.roi - championRoi;
+  if (!champion) {
+    return `${bestCandidate.optimizerCandidateId} is the current best candidate and should enter paper review.`;
+  }
+  if (roiDelta !== null && roiDelta > 0.02 && bestCandidate.score > 0) {
+    return `${bestCandidate.optimizerCandidateId} beat the current champion by ${(roiDelta * 100).toFixed(1)} ROI points; review it as a challenger before changing code.`;
+  }
+  return `${bestCandidate.optimizerCandidateId} passed gates but did not clearly beat the current champion; keep collecting paper data.`;
+}
+
+function optimizerValidationMode(value: unknown): "backtest" | "walk_forward" | "paper" {
+  const text = stringParam(value);
+  return text === "backtest" || text === "paper" || text === "walk_forward" ? text : "walk_forward";
+}
+
+function optimizerNumberGrid(value: unknown, envValue: string, fallback: number[], min: number, max: number) {
+  const raw = Array.isArray(value) ? value.join(",") : typeof value === "string" && value.trim() ? value : envValue;
+  const parsed = raw
+    .split(",")
+    .map((item) => Number(item.trim()))
+    .filter((item) => Number.isFinite(item))
+    .map((item) => Number(Math.min(max, Math.max(min, item)).toFixed(4)));
+  const source = parsed.length > 0 ? parsed : fallback;
+  return [...new Set(source.map((item) => Number(Math.min(max, Math.max(min, item)).toFixed(4))))].sort((a, b) => a - b);
+}
+
+function optimizerSelectionGrid(value: unknown, envValue: string): Array<"first_signal" | "best_edge" | "each_signal"> {
+  const raw = Array.isArray(value) ? value.join(",") : typeof value === "string" && value.trim() ? value : envValue;
+  const allowed = new Set(["first_signal", "best_edge", "each_signal"]);
+  const parsed = raw.split(",").map((item) => item.trim()).filter((item): item is "first_signal" | "best_edge" | "each_signal" => allowed.has(item));
+  return parsed.length > 0 ? [...new Set(parsed)] : ["first_signal", "best_edge"];
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function jsonArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function numberField(record: Record<string, unknown> | null, key: string) {
+  const value = record?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function marketWrite(market: KalshiMarketCandidate) {

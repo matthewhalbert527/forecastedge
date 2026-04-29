@@ -173,11 +173,98 @@ Backtests use the first available replay price in this order:
 
 Historical execution applies configurable slippage in cents. Current paper execution still uses the live orderbook endpoint for realistic yes/no bid book fills.
 
+## Strategy Approval Pipeline
+
+The backtesting lab now saves strategy versions and runs through a promotion workflow:
+
+1. `Draft`
+2. `Backtest Passed`
+3. `Walk-Forward Passed`
+4. `Paper Testing`
+5. `Paper Approved`
+6. `Rejected`
+
+Each saved strategy version preserves the config, config hash, code version when supplied by the deployment environment, data-source version, backtest date, validation date, paper-trading start date, notes, approval status, and linked strategy runs. New runs create new version rows rather than overwriting old results.
+
+Approval gates are configurable in `packages/core/src/strategy/decision-engine.ts` and currently check:
+
+- minimum trade count
+- positive test-period ROI
+- max drawdown
+- win rate or positive expectancy
+- minimum liquidity
+- longest losing streak
+- single-trade P/L concentration
+- risk of ruin
+- data-quality score
+- rare long-shot win dependence
+- critical anti-overfitting warnings
+- paper sample size and paper-edge degradation when running paper validation
+
+The decision engine also calculates expected value per trade, average win, average loss, payoff ratio, break-even win rate, profit factor, risk-of-ruin estimate, median trade return, and outlier-adjusted return. Strategies are rejected when profitability depends on one rare long-shot win or collapses after fees/slippage.
+
+Safe promotion path:
+
+1. Run a normal backtest in the Backtest tab and fix any data-quality or overfitting warnings.
+2. Re-run with `Validation = Walk-forward` over an out-of-sample date range.
+3. Leave the strategy in paper mode and re-run with `Validation = Paper validation` once enough paper fills exist.
+4. Promote only strategies with `Paper Approved`; `Backtest Passed` and `Walk-Forward Passed` remain paper-only until live fills preserve the edge.
+
+Rejected strategies are visible in the Research tab with failed gates and warnings. Review the failed gate, inspect recent simulated trades, then save a new strategy version with changed parameters instead of mutating the old run.
+
+## Scheduled Job Hooks
+
+The API exposes deployment-safe job definitions without adding another infinite loop:
+
+- `refresh_historical_market_data`
+- `refresh_forecast_archive_data`
+- `optimize_strategy_candidates`
+- `run_nightly_backtests`
+- `update_paper_strategy_performance`
+- `generate_strategy_health_report`
+
+List jobs with:
+
+```bash
+curl http://localhost:4000/api/jobs
+```
+
+Run one explicitly with:
+
+```bash
+curl -X POST http://localhost:4000/api/jobs/run_nightly_backtests/run
+```
+
+Run the bounded optimizer explicitly with:
+
+```bash
+curl -X POST http://localhost:4000/api/jobs/optimize_strategy_candidates/run
+```
+
+For production, set `SCHEDULED_JOB_TOKEN` on both `forecastedge-api` and `forecastedge-nightly-optimizer`. When set, scheduled job POSTs must include the matching `x-job-token` header.
+
+`render.yaml` includes a `forecastedge-nightly-optimizer` cron service scheduled as `0 8 * * *`. Render cron schedules are UTC, so this corresponds to 3am America/Chicago during daylight time. The cron job calls `https://api.traderai4.app/api/jobs/optimize_strategy_candidates/run` once and exits.
+
+Historical refresh is opt-in and bounded by:
+
+- `SCHEDULED_HISTORICAL_SERIES_TICKERS`
+- `SCHEDULED_HISTORICAL_LOOKBACK_DAYS`
+- `SCHEDULED_HISTORICAL_MAX_SERIES`
+- `SCHEDULED_HISTORICAL_MAX_MARKETS_PER_SERIES`
+- `STRATEGY_OPTIMIZER_MAX_RUNS`
+- `STRATEGY_OPTIMIZER_MIN_EDGE_GRID`
+- `STRATEGY_OPTIMIZER_MIN_LIQUIDITY_GRID`
+- `STRATEGY_OPTIMIZER_MAX_SPREAD_GRID`
+- `STRATEGY_OPTIMIZER_SLIPPAGE_CENTS_GRID`
+- `STRATEGY_OPTIMIZER_SELECTION_GRID`
+
 The dataset export includes:
 
 - `historical_kalshi_markets`
 - `kalshi_market_candlesticks`
 - `kalshi_market_trades`
+- `strategy_versions`
+- `strategy_optimization_runs`
 - replay-enriched backtest strategy runs
 
 ## Vercel

@@ -10,6 +10,7 @@ import { PersistentStore } from "./data/persistent-store.js";
 import { ensureDatabaseSchema, getPrisma } from "./db/prisma.js";
 import { BackgroundWorker } from "./jobs/background-worker.js";
 import { ForecastEdgePipeline } from "./jobs/pipeline.js";
+import { createScheduledJobRegistry } from "./jobs/scheduled-jobs.js";
 import {
   getHistoricalMarketCandlesticks,
   getHistoricalMarkets,
@@ -35,6 +36,7 @@ export function buildServer() {
     quoteRefreshIntervalMinutes: env.QUOTE_REFRESH_INTERVAL_MINUTES,
     logger: app.log
   });
+  const scheduledJobs = createScheduledJobRegistry({ pipeline, persistentStore });
   const demoBroker = new KalshiDemoBroker();
   const liveBroker = new LiveBrokerSafetyShell();
 
@@ -54,7 +56,8 @@ export function buildServer() {
         prodCredentialConfigured: Boolean(env.KALSHI_PROD_ACCESS_KEY)
       },
       riskLimits: activeRiskLimits,
-      backgroundWorker: worker.status()
+      backgroundWorker: worker.status(),
+      scheduledJobs: scheduledJobs.list()
     };
   }
 
@@ -70,6 +73,18 @@ export function buildServer() {
 
   app.get("/api/dashboard", async () => dashboardResponse());
   app.get("/api/learning/summary", async () => pipeline.learningSummary());
+  app.get("/api/strategy/decision-dashboard", async () => pipeline.strategyDecisionDashboard());
+  app.get("/api/jobs", async () => scheduledJobs.list());
+  app.post("/api/jobs/:jobId/run", async (request, reply) => {
+    if (env.SCHEDULED_JOB_TOKEN) {
+      const token = request.headers["x-job-token"];
+      if (token !== env.SCHEDULED_JOB_TOKEN) return reply.code(401).send({ error: "Unauthorized scheduled job request" });
+    }
+    const params = request.params as { jobId?: string };
+    const result = await scheduledJobs.run(params.jobId ?? "");
+    if (!result) return reply.code(404).send({ error: "Unknown scheduled job" });
+    return result;
+  });
   function datasetDownload(reply: FastifyReply) {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     return reply

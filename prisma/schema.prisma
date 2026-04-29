@@ -504,12 +504,55 @@ model ScanReport {
 }
 
 model StrategyRun {
-  id          String    @id @default(cuid())
-  mode        AppMode
-  parameters  Json
-  startedAt   DateTime  @default(now())
-  completedAt DateTime?
-  summary     Json?
+  id                String           @id @default(cuid())
+  strategyVersionId String?
+  strategyVersion   StrategyVersion? @relation(fields: [strategyVersionId], references: [id])
+  mode              AppMode
+  parameters        Json
+  approvalStatus    String           @default("Draft")
+  dataQualityScore  Float?
+  warnings          Json?
+  startedAt         DateTime         @default(now())
+  completedAt       DateTime?
+  summary           Json?
+
+  @@index([approvalStatus, startedAt])
+  @@index([strategyVersionId])
+}
+
+model StrategyVersion {
+  id                    String        @id @default(cuid())
+  strategyKey           String
+  configHash            String
+  config                Json
+  codeVersion           String?
+  dataSourceVersion     String
+  backtestDate          DateTime?
+  validationDate        DateTime?
+  paperTradingStartDate DateTime?
+  notes                 String?
+  approvalStatus        String        @default("Draft")
+  createdAt             DateTime      @default(now())
+  runs                  StrategyRun[]
+
+  @@index([strategyKey, createdAt])
+  @@index([approvalStatus, createdAt])
+}
+
+model StrategyOptimizationRun {
+  id             String    @id @default(cuid())
+  status         String
+  recommendation String
+  searchSpace    Json
+  champion       Json?
+  bestCandidate  Json?
+  challengers    Json
+  startedAt      DateTime  @default(now())
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([startedAt])
+  @@index([status, startedAt])
 }
 
 model AuditLog {

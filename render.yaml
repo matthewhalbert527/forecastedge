@@ -28,6 +28,8 @@ services:
         value: "1"
       - key: QUOTE_REFRESH_MAX_PAPER_ORDERS
         value: "3"
+      - key: SCHEDULED_JOB_TOKEN
+        sync: false
       - key: FORECAST_CACHE_MINUTES
         value: "45"
       - key: OPEN_METEO_COOLDOWN_MINUTES
@@ -48,6 +50,21 @@ services:
         value: https://demo-api.kalshi.co/trade-api/v2
       - key: KALSHI_WEATHER_SERIES_TICKERS
         value: KXHIGHNY,KXHIGHMIA,KXHIGHCHI,KXHIGHAUS,KXHIGHLAX,KXHIGHOKC,KXHIGHBOS,KXHIGHPHIL,KXHIGHDEN,KXHIGHPHX,KXHIGHLAS,KXHIGHSEA,KXHIGHATL,KXHIGHDC,KXHIGHDAL,KXHIGHHOU
+
+  - type: cron
+    name: forecastedge-nightly-optimizer
+    runtime: node
+    plan: starter
+    schedule: "0 8 * * *"
+    buildCommand: npm install --include=dev
+    startCommand: node scripts/run-scheduled-job.mjs optimize_strategy_candidates
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FORECASTEDGE_API_URL
+        value: https://api.traderai4.app
+      - key: SCHEDULED_JOB_TOKEN
+        sync: false
 
   - type: web
     name: forecastedge-web

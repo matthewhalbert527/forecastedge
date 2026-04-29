@@ -9,3 +9,4 @@ export * from "./signals/signal-engine.js";
 export * from "./paper/broker.js";
 export * from "./performance/metrics.js";
 export * from "./models/ensemble.js";
+export * from "./strategy/decision-engine.js";

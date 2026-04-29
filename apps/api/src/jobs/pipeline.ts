@@ -346,11 +346,55 @@ export class ForecastEdgePipeline {
     return this.persistentStore ? this.persistentStore.learningSummary() : this.summary().learning;
   }
 
+  async strategyDecisionDashboard() {
+    if (this.persistentStore) return this.persistentStore.strategyDecisionDashboard();
+    return {
+      statuses: {
+        draft: 0,
+        backtestPassed: 0,
+        walkForwardPassed: 0,
+        paperTesting: 0,
+        paperApproved: 0,
+        rejected: 0
+      },
+      approvedStrategies: [],
+      paperTestingStrategies: [],
+      rejectedStrategies: [],
+      latestBacktestHealth: this.summary().learning.backtest,
+      latestPaperTradingHealth: null,
+      dataFreshness: {
+        latestQuoteAt: null,
+        latestCandidateAt: this.store.trainingCandidates[0]?.createdAt ?? null,
+        latestForecastAt: this.store.forecastSnapshots[0]?.createdAt ?? null,
+        latestHistoricalCandleAt: null,
+        latestHistoricalTradeAt: null
+      },
+      warningsRequiringReview: []
+    };
+  }
+
   async runStoredBacktest(parameters: Record<string, unknown> = {}) {
     if (!this.persistentStore) {
       return { id: "memory_backtest", startedAt: new Date().toISOString(), completedAt: new Date().toISOString(), summary: this.summary().learning.backtest };
     }
     return this.persistentStore.runStoredBacktest(parameters);
+  }
+
+  async runStrategyOptimizer(parameters: Record<string, unknown> = {}) {
+    if (!this.persistentStore) {
+      return {
+        id: "memory_optimizer",
+        status: "skipped",
+        recommendation: "DATABASE_URL is required for strategy optimization.",
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        searchSpace: {},
+        champion: null,
+        bestCandidate: null,
+        challengers: []
+      };
+    }
+    return this.persistentStore.runStrategyOptimizer(parameters);
   }
 
   async exportLearningDataset() {
