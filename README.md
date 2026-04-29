@@ -243,7 +243,7 @@ curl -X POST http://localhost:4000/api/jobs/optimize_strategy_candidates/run
 
 For production, set `SCHEDULED_JOB_TOKEN` on both `forecastedge-api` and `forecastedge-nightly-optimizer`. When set, scheduled job POSTs must include the matching `x-job-token` header.
 
-`render.yaml` includes a `forecastedge-nightly-optimizer` cron service scheduled as `0 8 * * *`. Render cron schedules are UTC, so this corresponds to 3am America/Chicago during daylight time. The cron job calls `https://api.traderai4.app/api/jobs/optimize_strategy_candidates/run` once and exits.
+`render.yaml` includes a `forecastedge-nightly-optimizer` cron service scheduled as `0 8 * * *`. Render cron schedules are UTC, so this corresponds to 3am America/Chicago during daylight time. The cron job calls `https://forecastedge-api.onrender.com/api/jobs/optimize_strategy_candidates/run` once and exits.
 
 Historical refresh is opt-in and bounded by:
 
@@ -274,7 +274,7 @@ Vercel is a good fit for the `apps/web` Next.js dashboard and preview deployment
 Recommended split:
 
 - Render: `forecastedge-api`, background polling, Postgres, historical sync/backtest data persistence.
-- Vercel: `apps/web`, with `NEXT_PUBLIC_API_URL=https://api.traderai4.app`.
+- Vercel: `apps/web`, with `NEXT_PUBLIC_API_URL=https://forecastedge-api.onrender.com`.
 
 Do not move only one app's base URL or routing without verifying the shared production domain still serves the other app paths.
 

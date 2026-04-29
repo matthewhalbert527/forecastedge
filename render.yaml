@@ -62,7 +62,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: FORECASTEDGE_API_URL
-        value: https://api.traderai4.app
+        value: https://forecastedge-api.onrender.com
       - key: SCHEDULED_JOB_TOKEN
         sync: false
 
