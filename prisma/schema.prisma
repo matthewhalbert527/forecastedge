@@ -181,6 +181,83 @@ model KalshiMarket {
   signals            Signal[]
   quoteSnapshots     MarketQuoteSnapshot[]
   candidateSnapshots CandidateDecisionSnapshot[]
+  candlesticks       KalshiMarketCandlestick[]
+  trades             KalshiMarketTrade[]
+}
+
+model HistoricalKalshiMarket {
+  ticker                 String    @id
+  eventTicker            String
+  title                  String
+  subtitle               String?
+  status                 String?
+  result                 String?
+  closeTime              DateTime?
+  settlementTime         DateTime?
+  settlementTs           DateTime?
+  yesBid                 Float?
+  yesAsk                 Float?
+  noBid                  Float?
+  noAsk                  Float?
+  lastPrice              Float?
+  volume                 Float?
+  openInterest           Float?
+  settlementValue        Float?
+  rawPayload             Json
+  fetchedAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@index([eventTicker])
+  @@index([result, settlementTs])
+}
+
+model KalshiMarketCandlestick {
+  id             String       @id
+  marketTicker   String
+  market         KalshiMarket @relation(fields: [marketTicker], references: [ticker])
+  source         String
+  periodInterval Int
+  endPeriodTs    BigInt
+  endPeriodAt    DateTime
+  yesBidOpen     Float?
+  yesBidLow      Float?
+  yesBidHigh     Float?
+  yesBidClose    Float?
+  yesAskOpen     Float?
+  yesAskLow      Float?
+  yesAskHigh     Float?
+  yesAskClose    Float?
+  priceOpen      Float?
+  priceLow       Float?
+  priceHigh      Float?
+  priceClose     Float?
+  priceMean      Float?
+  pricePrevious  Float?
+  volume         Float?
+  openInterest   Float?
+  rawPayload     Json
+  createdAt      DateTime     @default(now())
+
+  @@unique([marketTicker, source, periodInterval, endPeriodTs])
+  @@index([marketTicker, endPeriodAt])
+  @@index([source, endPeriodAt])
+}
+
+model KalshiMarketTrade {
+  id           String       @id
+  marketTicker String
+  market       KalshiMarket @relation(fields: [marketTicker], references: [ticker])
+  source       String
+  count        Float
+  yesPrice     Float?
+  noPrice      Float?
+  takerSide    String?
+  createdTime  DateTime
+  rawPayload   Json
+  createdAt    DateTime     @default(now())
+
+  @@index([marketTicker, createdTime])
+  @@index([source, createdTime])
 }
 
 model MarketQuoteSnapshot {

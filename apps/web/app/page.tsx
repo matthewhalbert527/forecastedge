@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  BarChart3,
   BriefcaseBusiness,
   ChevronDown,
   CircleHelp,
@@ -15,7 +16,7 @@ import {
   ThermometerSun,
   Trophy
 } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 
 type DashboardData = {
   mode: "watch" | "paper" | "demo" | "live";
@@ -32,8 +33,8 @@ type DashboardData = {
   ensembles: Array<{ id: string; city: string; state: string; stationId: string | null; targetDate: string; variable: string; prediction: number | null; uncertaintyStdDev: number | null; confidence: string; contributingModels: string[]; disagreement: number | null; reason: string; createdAt: string }>;
   performance: { totalTrades: number; simulatedContracts: number; averageEntryPrice: number; totalCost: number; rejectedOrders: number; realizedPnl: number; unrealizedExposure: number; winRate: number; roi: number; maxDrawdown: number; longestLosingStreak: number; settledTrades: number; openPositions: number };
   learning?: {
-    collection: { quoteSnapshots: number; candidateSnapshots: number; paperTradeExamples: number; settledPaperTradeExamples: number; scanReports?: number; fullScans?: number; quoteRefreshScans?: number; latestQuoteAt: string | null; latestCandidateAt: string | null; latestFullScanAt?: string | null; latestQuoteRefreshAt?: string | null };
-    backtest: { method: string; candidateSnapshots: number; evaluatedMarkets: number; wins: number; losses: number; winRate: number; totalCost: number; totalPayout: number; totalPnl: number; roi: number };
+    collection: { quoteSnapshots: number; candidateSnapshots: number; paperTradeExamples: number; settledPaperTradeExamples: number; scanReports?: number; fullScans?: number; quoteRefreshScans?: number; historicalMarkets?: number; historicalCandlesticks?: number; historicalTrades?: number; latestQuoteAt: string | null; latestCandidateAt: string | null; latestFullScanAt?: string | null; latestQuoteRefreshAt?: string | null };
+    backtest: BacktestSummary;
     recentPaperExamples: Array<{ orderId: string; marketTicker: string; openedAt: string; status: string; entryPrice: number | null; contracts: number; cost: number; modelProbability: number | null; impliedProbability: number | null; edge: number | null; settlementResult: string | null; pnl: number | null; roi: number | null }>;
   };
   scanReports: Array<{
@@ -70,8 +71,71 @@ type DashboardData = {
   };
 };
 
-type View = "cockpit" | "buy" | "holdings" | "results" | "details";
-type BusyAction = "scan" | "buy" | "settle" | null;
+type BacktestSummary = {
+  method: string;
+  parameters?: BacktestParameters;
+  candidateSnapshots: number;
+  eligibleSnapshots?: number;
+  evaluatedMarkets: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  totalCost: number;
+  totalPayout: number;
+  totalPnl: number;
+  roi: number;
+  averageEntryPrice?: number | null;
+  averageEdge?: number | null;
+  averageLiquidityScore?: number | null;
+  profitFactor?: number | null;
+  maxDrawdown?: number;
+  equityCurve?: Array<{ observedAt: string; equity: number; pnl: number }>;
+  longestLosingStreak?: number;
+  trades?: BacktestTrade[];
+};
+
+type BacktestParameters = {
+  selection: "first_signal" | "best_edge" | "each_signal";
+  status: string;
+  minEdge: number | null;
+  maxEntryPrice: number | null;
+  minLiquidityScore: number | null;
+  maxSpread: number | null;
+  stakePerTrade: number;
+  maxContracts: number;
+  slippageCents: number;
+  startDate: string | null;
+  endDate: string | null;
+};
+
+type BacktestTrade = {
+  marketTicker: string;
+  observedAt: string;
+  status: string;
+  entryPrice: number;
+  rawEntryPrice?: number;
+  entrySource?: string;
+  slippageCents?: number;
+  contracts: number;
+  cost: number;
+  payout: number;
+  pnl: number;
+  roi: number;
+  edge: number | null;
+  modelProbability: number | null;
+  impliedProbability: number | null;
+  spread: number | null;
+  liquidityScore: number;
+  settlementResult: string;
+  priceBefore?: number | null;
+  priceAfter?: number | null;
+  maxPriceAfter?: number | null;
+  minPriceAfter?: number | null;
+  impliedProbabilityMove?: number | null;
+};
+
+type View = "cockpit" | "buy" | "holdings" | "results" | "backtest" | "details";
+type BusyAction = "scan" | "buy" | "settle" | "backtest" | null;
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? process.env.WEB_PUBLIC_API_URL ?? "http://localhost:4000";
 
@@ -96,6 +160,7 @@ const navItems: Array<{ key: View; label: string; icon: typeof Gauge }> = [
   { key: "buy", label: "Buy", icon: ShoppingCart },
   { key: "holdings", label: "Holdings", icon: BriefcaseBusiness },
   { key: "results", label: "Results", icon: Trophy },
+  { key: "backtest", label: "Backtest", icon: BarChart3 },
   { key: "details", label: "Details", icon: Database }
 ];
 
@@ -104,6 +169,7 @@ export default function Page() {
   const [view, setView] = useState<View>("cockpit");
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [buyingTicker, setBuyingTicker] = useState<string | null>(null);
+  const [backtest, setBacktest] = useState<BacktestSummary | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -158,6 +224,30 @@ export default function Page() {
       setError(err instanceof Error ? err.message : "Unknown request error");
     } finally {
       setBuyingTicker(null);
+    }
+  }
+
+  async function runBacktest(parameters: BacktestParameters) {
+    setBusyAction("backtest");
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch(`${apiUrl}/api/backtests/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(parameters)
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(`Backtest failed with ${response.status}`);
+      const summary = body && typeof body === "object" && "summary" in body ? (body as { summary: BacktestSummary }).summary : null;
+      if (!summary) throw new Error("Backtest response did not include a summary");
+      setBacktest(summary);
+      setNotice(`Backtest evaluated ${summary.evaluatedMarkets} settled markets.`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown backtest error");
+    } finally {
+      setBusyAction(null);
     }
   }
 
@@ -244,6 +334,7 @@ export default function Page() {
             {view === "buy" ? <BuyView candidates={model.strong} watch={model.watch} heldStrongCount={model.heldStrong.length} riskBlockedStrongCount={model.riskBlockedStrong.length} buyAction={() => runAction("buy", "/api/quotes/refresh-once")} buyOne={buyOne} busy={busyAction === "buy"} buyingTicker={buyingTicker} /> : null}
             {view === "holdings" ? <HoldingsView positions={model.openPositions} /> : null}
             {view === "results" ? <ResultsView results={model.results} performance={performance} settleAction={() => runAction("settle", "/api/settlements/run-once")} busy={busyAction === "settle"} /> : null}
+            {view === "backtest" ? <BacktestView latest={backtest ?? data.learning?.backtest ?? null} runBacktest={runBacktest} busy={busyAction === "backtest"} /> : null}
             {view === "details" ? <DetailsView data={data} model={model} /> : null}
           </>
         ) : null}
@@ -347,8 +438,204 @@ function ResultsView({ results, performance, settleAction, busy }: { results: Re
   );
 }
 
+function BacktestView({ latest, runBacktest, busy }: { latest: BacktestSummary | null; runBacktest: (parameters: BacktestParameters) => void; busy: boolean }) {
+  const [selection, setSelection] = useState<BacktestParameters["selection"]>(latest?.parameters?.selection ?? "first_signal");
+  const [minEdge, setMinEdge] = useState(latest?.parameters?.minEdge !== null && latest?.parameters?.minEdge !== undefined ? String(latest.parameters.minEdge) : "0.05");
+  const [maxEntryPrice, setMaxEntryPrice] = useState(latest?.parameters?.maxEntryPrice !== null && latest?.parameters?.maxEntryPrice !== undefined ? String(latest.parameters.maxEntryPrice) : "");
+  const [minLiquidityScore, setMinLiquidityScore] = useState(latest?.parameters?.minLiquidityScore !== null && latest?.parameters?.minLiquidityScore !== undefined ? String(latest.parameters.minLiquidityScore) : "");
+  const [maxSpread, setMaxSpread] = useState(latest?.parameters?.maxSpread !== null && latest?.parameters?.maxSpread !== undefined ? String(latest.parameters.maxSpread) : "");
+  const [stakePerTrade, setStakePerTrade] = useState(String(latest?.parameters?.stakePerTrade ?? 5));
+  const [maxContracts, setMaxContracts] = useState(String(latest?.parameters?.maxContracts ?? 10));
+  const [slippageCents, setSlippageCents] = useState(String(latest?.parameters?.slippageCents ?? 1));
+  const [startDate, setStartDate] = useState(latest?.parameters?.startDate ?? "");
+  const [endDate, setEndDate] = useState(latest?.parameters?.endDate ?? "");
+  const [syncTickers, setSyncTickers] = useState("");
+  const [syncSeries, setSyncSeries] = useState("KXHIGHCHI");
+  const [syncSource, setSyncSource] = useState<"historical" | "live">("historical");
+  const [syncStartDate, setSyncStartDate] = useState("");
+  const [syncEndDate, setSyncEndDate] = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    runBacktest({
+      selection,
+      status: "WOULD_BUY",
+      minEdge: formNumber(minEdge),
+      maxEntryPrice: formNumber(maxEntryPrice),
+      minLiquidityScore: formNumber(minLiquidityScore),
+      maxSpread: formNumber(maxSpread),
+      stakePerTrade: formNumber(stakePerTrade) ?? 5,
+      maxContracts: formNumber(maxContracts) ?? 10,
+      slippageCents: formNumber(slippageCents) ?? 1,
+      startDate: startDate || null,
+      endDate: endDate || null
+    });
+  }
+
+  async function syncHistorical(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSyncing(true);
+    setSyncNotice(null);
+    try {
+      const response = await fetch(`${apiUrl}/api/historical/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tickers: syncTickers,
+          seriesTicker: syncSeries,
+          source: syncSource,
+          startTs: dateToEpochSeconds(syncStartDate, false),
+          endTs: dateToEpochSeconds(syncEndDate, true),
+          periodInterval: 60,
+          includeTrades: true,
+          includeCandlesticks: true,
+          maxPages: 5
+        })
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        const message = body && typeof body === "object" && "error" in body ? String((body as { error: unknown }).error) : `Sync failed with ${response.status}`;
+        throw new Error(message);
+      }
+      const result = body as { markets?: number; tickers?: number; candlesticks?: number; trades?: number };
+      setSyncNotice(`Synced ${result.tickers ?? 0} tickers, ${result.candlesticks ?? 0} candles, ${result.trades ?? 0} trades.`);
+    } catch (err) {
+      setSyncNotice(err instanceof Error ? err.message : "Historical sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  return (
+    <section className="stack details-stack">
+      <div className="section-head">
+        <div>
+          <h3>Backtest lab</h3>
+          <p>{latest ? `${latest.method}; ${latest.evaluatedMarkets} settled trades evaluated.` : "Run candidate snapshots against settled market outcomes."}</p>
+        </div>
+      </div>
+
+      <form className="backtest-controls sync-controls" onSubmit={syncHistorical}>
+        <label>
+          Tickers
+          <input value={syncTickers} onChange={(event) => setSyncTickers(event.target.value)} placeholder="comma-separated or blank" />
+        </label>
+        <label>
+          Series
+          <input value={syncSeries} onChange={(event) => setSyncSeries(event.target.value.toUpperCase())} placeholder="KXHIGHCHI" />
+        </label>
+        <label>
+          Source
+          <select value={syncSource} onChange={(event) => setSyncSource(event.target.value as "historical" | "live")}>
+            <option value="historical">Historical</option>
+            <option value="live">Live/recent</option>
+          </select>
+        </label>
+        <label>
+          From
+          <input type="date" value={syncStartDate} onChange={(event) => setSyncStartDate(event.target.value)} />
+        </label>
+        <label>
+          To
+          <input type="date" value={syncEndDate} onChange={(event) => setSyncEndDate(event.target.value)} />
+        </label>
+        <button className="ghost-button" disabled={syncing}>
+          <RefreshCw size={16} />
+          {syncing ? "Syncing" : "Sync history"}
+        </button>
+        {syncNotice ? <span className="form-note">{syncNotice}</span> : null}
+      </form>
+
+      <form className="backtest-controls" onSubmit={submit}>
+        <label>
+          Selection
+          <select value={selection} onChange={(event) => setSelection(event.target.value as BacktestParameters["selection"])}>
+            <option value="first_signal">First signal per market</option>
+            <option value="best_edge">Best edge per market</option>
+            <option value="each_signal">Every eligible signal</option>
+          </select>
+        </label>
+        <label>
+          Min edge
+          <input inputMode="decimal" value={minEdge} onChange={(event) => setMinEdge(event.target.value)} placeholder="0.05" />
+        </label>
+        <label>
+          Max entry
+          <input inputMode="decimal" value={maxEntryPrice} onChange={(event) => setMaxEntryPrice(event.target.value)} placeholder="optional" />
+        </label>
+        <label>
+          Min liquidity
+          <input inputMode="decimal" value={minLiquidityScore} onChange={(event) => setMinLiquidityScore(event.target.value)} placeholder="optional" />
+        </label>
+        <label>
+          Max spread
+          <input inputMode="decimal" value={maxSpread} onChange={(event) => setMaxSpread(event.target.value)} placeholder="optional" />
+        </label>
+        <label>
+          Stake
+          <input inputMode="decimal" value={stakePerTrade} onChange={(event) => setStakePerTrade(event.target.value)} />
+        </label>
+        <label>
+          Max contracts
+          <input inputMode="numeric" value={maxContracts} onChange={(event) => setMaxContracts(event.target.value)} />
+        </label>
+        <label>
+          Slippage
+          <input inputMode="decimal" value={slippageCents} onChange={(event) => setSlippageCents(event.target.value)} />
+        </label>
+        <label>
+          From
+          <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
+        </label>
+        <label>
+          To
+          <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+        </label>
+        <button className="buy-button" disabled={busy}>
+          <Play size={16} />
+          {busy ? "Running" : "Run backtest"}
+        </button>
+      </form>
+
+      {latest ? (
+        <>
+          <section className="page-grid">
+            <Metric label="Trades" value={latest.evaluatedMarkets} detail={`${latest.eligibleSnapshots ?? latest.candidateSnapshots} eligible snapshots`} />
+            <Metric label="Win rate" value={formatPct(latest.winRate)} detail={`${latest.wins} wins, ${latest.losses} losses`} />
+            <Metric label="P/L" value={money(latest.totalPnl)} detail={`${formatPct(latest.roi)} ROI`} />
+            <Metric label="Drawdown" value={money(latest.maxDrawdown ?? 0)} detail={`${latest.longestLosingStreak ?? 0} longest loss streak`} />
+            <Metric label="Avg edge" value={formatPct(latest.averageEdge ?? null)} detail={`Avg entry ${price(latest.averageEntryPrice ?? null)}`} />
+            <Metric label="Liquidity" value={latest.averageLiquidityScore === null || latest.averageLiquidityScore === undefined ? "n/a" : latest.averageLiquidityScore.toFixed(3)} detail={`Profit factor ${latest.profitFactor === null || latest.profitFactor === undefined ? "n/a" : latest.profitFactor.toFixed(2)}`} />
+          </section>
+          <section className="chart-grid">
+            <MiniLineChart title="Equity curve" points={(latest.equityCurve ?? []).map((point) => point.equity)} format={money} />
+            <MiniLineChart title="Implied probability move" points={(latest.trades ?? []).slice().reverse().map((trade) => trade.impliedProbabilityMove ?? 0)} format={formatPct} />
+          </section>
+          <Disclosure title="Recent simulated trades">
+            <SimpleTable
+              columns={["Time", "Ticker", "Entry", "Contracts", "Move", "Result", "P/L"]}
+              rows={(latest.trades ?? []).slice(0, 30).map((trade) => [
+                dateTime(trade.observedAt),
+                trade.marketTicker,
+                `${price(trade.entryPrice)} ${trade.entrySource ? `(${trade.entrySource}${trade.slippageCents ? ` +${trade.slippageCents}c` : ""})` : ""}`,
+                String(trade.contracts),
+                formatPct(trade.impliedProbabilityMove ?? null),
+                trade.settlementResult,
+                money(trade.pnl)
+              ])}
+              empty="No settled trades matched this backtest"
+            />
+          </Disclosure>
+        </>
+      ) : <EmptyState>No backtest has run yet</EmptyState>}
+    </section>
+  );
+}
+
 function DetailsView({ data, model }: { data: DashboardData; model: DashboardModel }) {
-  const latestScan = data.scanReports[0] ?? null;
+  const latestScan = (data.scanReports ?? [])[0] ?? null;
   const learning = data.learning ?? null;
   return (
     <section className="stack details-stack">
@@ -365,7 +652,7 @@ function DetailsView({ data, model }: { data: DashboardData; model: DashboardMod
       <Disclosure title="Model candidates">
         <SimpleTable
           columns={["Ticker", "Status", "Forecast", "Ask", "Edge", "Reason"]}
-          rows={data.trainingCandidates.slice(0, 60).map((candidate) => [
+          rows={(data.trainingCandidates ?? []).slice(0, 60).map((candidate) => [
             candidate.marketTicker,
             statusLabel(candidate.status),
             forecastText(candidate),
@@ -393,7 +680,7 @@ function DetailsView({ data, model }: { data: DashboardData; model: DashboardMod
       <Disclosure title="Signals and orders">
         <SimpleTable
           columns={["Time", "Ticker", "Status", "Edge", "Reason"]}
-          rows={data.signals.slice(0, 80).map((signal) => [time(signal.createdAt), signal.marketTicker, signal.status, formatPct(signal.edge), signal.skipReason ?? signal.explanation])}
+          rows={(data.signals ?? []).slice(0, 80).map((signal) => [time(signal.createdAt), signal.marketTicker, signal.status, formatPct(signal.edge), signal.skipReason ?? signal.explanation])}
           empty="No signals"
         />
       </Disclosure>
@@ -408,6 +695,9 @@ function DetailsView({ data, model }: { data: DashboardData; model: DashboardMod
             ["All scan reports", String(learning.collection.scanReports ?? 0)],
             ["Full scans", String(learning.collection.fullScans ?? 0)],
             ["1-minute quote scans", String(learning.collection.quoteRefreshScans ?? 0)],
+            ["Historical markets", String(learning.collection.historicalMarkets ?? 0)],
+            ["Historical candles", String(learning.collection.historicalCandlesticks ?? 0)],
+            ["Historical trades", String(learning.collection.historicalTrades ?? 0)],
             ["Latest quote", learning.collection.latestQuoteAt ? dateTime(learning.collection.latestQuoteAt) : "pending"],
             ["Latest candidate", learning.collection.latestCandidateAt ? dateTime(learning.collection.latestCandidateAt) : "pending"],
             ["Latest full scan", learning.collection.latestFullScanAt ? dateTime(learning.collection.latestFullScanAt) : "pending"],
@@ -446,17 +736,17 @@ function DetailsView({ data, model }: { data: DashboardData; model: DashboardMod
       <Disclosure title="Locations and mappings">
         <SimpleTable
           columns={["Market", "City", "Target", "Liquidity", "Status"]}
-          rows={data.mappings.slice(0, 80).map((mapping) => [mapping.marketTicker, mapping.location ? `${mapping.location.city}, ${mapping.location.state ?? ""}` : "unknown", mappingLine(mapping), mapping.liquidityScore.toFixed(3), mapping.accepted ? "accepted" : mapping.reviewReason ?? "review"])}
+          rows={(data.mappings ?? []).slice(0, 80).map((mapping) => [mapping.marketTicker, mapping.location ? `${mapping.location.city}, ${mapping.location.state ?? ""}` : "unknown", mappingLine(mapping), mapping.liquidityScore.toFixed(3), mapping.accepted ? "accepted" : mapping.reviewReason ?? "review"])}
           empty="No mappings"
         />
       </Disclosure>
       <div className="quiet-summary">
         <span>{model.strong.length} strong</span>
         <span>{model.watch.length} watch</span>
-        <span>{data.markets.length} markets</span>
-        <span>{data.ensembles.length} forecasts</span>
+        <span>{(data.markets ?? []).length} markets</span>
+        <span>{(data.ensembles ?? []).length} forecasts</span>
         <span>{learning?.collection.quoteSnapshots ?? 0} quote snapshots</span>
-        <span>{learning?.collection.scanReports ?? data.scanReports.length} scans</span>
+        <span>{learning?.collection.scanReports ?? (data.scanReports ?? []).length} scans</span>
       </div>
     </section>
   );
@@ -595,6 +885,32 @@ function Metric({ label, value, detail }: { label: string; value: ReactNode; det
   );
 }
 
+function MiniLineChart({ title, points, format }: { title: string; points: number[]; format: (value: number) => string }) {
+  const width = 420;
+  const height = 130;
+  const min = points.length > 0 ? Math.min(...points) : 0;
+  const max = points.length > 0 ? Math.max(...points) : 0;
+  const spread = max - min || 1;
+  const path = points.map((point, index) => {
+    const x = points.length <= 1 ? 0 : (index / (points.length - 1)) * width;
+    const y = height - ((point - min) / spread) * height;
+    return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+  }).join(" ");
+  return (
+    <div className="mini-chart">
+      <div className="mini-chart-head">
+        <strong>{title}</strong>
+        <span>{points.length > 0 ? format(points.at(-1) ?? 0) : "n/a"}</span>
+      </div>
+      {points.length > 1 ? (
+        <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={title}>
+          <path d={path} />
+        </svg>
+      ) : <EmptyState>No replay series yet</EmptyState>}
+    </div>
+  );
+}
+
 function Fact({ label, value, good = false, danger = false, help }: { label: string; value: ReactNode; good?: boolean; danger?: boolean; help?: string }) {
   return (
     <span className="fact">
@@ -675,7 +991,7 @@ function buildDashboardModel(data: DashboardData | null) {
   const markets = new Map((data?.markets ?? []).map((market) => [market.ticker, market]));
   const candidates = [...(data?.trainingCandidates ?? [])].sort((a, b) => (b.edge ?? -1) - (a.edge ?? -1));
   const settlements = new Map((data?.settlements ?? []).map((settlement) => [settlement.marketTicker, settlement]));
-  const positions = data ? paperPositions(data.paperPositions, data.paperOrders, settlements) : [];
+  const positions = data ? paperPositions(data.paperPositions ?? [], data.paperOrders ?? [], settlements) : [];
   const openPositionTickers = new Set(positions.filter((position) => !position.closedAt).map((position) => position.marketTicker));
   const strongCandidates = candidates.filter((candidate) => candidate.status === "WOULD_BUY");
   const riskState = buildRiskState(data, positions);
@@ -914,6 +1230,17 @@ function valueForVariable(variable: string, value: number) {
 
 function formatPct(value: number | null) {
   return value === null ? "n/a" : `${(value * 100).toFixed(1)}%`;
+}
+
+function formNumber(value: string) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && value.trim() !== "" ? parsed : null;
+}
+
+function dateToEpochSeconds(value: string, endOfDay: boolean) {
+  if (!value) return undefined;
+  const suffix = endOfDay ? "T23:59:59Z" : "T00:00:00Z";
+  return Math.floor(new Date(`${value}${suffix}`).getTime() / 1000);
 }
 
 function price(value: number | null) {

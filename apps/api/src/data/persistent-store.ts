@@ -18,6 +18,7 @@ import type { AuditEntry } from "../audit/audit-log.js";
 import { activeRiskLimits, env } from "../config/env.js";
 import type { ScanReport, StationObservation, MemoryStore } from "./store.js";
 import { buildTrainingCandidates } from "../jobs/training-candidates.js";
+import type { KalshiCandlestick, KalshiHistoricalMarket, KalshiTradePrint } from "../kalshi/client.js";
 
 type PrismaJson = Prisma.InputJsonValue;
 
@@ -226,7 +227,7 @@ export class PersistentStore {
   }
 
   async learningSummary() {
-    const [quoteSnapshots, candidateSnapshots, paperExamples, settledPaperExamples, scanReports, fullScans, quoteRefreshScans, latestQuote, latestCandidate, latestFullScan, latestQuoteRefresh, recentExamples] = await Promise.all([
+    const [quoteSnapshots, candidateSnapshots, paperExamples, settledPaperExamples, scanReports, fullScans, quoteRefreshScans, historicalMarkets, historicalCandlesticks, historicalTrades, latestQuote, latestCandidate, latestFullScan, latestQuoteRefresh, recentExamples] = await Promise.all([
       this.prisma.marketQuoteSnapshot.count(),
       this.prisma.candidateDecisionSnapshot.count(),
       this.prisma.paperTradeTrainingExample.count(),
@@ -234,6 +235,9 @@ export class PersistentStore {
       this.prisma.scanReport.count(),
       this.prisma.scanReport.count({ where: { trigger: { not: "quote_refresh" } } }),
       this.prisma.scanReport.count({ where: { trigger: "quote_refresh" } }),
+      this.prisma.historicalKalshiMarket.count(),
+      this.prisma.kalshiMarketCandlestick.count(),
+      this.prisma.kalshiMarketTrade.count(),
       this.prisma.marketQuoteSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
       this.prisma.candidateDecisionSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
       this.prisma.scanReport.findFirst({ where: { trigger: { not: "quote_refresh" } }, orderBy: { startedAt: "desc" }, select: { startedAt: true } }),
@@ -251,6 +255,9 @@ export class PersistentStore {
         scanReports,
         fullScans,
         quoteRefreshScans,
+        historicalMarkets,
+        historicalCandlesticks,
+        historicalTrades,
         latestQuoteAt: latestQuote?.observedAt.toISOString() ?? null,
         latestCandidateAt: latestCandidate?.observedAt.toISOString() ?? null,
         latestFullScanAt: latestFullScan?.startedAt.toISOString() ?? null,
@@ -292,6 +299,9 @@ export class PersistentStore {
       stationObservations,
       modelForecasts,
       ensembles,
+      historicalMarkets,
+      marketCandlesticks,
+      marketTrades,
       strategyRuns
     ] = await Promise.all([
       this.prisma.location.findMany({ orderBy: { createdAt: "asc" } }),
@@ -309,6 +319,9 @@ export class PersistentStore {
       this.prisma.stationObservation.findMany({ orderBy: { observedAt: "asc" } }),
       this.prisma.modelForecast.findMany({ orderBy: { createdAt: "asc" } }),
       this.prisma.ensembleForecast.findMany({ orderBy: { createdAt: "asc" } }),
+      this.prisma.historicalKalshiMarket.findMany({ orderBy: { fetchedAt: "asc" } }),
+      this.prisma.kalshiMarketCandlestick.findMany({ orderBy: [{ endPeriodAt: "asc" }, { marketTicker: "asc" }] }),
+      this.prisma.kalshiMarketTrade.findMany({ orderBy: [{ createdTime: "asc" }, { marketTicker: "asc" }] }),
       this.prisma.strategyRun.findMany({ orderBy: { startedAt: "asc" } })
     ]);
 
@@ -397,6 +410,9 @@ export class PersistentStore {
         stationObservations,
         modelForecasts,
         ensembleForecasts: ensembles,
+        historicalKalshiMarkets: historicalMarkets,
+        kalshiMarketCandlesticks: marketCandlesticks.map(serializeJsonSafe),
+        kalshiMarketTrades: marketTrades,
         strategyRuns
       },
       modelTrainingRows
@@ -408,11 +424,12 @@ export class PersistentStore {
   }
 
   async runStoredBacktest(parameters: Record<string, unknown> = {}) {
-    const summary = await this.backtestStoredWouldBuys();
+    const options = parseBacktestParameters(parameters);
+    const summary = await this.backtestStoredWouldBuys(options);
     const run = await this.prisma.strategyRun.create({
       data: {
         mode: env.APP_MODE,
-        parameters: toJson({ strategy: "stored_would_buy_v1", ...parameters }),
+        parameters: toJson({ strategy: "candidate_snapshot_v2", ...options }),
         completedAt: new Date(),
         summary: toJson(summary)
       }
@@ -451,6 +468,9 @@ export class PersistentStore {
     yield* streamTable("station_observations", (skip, take) => this.prisma.stationObservation.findMany({ orderBy: { observedAt: "asc" }, skip, take }));
     yield* streamTable("model_forecasts", (skip, take) => this.prisma.modelForecast.findMany({ orderBy: { createdAt: "asc" }, skip, take }));
     yield* streamTable("ensemble_forecasts", (skip, take) => this.prisma.ensembleForecast.findMany({ orderBy: { createdAt: "asc" }, skip, take }));
+    yield* streamTable("historical_kalshi_markets", (skip, take) => this.prisma.historicalKalshiMarket.findMany({ orderBy: { fetchedAt: "asc" }, skip, take }));
+    yield* streamTable("kalshi_market_candlesticks", (skip, take) => this.prisma.kalshiMarketCandlestick.findMany({ orderBy: [{ endPeriodAt: "asc" }, { marketTicker: "asc" }], skip, take }));
+    yield* streamTable("kalshi_market_trades", (skip, take) => this.prisma.kalshiMarketTrade.findMany({ orderBy: [{ createdTime: "asc" }, { marketTicker: "asc" }], skip, take }));
     yield* streamTable("strategy_runs", (skip, take) => this.prisma.strategyRun.findMany({ orderBy: { startedAt: "asc" }, skip, take }));
     yield* this.modelTrainingRowLines();
   }
@@ -530,6 +550,9 @@ export class PersistentStore {
       stationObservations,
       modelForecasts,
       ensembles,
+      historicalMarkets,
+      marketCandlesticks,
+      marketTrades,
       strategyRuns
     ] = await Promise.all([
       this.prisma.location.count(),
@@ -549,6 +572,9 @@ export class PersistentStore {
       this.prisma.stationObservation.count(),
       this.prisma.modelForecast.count(),
       this.prisma.ensembleForecast.count(),
+      this.prisma.historicalKalshiMarket.count(),
+      this.prisma.kalshiMarketCandlestick.count(),
+      this.prisma.kalshiMarketTrade.count(),
       this.prisma.strategyRun.count()
     ]);
 
@@ -570,6 +596,9 @@ export class PersistentStore {
       stationObservations,
       modelForecasts,
       ensembleForecasts: ensembles,
+      historicalKalshiMarkets: historicalMarkets,
+      kalshiMarketCandlesticks: marketCandlesticks,
+      kalshiMarketTrades: marketTrades,
       strategyRuns,
       modelTrainingRows: candidateSnapshots
     };
@@ -709,12 +738,54 @@ export class PersistentStore {
     }
   }
 
-  private async persistMarkets(markets: KalshiMarketCandidate[]) {
+  async persistMarkets(markets: KalshiMarketCandidate[]) {
     for (const market of markets) {
       await this.prisma.kalshiMarket.upsert({
         where: { ticker: market.ticker },
         create: marketWrite(market),
         update: marketWrite(market)
+      });
+    }
+  }
+
+  async persistHistoricalMarkets(markets: KalshiHistoricalMarket[]) {
+    await this.persistMarkets(markets);
+    for (const market of markets) {
+      await this.prisma.historicalKalshiMarket.upsert({
+        where: { ticker: market.ticker },
+        create: historicalMarketWrite(market),
+        update: historicalMarketWrite(market)
+      });
+    }
+  }
+
+  async persistMarketCandlesticks(candlesticks: KalshiCandlestick[], source: "historical" | "live", periodInterval: number) {
+    for (const candle of candlesticks) {
+      const market = await this.prisma.kalshiMarket.findUnique({ where: { ticker: candle.marketTicker }, select: { ticker: true } });
+      if (!market) continue;
+      await this.prisma.kalshiMarketCandlestick.upsert({
+        where: {
+          marketTicker_source_periodInterval_endPeriodTs: {
+            marketTicker: candle.marketTicker,
+            source,
+            periodInterval,
+            endPeriodTs: BigInt(candle.endPeriodTs)
+          }
+        },
+        create: candlestickWrite(candle, source, periodInterval),
+        update: candlestickWrite(candle, source, periodInterval)
+      });
+    }
+  }
+
+  async persistMarketTrades(trades: KalshiTradePrint[], source: "historical" | "live") {
+    for (const trade of trades) {
+      const market = await this.prisma.kalshiMarket.findUnique({ where: { ticker: trade.marketTicker }, select: { ticker: true } });
+      if (!market) continue;
+      await this.prisma.kalshiMarketTrade.upsert({
+        where: { id: trade.id },
+        create: tradeWrite(trade, source),
+        update: tradeWrite(trade, source)
       });
     }
   }
@@ -944,10 +1015,17 @@ export class PersistentStore {
     });
   }
 
-  private async backtestStoredWouldBuys() {
+  private async backtestStoredWouldBuys(options: BacktestOptions = defaultBacktestOptions()) {
+    const observedAt: Prisma.DateTimeFilter<"CandidateDecisionSnapshot"> = {};
+    if (options.startDate) observedAt.gte = new Date(`${options.startDate}T00:00:00Z`);
+    if (options.endDate) observedAt.lte = new Date(`${options.endDate}T23:59:59.999Z`);
     const [snapshots, settlements] = await Promise.all([
       this.prisma.candidateDecisionSnapshot.findMany({
-        where: { status: "WOULD_BUY", entryPrice: { not: null } },
+        where: {
+          status: options.status,
+          entryPrice: { not: null },
+          ...(options.startDate || options.endDate ? { observedAt } : {})
+        },
         orderBy: { observedAt: "asc" },
         take: 10000
       }),
@@ -955,32 +1033,97 @@ export class PersistentStore {
     ]);
     const settlementByTicker = new Map(settlements.map((settlement) => [settlement.marketTicker, settlement]));
     const seenMarkets = new Set<string>();
-    let simulatedTrades = 0;
-    let wins = 0;
-    let losses = 0;
-    let totalCost = 0;
-    let totalPayout = 0;
+    const trades: BacktestTrade[] = [];
+    const filteredSnapshots = snapshots.filter((snapshot) => {
+      if (snapshot.entryPrice === null) return false;
+      if (options.minEdge !== null && (snapshot.edge === null || snapshot.edge < options.minEdge)) return false;
+      if (options.maxEntryPrice !== null && snapshot.entryPrice > options.maxEntryPrice) return false;
+      if (options.minLiquidityScore !== null && snapshot.liquidityScore < options.minLiquidityScore) return false;
+      if (options.maxSpread !== null && (snapshot.spread === null || snapshot.spread > options.maxSpread)) return false;
+      return true;
+    });
 
-    for (const snapshot of snapshots) {
-      if (seenMarkets.has(snapshot.marketTicker)) continue;
+    const orderedSnapshots = options.selection === "best_edge"
+      ? [...filteredSnapshots].sort((a, b) => {
+          const edgeDiff = (b.edge ?? -Infinity) - (a.edge ?? -Infinity);
+          return edgeDiff !== 0 ? edgeDiff : a.observedAt.getTime() - b.observedAt.getTime();
+        })
+      : filteredSnapshots;
+    const marketTickers = [...new Set(orderedSnapshots.map((snapshot) => snapshot.marketTicker))];
+    const [candlesticks, marketTrades] = await Promise.all([
+      this.prisma.kalshiMarketCandlestick.findMany({
+        where: { marketTicker: { in: marketTickers } },
+        orderBy: [{ marketTicker: "asc" }, { endPeriodAt: "asc" }]
+      }),
+      this.prisma.kalshiMarketTrade.findMany({
+        where: { marketTicker: { in: marketTickers } },
+        orderBy: [{ marketTicker: "asc" }, { createdTime: "asc" }]
+      })
+    ]);
+    const candlesByTicker = groupBy(candlesticks, (candle) => candle.marketTicker);
+    const tradesByTicker = groupBy(marketTrades, (trade) => trade.marketTicker);
+
+    for (const snapshot of orderedSnapshots) {
+      if (options.selection !== "each_signal" && seenMarkets.has(snapshot.marketTicker)) continue;
       const settlement = settlementByTicker.get(snapshot.marketTicker);
       if (!settlement || snapshot.entryPrice === null) continue;
       seenMarkets.add(snapshot.marketTicker);
-      const contracts = simulatedContracts(snapshot.entryPrice);
-      const cost = snapshot.entryPrice * contracts;
+      const replay = replayMarketPrices(
+        snapshot,
+        candlesByTicker.get(snapshot.marketTicker) ?? [],
+        tradesByTicker.get(snapshot.marketTicker) ?? []
+      );
+      const rawEntryPrice = replay.entryPrice ?? snapshot.entryPrice;
+      const entryPrice = applyHistoricalExecution(rawEntryPrice, options);
+      const contracts = simulatedContractsForBacktest(entryPrice, options);
+      const cost = Number((entryPrice * contracts).toFixed(4));
       const payout = settlement.result === "yes" ? contracts : 0;
-      const pnl = payout - cost;
-      simulatedTrades += 1;
-      totalCost += cost;
-      totalPayout += payout;
-      if (pnl >= 0) wins += 1;
-      else losses += 1;
+      const pnl = Number((payout - cost).toFixed(4));
+      trades.push({
+        marketTicker: snapshot.marketTicker,
+        observedAt: snapshot.observedAt.toISOString(),
+        status: snapshot.status,
+        entryPrice,
+        rawEntryPrice,
+        entrySource: replay.entrySource,
+        slippageCents: options.slippageCents,
+        contracts,
+        cost,
+        payout,
+        pnl,
+        roi: cost > 0 ? Number((pnl / cost).toFixed(4)) : 0,
+        edge: snapshot.edge,
+        modelProbability: snapshot.yesProbability,
+        impliedProbability: snapshot.impliedProbability,
+        spread: snapshot.spread,
+        liquidityScore: snapshot.liquidityScore,
+        settlementResult: settlement.result,
+        priceBefore: replay.priceBefore,
+        priceAfter: replay.priceAfter,
+        maxPriceAfter: replay.maxPriceAfter,
+        minPriceAfter: replay.minPriceAfter,
+        impliedProbabilityMove: replay.priceAfter !== null ? Number((replay.priceAfter - entryPrice).toFixed(4)) : null
+      });
     }
 
+    const simulatedTrades = trades.length;
+    const wins = trades.filter((trade) => trade.pnl >= 0).length;
+    const losses = trades.filter((trade) => trade.pnl < 0).length;
+    const totalCost = trades.reduce((sum, trade) => sum + trade.cost, 0);
+    const totalPayout = trades.reduce((sum, trade) => sum + trade.payout, 0);
     const totalPnl = totalPayout - totalCost;
+    const sortedTrades = [...trades].sort((a, b) => a.observedAt.localeCompare(b.observedAt));
+    const equityCurve = buildEquityCurve(sortedTrades);
+    const averageEdge = average(sortedTrades.map((trade) => trade.edge));
+    const averageEntryPrice = average(sortedTrades.map((trade) => trade.entryPrice));
+    const averageLiquidityScore = average(sortedTrades.map((trade) => trade.liquidityScore));
+    const winningPnl = sortedTrades.filter((trade) => trade.pnl > 0).reduce((sum, trade) => sum + trade.pnl, 0);
+    const losingPnl = Math.abs(sortedTrades.filter((trade) => trade.pnl < 0).reduce((sum, trade) => sum + trade.pnl, 0));
     return {
-      method: "first stored WOULD_BUY per settled market",
+      method: backtestMethodLabel(options),
+      parameters: options,
       candidateSnapshots: snapshots.length,
+      eligibleSnapshots: filteredSnapshots.length,
       evaluatedMarkets: simulatedTrades,
       wins,
       losses,
@@ -988,9 +1131,243 @@ export class PersistentStore {
       totalCost: Number(totalCost.toFixed(4)),
       totalPayout: Number(totalPayout.toFixed(4)),
       totalPnl: Number(totalPnl.toFixed(4)),
-      roi: totalCost > 0 ? Number((totalPnl / totalCost).toFixed(4)) : 0
+      roi: totalCost > 0 ? Number((totalPnl / totalCost).toFixed(4)) : 0,
+      averageEntryPrice: roundMetric(averageEntryPrice),
+      averageEdge: roundMetric(averageEdge),
+      averageLiquidityScore: roundMetric(averageLiquidityScore),
+      profitFactor: losingPnl > 0 ? roundMetric(winningPnl / losingPnl) : winningPnl > 0 ? null : 0,
+      maxDrawdown: equityCurve.maxDrawdown,
+      equityCurve: equityCurve.points,
+      longestLosingStreak: longestLosingStreak(sortedTrades),
+      trades: sortedTrades.slice(-50).reverse()
     };
   }
+}
+
+type BacktestSelection = "first_signal" | "best_edge" | "each_signal";
+
+type BacktestOptions = {
+  status: string;
+  selection: BacktestSelection;
+  minEdge: number | null;
+  maxEntryPrice: number | null;
+  minLiquidityScore: number | null;
+  maxSpread: number | null;
+  stakePerTrade: number;
+  maxContracts: number;
+  slippageCents: number;
+  startDate: string | null;
+  endDate: string | null;
+};
+
+type BacktestTrade = {
+  marketTicker: string;
+  observedAt: string;
+  status: string;
+  entryPrice: number;
+  rawEntryPrice: number;
+  entrySource: string;
+  slippageCents: number;
+  contracts: number;
+  cost: number;
+  payout: number;
+  pnl: number;
+  roi: number;
+  edge: number | null;
+  modelProbability: number | null;
+  impliedProbability: number | null;
+  spread: number | null;
+  liquidityScore: number;
+  settlementResult: string;
+  priceBefore: number | null;
+  priceAfter: number | null;
+  maxPriceAfter: number | null;
+  minPriceAfter: number | null;
+  impliedProbabilityMove: number | null;
+};
+
+function defaultBacktestOptions(): BacktestOptions {
+  return {
+    status: "WOULD_BUY",
+    selection: "first_signal",
+    minEdge: null,
+    maxEntryPrice: null,
+    minLiquidityScore: null,
+    maxSpread: null,
+    stakePerTrade: env.MAX_STAKE_PER_TRADE_PAPER,
+    maxContracts: activeRiskLimits.maxContractsPerTrade,
+    slippageCents: 1,
+    startDate: null,
+    endDate: null
+  };
+}
+
+function parseBacktestParameters(parameters: Record<string, unknown>): BacktestOptions {
+  const defaults = defaultBacktestOptions();
+  const selection = stringParam(parameters.selection);
+  return {
+    status: stringParam(parameters.status) ?? defaults.status,
+    selection: selection === "best_edge" || selection === "each_signal" || selection === "first_signal" ? selection : defaults.selection,
+    minEdge: nullableNumber(parameters.minEdge, 0, 1),
+    maxEntryPrice: nullableNumber(parameters.maxEntryPrice, 0.01, 1),
+    minLiquidityScore: nullableNumber(parameters.minLiquidityScore, 0, 1),
+    maxSpread: nullableNumber(parameters.maxSpread, 0, 1),
+    stakePerTrade: numberParam(parameters.stakePerTrade, 1, 1000) ?? defaults.stakePerTrade,
+    maxContracts: Math.floor(numberParam(parameters.maxContracts, 1, 1000) ?? defaults.maxContracts),
+    slippageCents: numberParam(parameters.slippageCents, 0, 25) ?? defaults.slippageCents,
+    startDate: dateParam(parameters.startDate),
+    endDate: dateParam(parameters.endDate)
+  };
+}
+
+function stringParam(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function numberParam(value: unknown, min: number, max: number) {
+  const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+  if (!Number.isFinite(parsed)) return null;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function nullableNumber(value: unknown, min: number, max: number) {
+  return numberParam(value, min, max);
+}
+
+function dateParam(value: unknown) {
+  const text = stringParam(value);
+  return text && /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+}
+
+function simulatedContractsForBacktest(entryPrice: number, options: BacktestOptions) {
+  return Math.max(1, Math.min(options.maxContracts, Math.floor(options.stakePerTrade / Math.max(entryPrice, 0.01))));
+}
+
+function applyHistoricalExecution(entryPrice: number, options: BacktestOptions) {
+  return Number(Math.min(0.99, entryPrice + options.slippageCents / 100).toFixed(4));
+}
+
+function backtestMethodLabel(options: BacktestOptions) {
+  if (options.selection === "best_edge") return "best edge candidate per settled market";
+  if (options.selection === "each_signal") return "every eligible settled candidate snapshot";
+  return "first eligible candidate per settled market";
+}
+
+function buildEquityCurve(trades: BacktestTrade[]) {
+  let equity = 0;
+  let peak = 0;
+  let maxDrawdown = 0;
+  const points = trades.map((trade) => {
+    equity += trade.pnl;
+    peak = Math.max(peak, equity);
+    maxDrawdown = Math.max(maxDrawdown, peak - equity);
+    return { observedAt: trade.observedAt, equity: Number(equity.toFixed(4)), pnl: trade.pnl };
+  });
+  return { points, maxDrawdown: Number(maxDrawdown.toFixed(4)) };
+}
+
+function longestLosingStreak(trades: BacktestTrade[]) {
+  let current = 0;
+  let longest = 0;
+  for (const trade of trades) {
+    if (trade.pnl < 0) {
+      current += 1;
+      longest = Math.max(longest, current);
+    } else {
+      current = 0;
+    }
+  }
+  return longest;
+}
+
+function average(values: Array<number | null>) {
+  const realValues = values.filter((value): value is number => value !== null && Number.isFinite(value));
+  return realValues.length > 0 ? realValues.reduce((sum, value) => sum + value, 0) / realValues.length : null;
+}
+
+function roundMetric(value: number | null) {
+  return value === null ? null : Number(value.toFixed(4));
+}
+
+function groupBy<T>(items: T[], keyFor: (item: T) => string) {
+  const grouped = new Map<string, T[]>();
+  for (const item of items) {
+    const key = keyFor(item);
+    grouped.set(key, [...(grouped.get(key) ?? []), item]);
+  }
+  return grouped;
+}
+
+type ReplaySnapshot = {
+  marketTicker: string;
+  observedAt: Date;
+  entryPrice: number | null;
+};
+
+type ReplayCandle = {
+  endPeriodAt: Date;
+  yesAskClose: number | null;
+  yesBidClose: number | null;
+  priceClose: number | null;
+  pricePrevious: number | null;
+};
+
+type ReplayTrade = {
+  createdTime: Date;
+  yesPrice: number | null;
+};
+
+function replayMarketPrices(snapshot: ReplaySnapshot, candles: ReplayCandle[], trades: ReplayTrade[]) {
+  const observedAt = snapshot.observedAt.getTime();
+  const beforeCandles = candles.filter((candle) => candle.endPeriodAt.getTime() <= observedAt);
+  const afterCandles = candles.filter((candle) => candle.endPeriodAt.getTime() >= observedAt);
+  const entryCandle = afterCandles[0] ?? beforeCandles.at(-1) ?? null;
+  const beforeCandle = beforeCandles.at(-1) ?? null;
+  const candleEntry = candleEntryPrice(entryCandle);
+  if (candleEntry !== null) {
+    const futurePrices = afterCandles.flatMap((candle) => {
+      const value = candleEntryPrice(candle);
+      return value === null ? [] : [value];
+    });
+    const priceAfter = futurePrices.at(-1) ?? null;
+    return {
+      entryPrice: candleEntry,
+      entrySource: "candlestick",
+      priceBefore: candleEntryPrice(beforeCandle),
+      priceAfter,
+      maxPriceAfter: futurePrices.length > 0 ? Math.max(...futurePrices) : null,
+      minPriceAfter: futurePrices.length > 0 ? Math.min(...futurePrices) : null
+    };
+  }
+
+  const beforeTrades = trades.filter((trade) => trade.createdTime.getTime() <= observedAt && trade.yesPrice !== null);
+  const afterTrades = trades.filter((trade) => trade.createdTime.getTime() >= observedAt && trade.yesPrice !== null);
+  const entryTrade = afterTrades[0] ?? beforeTrades.at(-1) ?? null;
+  const tradeEntry = entryTrade?.yesPrice ?? null;
+  if (tradeEntry !== null) {
+    const futurePrices = afterTrades.flatMap((trade) => trade.yesPrice === null ? [] : [trade.yesPrice]);
+    return {
+      entryPrice: tradeEntry,
+      entrySource: "trade",
+      priceBefore: beforeTrades.at(-1)?.yesPrice ?? null,
+      priceAfter: futurePrices.at(-1) ?? null,
+      maxPriceAfter: futurePrices.length > 0 ? Math.max(...futurePrices) : null,
+      minPriceAfter: futurePrices.length > 0 ? Math.min(...futurePrices) : null
+    };
+  }
+
+  return {
+    entryPrice: snapshot.entryPrice,
+    entrySource: "candidate_snapshot",
+    priceBefore: null,
+    priceAfter: null,
+    maxPriceAfter: null,
+    minPriceAfter: null
+  };
+}
+
+function candleEntryPrice(candle: ReplayCandle | null) {
+  return candle?.yesAskClose ?? candle?.priceClose ?? candle?.yesBidClose ?? candle?.pricePrevious ?? null;
 }
 
 function marketWrite(market: KalshiMarketCandidate) {
@@ -1013,6 +1390,71 @@ function marketWrite(market: KalshiMarketCandidate) {
   };
 }
 
+function historicalMarketWrite(market: KalshiHistoricalMarket) {
+  return {
+    ticker: market.ticker,
+    eventTicker: market.eventTicker,
+    title: market.title,
+    subtitle: market.subtitle ?? null,
+    status: market.status,
+    result: market.result,
+    closeTime: optionalDate(market.closeTime),
+    settlementTime: optionalDate(market.settlementTime),
+    settlementTs: optionalDate(market.settlementTs ?? undefined),
+    yesBid: market.yesBid,
+    yesAsk: market.yesAsk,
+    noBid: market.noBid,
+    noAsk: market.noAsk,
+    lastPrice: market.lastPrice,
+    volume: market.volume,
+    openInterest: market.openInterest,
+    settlementValue: market.settlementValue,
+    rawPayload: toJson(market.rawPayload)
+  };
+}
+
+function candlestickWrite(candle: KalshiCandlestick, source: string, periodInterval: number) {
+  return {
+    id: `candle_${source}_${periodInterval}_${candle.marketTicker}_${candle.endPeriodTs}`,
+    marketTicker: candle.marketTicker,
+    source,
+    periodInterval,
+    endPeriodTs: BigInt(candle.endPeriodTs),
+    endPeriodAt: new Date(candle.endPeriodAt),
+    yesBidOpen: candle.yesBid.open,
+    yesBidLow: candle.yesBid.low,
+    yesBidHigh: candle.yesBid.high,
+    yesBidClose: candle.yesBid.close,
+    yesAskOpen: candle.yesAsk.open,
+    yesAskLow: candle.yesAsk.low,
+    yesAskHigh: candle.yesAsk.high,
+    yesAskClose: candle.yesAsk.close,
+    priceOpen: candle.price.open,
+    priceLow: candle.price.low,
+    priceHigh: candle.price.high,
+    priceClose: candle.price.close,
+    priceMean: candle.price.mean,
+    pricePrevious: candle.price.previous,
+    volume: candle.volume,
+    openInterest: candle.openInterest,
+    rawPayload: toJson(candle.rawPayload)
+  };
+}
+
+function tradeWrite(trade: KalshiTradePrint, source: string) {
+  return {
+    id: trade.id,
+    marketTicker: trade.marketTicker,
+    source,
+    count: trade.count,
+    yesPrice: trade.yesPrice,
+    noPrice: trade.noPrice,
+    takerSide: trade.takerSide,
+    createdTime: new Date(trade.createdTime),
+    rawPayload: toJson(trade.rawPayload)
+  };
+}
+
 async function* streamTable<T>(table: string, fetchPage: (skip: number, take: number) => Promise<T[]>) {
   yield ndjsonLine({ type: "table_start", table });
   const batchSize = 500;
@@ -1027,7 +1469,15 @@ async function* streamTable<T>(table: string, fetchPage: (skip: number, take: nu
 }
 
 function ndjsonLine(value: unknown) {
-  return `${JSON.stringify(value)}\n`;
+  return `${JSON.stringify(value, jsonReplacer)}\n`;
+}
+
+function jsonReplacer(_key: string, value: unknown) {
+  return typeof value === "bigint" ? value.toString() : value;
+}
+
+function serializeJsonSafe<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value, jsonReplacer)) as T;
 }
 
 function mappingWrite(mapping: MarketMapping) {

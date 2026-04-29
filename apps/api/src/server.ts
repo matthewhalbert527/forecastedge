@@ -10,6 +10,15 @@ import { PersistentStore } from "./data/persistent-store.js";
 import { ensureDatabaseSchema, getPrisma } from "./db/prisma.js";
 import { BackgroundWorker } from "./jobs/background-worker.js";
 import { ForecastEdgePipeline } from "./jobs/pipeline.js";
+import {
+  getHistoricalMarketCandlesticks,
+  getHistoricalMarkets,
+  getHistoricalTrades,
+  getLiveMarketCandlesticks,
+  getLiveTrades,
+  getMarketDetails,
+  isPlausibleWeatherMarket
+} from "./kalshi/client.js";
 
 export function buildServer() {
   const app = Fastify({ logger: true, pluginTimeout: 120_000 });
@@ -74,6 +83,65 @@ export function buildServer() {
     const body = request.body && typeof request.body === "object" ? request.body as Record<string, unknown> : {};
     return pipeline.runStoredBacktest(body);
   });
+  app.post("/api/historical/sync", async (request, reply) => {
+    if (!persistentStore) return reply.code(400).send({ error: "DATABASE_URL is required to persist historical Kalshi data" });
+    const body = request.body && typeof request.body === "object" ? request.body as Record<string, unknown> : {};
+    const tickers = stringList(body.tickers);
+    const seriesTicker = typeof body.seriesTicker === "string" ? body.seriesTicker : undefined;
+    const periodInterval = periodParam(body.periodInterval);
+    const endTs = integerParam(body.endTs) ?? Math.floor(Date.now() / 1000);
+    const startTs = integerParam(body.startTs) ?? endTs - 90 * 24 * 60 * 60;
+    const maxPages = integerParam(body.maxPages) ?? 3;
+    const includeTrades = body.includeTrades !== false;
+    const includeCandlesticks = body.includeCandlesticks !== false;
+    const source = body.source === "live" ? "live" : "historical";
+    if (endTs <= startTs) return reply.code(400).send({ error: "endTs must be after startTs" });
+    if (endTs - startTs > 366 * 24 * 60 * 60) return reply.code(400).send({ error: "historical sync is capped at 366 days per request" });
+    if (tickers.length > 25) return reply.code(400).send({ error: "historical sync is capped at 25 explicit tickers per request" });
+    if (!seriesTicker && tickers.length === 0) return reply.code(400).send({ error: "seriesTicker or tickers is required" });
+
+    const marketRequest: { tickers?: string[]; seriesTicker?: string; maxPages: number } = { maxPages };
+    if (tickers.length > 0) marketRequest.tickers = tickers;
+    if (seriesTicker) marketRequest.seriesTicker = seriesTicker;
+    const markets = source === "historical" ? await getHistoricalMarkets(marketRequest) : [];
+    const liveMarkets = source === "live" && tickers.length > 0 ? (await Promise.all(tickers.map((ticker) => getMarketDetails(ticker)))).filter((market) => market !== null) : [];
+    const weatherMarkets = markets.filter((market) => tickers.length > 0 || isPlausibleWeatherMarket(market));
+    await persistentStore.persistHistoricalMarkets(weatherMarkets);
+    await persistentStore.persistMarkets(liveMarkets);
+    const targetTickers = tickers.length > 0 ? tickers : weatherMarkets.map((market) => market.ticker);
+    let candlesticks = 0;
+    let trades = 0;
+
+    for (const ticker of targetTickers) {
+      const market = weatherMarkets.find((item) => item.ticker === ticker);
+      if (includeCandlesticks) {
+        const liveSeriesTicker = seriesTicker ?? seriesFromMarket(ticker, market?.eventTicker);
+        const rows = source === "live" && liveSeriesTicker
+          ? await getLiveMarketCandlesticks(liveSeriesTicker, ticker, { startTs, endTs, periodInterval, includeLatestBeforeStart: true })
+          : await getHistoricalMarketCandlesticks(ticker, { startTs, endTs, periodInterval });
+        await persistentStore.persistMarketCandlesticks(rows, source, periodInterval);
+        candlesticks += rows.length;
+      }
+      if (includeTrades) {
+        const rows = source === "live"
+          ? await getLiveTrades({ ticker, minTs: startTs, maxTs: endTs, maxPages })
+          : await getHistoricalTrades({ ticker, minTs: startTs, maxTs: endTs, maxPages });
+        await persistentStore.persistMarketTrades(rows, source);
+        trades += rows.length;
+      }
+    }
+
+    return {
+      source,
+      markets: weatherMarkets.length,
+      tickers: targetTickers.length,
+      candlesticks,
+      trades,
+      periodInterval,
+      startTs,
+      endTs
+    };
+  });
 
   app.get("/api/settlement-stations", async () => KALSHI_SETTLEMENT_STATIONS);
   app.get("/api/data-sources", async () => WEATHER_DATASET_REFERENCES);
@@ -127,6 +195,28 @@ export function buildServer() {
   });
 
   return app;
+}
+
+function stringList(value: unknown) {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  if (typeof value === "string" && value.trim().length > 0) return value.split(",").map((item) => item.trim()).filter(Boolean);
+  return [];
+}
+
+function integerParam(value: unknown) {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+function periodParam(value: unknown): 1 | 60 | 1440 {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return parsed === 1 || parsed === 60 || parsed === 1440 ? parsed : 60;
+}
+
+function seriesFromMarket(ticker: string, eventTicker?: string) {
+  const source = eventTicker ?? ticker;
+  const [series] = source.split("-");
+  return series && series.length > 0 ? series : null;
 }
 
 if (process.argv[1]?.endsWith("server.ts") || process.argv[1]?.endsWith("server.js")) {

@@ -99,11 +99,13 @@ The current tests cover forecast delta detection, Kalshi title parsing, uncertai
 
 ## Database
 
-`prisma/schema.prisma` defines and now backs the paper-trading records in Postgres:
+`prisma/schema.prisma` defines and now backs the paper-trading and backtesting records in Postgres:
 
 - locations
 - forecast snapshots and deltas
 - Kalshi markets and mappings
+- historical Kalshi market metadata
+- historical/live Kalshi candlesticks and trade prints
 - signals and risk checks
 - paper/demo/live order records
 - paper positions and settlements
@@ -121,11 +123,73 @@ npm run db:generate
 npm run db:push
 ```
 
+`DATABASE_URL` must be set before `npm run db:push`; without it Prisma cannot create the historical backtest tables.
+
 Manual paper settlement reconciliation:
 
 ```bash
 curl -X POST http://localhost:4000/api/settlements/run-once
 ```
+
+## Historical Backtesting
+
+The Backtest tab can now sync historical Kalshi market data and replay strategy candidates against candle/trade-derived prices.
+
+Historical sync from the dashboard supports:
+
+- explicit comma-separated market tickers
+- bulk series sync by `seriesTicker` such as `KXHIGHCHI`
+- historical or live/recent candle endpoints
+- 1-hour candles by default plus trade prints
+
+API equivalent:
+
+```bash
+curl -X POST http://localhost:4000/api/historical/sync \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "seriesTicker": "KXHIGHCHI",
+    "source": "historical",
+    "startTs": 1770000000,
+    "endTs": 1771000000,
+    "periodInterval": 60,
+    "includeTrades": true,
+    "includeCandlesticks": true,
+    "maxPages": 5
+  }'
+```
+
+Guardrails:
+
+- request windows are capped at 366 days
+- explicit ticker sync is capped at 25 tickers per request
+- either `seriesTicker` or `tickers` is required
+
+Backtests use the first available replay price in this order:
+
+1. Kalshi candlestick YES ask/price around the candidate timestamp
+2. Kalshi historical/live trade prints
+3. stored candidate snapshot entry price
+
+Historical execution applies configurable slippage in cents. Current paper execution still uses the live orderbook endpoint for realistic yes/no bid book fills.
+
+The dataset export includes:
+
+- `historical_kalshi_markets`
+- `kalshi_market_candlesticks`
+- `kalshi_market_trades`
+- replay-enriched backtest strategy runs
+
+## Vercel
+
+Vercel is a good fit for the `apps/web` Next.js dashboard and preview deployments. Keep the Fastify API, background worker, and Postgres-backed historical sync on Render unless the API is intentionally refactored into request-scoped functions.
+
+Recommended split:
+
+- Render: `forecastedge-api`, background polling, Postgres, historical sync/backtest data persistence.
+- Vercel: `apps/web`, with `NEXT_PUBLIC_API_URL=https://api.traderai4.app`.
+
+Do not move only one app's base URL or routing without verifying the shared production domain still serves the other app paths.
 
 ## Live Trading Safety
 
