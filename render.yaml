@@ -33,6 +33,8 @@ services:
         value: "1000"
       - key: SCHEDULED_JOB_TOKEN
         sync: false
+      - key: STRATEGY_OPTIMIZER_SELECTION_GRID
+        value: first_signal,best_quality,best_edge
       - key: FORECAST_CACHE_MINUTES
         value: "45"
       - key: OPEN_METEO_COOLDOWN_MINUTES
@@ -61,6 +63,21 @@ services:
     schedule: "0 8 * * *"
     buildCommand: npm install --include=dev
     startCommand: node scripts/run-scheduled-job.mjs optimize_strategy_candidates
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FORECASTEDGE_API_URL
+        value: https://forecastedge-api.onrender.com
+      - key: SCHEDULED_JOB_TOKEN
+        sync: false
+
+  - type: cron
+    name: forecastedge-daily-alpha-report
+    runtime: node
+    plan: starter
+    schedule: "0 13 * * *"
+    buildCommand: npm install --include=dev
+    startCommand: node scripts/run-scheduled-job.mjs run_nightly_backtests
     envVars:
       - key: NODE_ENV
         value: production

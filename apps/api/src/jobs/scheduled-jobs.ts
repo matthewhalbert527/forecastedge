@@ -1,4 +1,4 @@
-import { activeRiskLimits, env } from "../config/env.js";
+import { env } from "../config/env.js";
 import type { PersistentStore } from "../data/persistent-store.js";
 import {
   getHistoricalMarketCandlesticks,
@@ -112,24 +112,20 @@ export function createScheduledJobRegistry(deps: {
     {
       id: "run_nightly_backtests",
       label: "Run nightly backtests",
-      description: "Run a walk-forward validation backtest using the current strict production gates.",
+      description: "Replay baseline and alpha-selective rules, then report hypothetical P/L.",
       run: async () => {
-        const result = await deps.pipeline.runStoredBacktest({
+        const result = await deps.pipeline.runDailyAlphaReport({
+          trigger: "scheduled_daily_alpha_report",
           validationMode: "walk_forward",
-          selection: "first_signal",
-          status: "WOULD_BUY",
-          minEdge: env.MIN_EDGE_PERCENTAGE_POINTS / 100,
-          maxSpread: activeRiskLimits.maxSpread,
-          minLiquidityScore: activeRiskLimits.minLiquidityScore,
-          slippageCents: 2,
-          notes: "Scheduled walk-forward validation"
+          slippageCents: 2
         });
-        const summary = result.summary as { approval?: { status?: string }; evaluatedMarkets?: number; roi?: number };
-        return jobRun("run_nightly_backtests", "completed", `Nightly backtest finished with ${summary.approval?.status ?? "unknown"} status`, {
+        const best = result.bestCandidate as { evaluatedMarkets?: number; roi?: number; totalPnl?: number } | null;
+        const status = result.status === "failed" ? "failed" : result.status === "skipped" ? "skipped" : "completed";
+        return jobRun("run_nightly_backtests", status, result.recommendation, {
           runId: result.id,
-          strategyVersionId: "strategyVersionId" in result ? result.strategyVersionId : null,
-          evaluatedMarkets: summary.evaluatedMarkets ?? null,
-          roi: summary.roi ?? null
+          evaluatedMarkets: best?.evaluatedMarkets ?? null,
+          roi: best?.roi ?? null,
+          totalPnl: best?.totalPnl ?? null
         });
       }
     },

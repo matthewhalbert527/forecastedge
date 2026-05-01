@@ -452,6 +452,23 @@ export class ForecastEdgePipeline {
     return this.persistentStore.runStrategyOptimizer(parameters);
   }
 
+  async runDailyAlphaReport(parameters: Record<string, unknown> = {}) {
+    if (!this.persistentStore) {
+      return {
+        id: "memory_alpha_report",
+        status: "skipped",
+        recommendation: "DATABASE_URL is required for daily alpha reporting.",
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        searchSpace: {},
+        champion: null,
+        bestCandidate: null,
+        challengers: []
+      };
+    }
+    return this.persistentStore.runDailyAlphaReport(parameters);
+  }
+
   async exportLearningDataset() {
     if (!this.persistentStore) {
       return {

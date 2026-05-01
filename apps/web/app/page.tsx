@@ -100,8 +100,8 @@ type StrategyDecisionData = {
     status: string;
     recommendation: string;
     champion: unknown;
-    bestCandidate: { optimizerCandidateId?: string; approvalStatus?: string; score?: number; roi?: number; evaluatedMarkets?: number; parameters?: Record<string, unknown> } | null;
-    challengers: Array<{ optimizerCandidateId?: string; approvalStatus?: string; score?: number; roi?: number; evaluatedMarkets?: number }>;
+    bestCandidate: { optimizerCandidateId?: string; approvalStatus?: string; score?: number; roi?: number; totalPnl?: number; evaluatedMarkets?: number; winRate?: number; parameters?: Record<string, unknown> } | null;
+    challengers: Array<{ optimizerCandidateId?: string; approvalStatus?: string; score?: number; roi?: number; totalPnl?: number; evaluatedMarkets?: number }>;
     startedAt: string;
     completedAt: string | null;
   } | null;
@@ -492,7 +492,9 @@ function LearningView({ strategy, jobs, latest, learning }: { strategy: Strategy
               ["Optimizer", strategy?.latestOptimizerReport?.status ?? "pending"],
               ["Recommendation", strategy?.latestOptimizerReport?.recommendation ?? "No optimizer recommendation yet"],
               ["Best candidate", strategy?.latestOptimizerReport?.bestCandidate?.optimizerCandidateId ?? "none"],
+              ["Hypothetical P/L", moneyOrPending(strategy?.latestOptimizerReport?.bestCandidate?.totalPnl ?? null)],
               ["Best ROI", formatPct(strategy?.latestOptimizerReport?.bestCandidate?.roi ?? null)],
+              ["Replay trades", String(strategy?.latestOptimizerReport?.bestCandidate?.evaluatedMarkets ?? 0)],
               ["Paper edge", paper?.liveEdgeDegraded ? "degraded" : paper ? "preserved" : "pending"]
             ]}
             empty="No automatic adjustment data"

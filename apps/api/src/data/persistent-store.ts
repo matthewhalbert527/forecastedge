@@ -901,6 +901,93 @@ export class PersistentStore {
     };
   }
 
+  async runDailyAlphaReport(parameters: Record<string, unknown> = {}) {
+    const startedAt = new Date();
+    const validationMode = optimizerValidationMode(parameters.validationMode);
+    const slippageCents = Math.round(numberParam(parameters.slippageCents, 0, 25) ?? 2);
+    const startDate = dateParam(parameters.startDate);
+    const endDate = dateParam(parameters.endDate);
+    const base = baseTrainingCandidateConfig();
+    const alphaConfig = await this.learnedTrainingCandidateConfig(base);
+    const baselineOptions = {
+      strategyKey: "daily_baseline_selective",
+      validationMode,
+      status: "WOULD_BUY",
+      selection: "first_signal" as const,
+      minEdge: base.minEdge,
+      maxEntryPrice: null,
+      minLiquidityScore: base.minLiquidityScore,
+      maxSpread: base.maxSpread,
+      stakePerTrade: env.MAX_STAKE_PER_TRADE_PAPER,
+      maxContracts: activeRiskLimits.maxContractsPerTrade,
+      slippageCents,
+      startDate,
+      endDate,
+      paperTradingStartDate: null,
+      notes: "Daily baseline selective replay"
+    };
+    const alphaOptions = {
+      ...baselineOptions,
+      strategyKey: "daily_alpha_selective",
+      selection: "best_quality" as const,
+      minEdge: alphaConfig.minEdge,
+      maxEntryPrice: alphaConfig.maxEntryPrice ?? null,
+      minLiquidityScore: alphaConfig.minLiquidityScore,
+      maxSpread: alphaConfig.maxSpread,
+      notes: "Daily learned alpha selective replay"
+    };
+
+    const [baselineSummary, alphaSummary] = await Promise.all([
+      this.backtestStoredWouldBuys(baselineOptions),
+      this.backtestStoredWouldBuys(alphaOptions)
+    ]);
+    const baseline = alphaReportResult("baseline_selective", baselineSummary, baselineOptions);
+    const alpha = alphaReportResult("alpha_selective", alphaSummary, alphaOptions);
+    const bestCandidate = alpha.score >= baseline.score ? alpha : baseline;
+    const recommendation = alphaRecommendation(baseline, alpha);
+    const status = alpha.evaluatedMarkets > 0 || baseline.evaluatedMarkets > 0 ? "completed" : "completed_no_settled_markets";
+    const completedAt = new Date();
+    const row = await this.prisma.strategyOptimizationRun.create({
+      data: {
+        status,
+        recommendation,
+        searchSpace: toJson({
+          trigger: stringParam(parameters.trigger) ?? "daily_alpha_report",
+          validationMode,
+          slippageCents,
+          startDate,
+          endDate,
+          learnedConfig: alphaConfig,
+          baseline: baselineOptions,
+          alpha: alphaOptions
+        }),
+        champion: toJson(baseline),
+        bestCandidate: toJson(bestCandidate),
+        challengers: toJson([baseline, alpha]),
+        startedAt,
+        completedAt
+      }
+    });
+
+    return {
+      id: row.id,
+      status,
+      recommendation,
+      searchSpace: {
+        validationMode,
+        slippageCents,
+        startDate,
+        endDate,
+        learnedConfig: alphaConfig
+      },
+      champion: baseline,
+      bestCandidate,
+      challengers: [baseline, alpha],
+      startedAt: startedAt.toISOString(),
+      completedAt: completedAt.toISOString()
+    };
+  }
+
   private async *learningDatasetLines() {
     const counts = await this.datasetCounts();
     yield ndjsonLine({
@@ -1769,6 +1856,22 @@ type BacktestTrade = StrategyTradeResult & {
   impliedProbabilityMove: number | null;
 };
 
+type BacktestSummaryResult = {
+  approval: unknown;
+  expectancy: unknown;
+  dataQuality: unknown;
+  evaluatedMarkets: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  totalCost: number;
+  totalPayout: number;
+  totalPnl: number;
+  roi: number;
+  maxDrawdown: number;
+  profitFactor: number | null;
+};
+
 function defaultBacktestOptions(): BacktestOptions {
   return {
     strategyKey: "candidate_snapshot_v2",
@@ -2496,6 +2599,59 @@ function optimizerResultFromRun(
   };
 }
 
+function alphaReportResult(optimizerCandidateId: string, summary: BacktestSummaryResult, parameters: BacktestOptions) {
+  const approval = jsonRecord(summary.approval);
+  const expectancy = jsonRecord(summary.expectancy);
+  const approvalStatus = typeof approval?.status === "string" ? approval.status : "Draft";
+  const roi = summary.roi ?? 0;
+  const totalPnl = summary.totalPnl ?? 0;
+  const evaluatedMarkets = summary.evaluatedMarkets ?? 0;
+  const expectedValuePerTrade = numberField(expectancy, "expectedValuePerTrade") ?? 0;
+  const riskOfRuin = numberField(expectancy, "riskOfRuin") ?? 1;
+  const maxDrawdown = summary.maxDrawdown ?? 0;
+  const score = optimizerScore({
+    approvalStatus,
+    roi,
+    totalPnl,
+    evaluatedMarkets,
+    dataQualityScore: numberField(jsonRecord(summary.dataQuality), "score") ?? 0,
+    expectedValuePerTrade,
+    riskOfRuin,
+    maxDrawdown,
+    warnings: jsonArray(approval?.warnings).length
+  });
+  return {
+    optimizerCandidateId,
+    approvalStatus,
+    score,
+    evaluatedMarkets,
+    wins: summary.wins,
+    losses: summary.losses,
+    winRate: summary.winRate,
+    totalCost: summary.totalCost,
+    totalPayout: summary.totalPayout,
+    totalPnl,
+    roi,
+    expectedValuePerTrade,
+    maxDrawdown,
+    profitFactor: summary.profitFactor,
+    parameters
+  };
+}
+
+function alphaRecommendation(
+  baseline: ReturnType<typeof alphaReportResult>,
+  alpha: ReturnType<typeof alphaReportResult>
+) {
+  if (alpha.evaluatedMarkets === 0 && baseline.evaluatedMarkets === 0) {
+    return "No settled candidate markets are available yet, so alpha hypothetical P/L cannot be evaluated.";
+  }
+  const pnlDelta = alpha.totalPnl - baseline.totalPnl;
+  const roiDelta = alpha.roi - baseline.roi;
+  const direction = pnlDelta >= 0 ? "better" : "worse";
+  return `Daily alpha replay: alpha would have made ${formatSignedMoney(alpha.totalPnl)} on ${alpha.evaluatedMarkets} settled trades (${(alpha.roi * 100).toFixed(1)}% ROI), versus baseline ${formatSignedMoney(baseline.totalPnl)} on ${baseline.evaluatedMarkets} trades (${(baseline.roi * 100).toFixed(1)}% ROI). Alpha was ${formatSignedMoney(pnlDelta)} ${direction} with a ${(roiDelta * 100).toFixed(1)} ROI-point difference.`;
+}
+
 function optimizerScore(input: {
   approvalStatus: string;
   roi: number;
@@ -2566,11 +2722,11 @@ function optimizerNumberGrid(value: unknown, envValue: string, fallback: number[
   return [...new Set(source.map((item) => Number(Math.min(max, Math.max(min, item)).toFixed(4))))].sort((a, b) => a - b);
 }
 
-function optimizerSelectionGrid(value: unknown, envValue: string): Array<"first_signal" | "best_edge" | "each_signal"> {
+function optimizerSelectionGrid(value: unknown, envValue: string): Array<"first_signal" | "best_edge" | "best_quality" | "each_signal"> {
   const raw = Array.isArray(value) ? value.join(",") : typeof value === "string" && value.trim() ? value : envValue;
-  const allowed = new Set(["first_signal", "best_edge", "each_signal"]);
-  const parsed = raw.split(",").map((item) => item.trim()).filter((item): item is "first_signal" | "best_edge" | "each_signal" => allowed.has(item));
-  return parsed.length > 0 ? [...new Set(parsed)] : ["first_signal", "best_edge"];
+  const allowed = new Set(["first_signal", "best_edge", "best_quality", "each_signal"]);
+  const parsed = raw.split(",").map((item) => item.trim()).filter((item): item is "first_signal" | "best_edge" | "best_quality" | "each_signal" => allowed.has(item));
+  return parsed.length > 0 ? [...new Set(parsed)] : ["first_signal", "best_quality", "best_edge"];
 }
 
 function jsonRecord(value: unknown): Record<string, unknown> | null {

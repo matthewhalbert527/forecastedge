@@ -30,7 +30,7 @@ const schema = z.object({
   STRATEGY_OPTIMIZER_MIN_LIQUIDITY_GRID: z.string().default(""),
   STRATEGY_OPTIMIZER_MAX_SPREAD_GRID: z.string().default(""),
   STRATEGY_OPTIMIZER_SLIPPAGE_CENTS_GRID: z.string().default(""),
-  STRATEGY_OPTIMIZER_SELECTION_GRID: z.string().default("first_signal,best_edge"),
+  STRATEGY_OPTIMIZER_SELECTION_GRID: z.string().default("first_signal,best_quality,best_edge"),
   FORECAST_CACHE_MINUTES: z.coerce.number().default(45),
   OPEN_METEO_COOLDOWN_MINUTES: z.coerce.number().default(60),
   OPEN_METEO_BASE_URL: z.string().url().default("https://api.open-meteo.com/v1"),
