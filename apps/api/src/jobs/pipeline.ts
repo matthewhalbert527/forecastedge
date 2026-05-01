@@ -29,14 +29,24 @@ import { fetchModelForecasts, unavailableModelPoint } from "../weather/model-sta
 import { buildTrainingCandidates, type TrainingCandidateConfig } from "./training-candidates.js";
 
 export class ForecastEdgePipeline {
+  private persistenceDisabledReason: string | null = null;
+
   constructor(
     private readonly store: MemoryStore,
     private readonly audit: AuditLog,
     private persistentStore: PersistentStore | null = null
   ) {}
 
-  disablePersistence() {
+  disablePersistence(reason?: string) {
     this.persistentStore = null;
+    this.persistenceDisabledReason = reason ?? this.persistenceDisabledReason ?? "Persistence was disabled";
+  }
+
+  persistenceStatus() {
+    return {
+      enabled: Boolean(this.persistentStore),
+      reason: this.persistenceDisabledReason
+    };
   }
 
   async runOnce(trigger: "manual" | "scheduled" | "startup" = "manual") {
@@ -440,7 +450,7 @@ export class ForecastEdgePipeline {
       return {
         id: "memory_optimizer",
         status: "skipped",
-        recommendation: "DATABASE_URL is required for strategy optimization.",
+        recommendation: this.persistenceDisabledReason ?? "DATABASE_URL is required for strategy optimization.",
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
         searchSpace: {},
@@ -457,7 +467,7 @@ export class ForecastEdgePipeline {
       return {
         id: "memory_alpha_report",
         status: "skipped",
-        recommendation: "DATABASE_URL is required for daily alpha reporting.",
+        recommendation: this.persistenceDisabledReason ?? "DATABASE_URL is required for daily alpha reporting.",
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
         searchSpace: {},
@@ -675,7 +685,7 @@ export class ForecastEdgePipeline {
   }
 
   async runSettlementsOnly() {
-    if (!this.persistentStore) return { checked: 0, settled: 0, skipped: 0, errors: 1, reason: "DATABASE_URL is not configured" };
+    if (!this.persistentStore) return { checked: 0, settled: 0, skipped: 0, errors: 1, reason: this.persistenceDisabledReason ?? "DATABASE_URL is not configured" };
     const result = await reconcilePaperSettlements(this.persistentStore, this.audit);
     await this.persistentStore.persistAudit(this.audit.list(250));
     return result;

@@ -66,6 +66,7 @@ export function buildServer() {
     mode: env.APP_MODE,
     databaseConfigured: Boolean(process.env.DATABASE_URL),
     persistenceEnabled: Boolean(persistentStore),
+    persistenceReason: pipeline.persistenceStatus().reason,
     dailyEmailConfigured: Boolean(env.RESEND_API_KEY && env.DAILY_REPORT_EMAIL_TO && env.DAILY_REPORT_EMAIL_FROM),
     liveTradingEnabled: env.LIVE_TRADING_ENABLED,
     killSwitchEnabled: env.KILL_SWITCH_ENABLED,
@@ -222,7 +223,7 @@ export function buildServer() {
           message: `Postgres unavailable; continuing with in-memory store: ${message}`,
           metadata: {}
         });
-        pipeline.disablePersistence();
+        pipeline.disablePersistence(`Postgres unavailable at startup: ${message}`);
         persistentStore = null;
         await prisma?.$disconnect();
       }
