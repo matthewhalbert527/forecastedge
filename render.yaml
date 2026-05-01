@@ -11,6 +11,8 @@ services:
         value: production
       - key: APP_MODE
         value: paper
+      - key: PAPER_LEARNING_MODE
+        value: "true"
       - key: LIVE_TRADING_ENABLED
         value: "false"
       - key: REQUIRE_MANUAL_CONFIRMATION
@@ -28,7 +30,7 @@ services:
       - key: QUOTE_REFRESH_INTERVAL_MINUTES
         value: "1"
       - key: QUOTE_REFRESH_MAX_PAPER_ORDERS
-        value: "3"
+        value: "1000"
       - key: SCHEDULED_JOB_TOKEN
         sync: false
       - key: FORECAST_CACHE_MINUTES

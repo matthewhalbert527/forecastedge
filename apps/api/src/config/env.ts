@@ -13,6 +13,7 @@ const schema = z.object({
   NODE_ENV: z.string().default("development"),
   APP_MODE: z.enum(["watch", "paper", "demo", "live"]).default("paper"),
   API_PORT: z.coerce.number().default(4000),
+  PAPER_LEARNING_MODE: booleanFromEnv.default(false),
   RUN_BACKGROUND_WORKER: booleanFromEnv.default(true),
   RUN_ON_STARTUP: booleanFromEnv.default(true),
   BACKGROUND_POLL_INTERVAL_MINUTES: z.coerce.number().default(15).transform((minutes) => Math.min(minutes, 15)),
@@ -64,13 +65,22 @@ const schema = z.object({
 export const env = schema.parse(process.env);
 export const listenPort = Number(process.env.PORT ?? env.API_PORT);
 
+const paperLearningMode = env.APP_MODE === "paper" && env.PAPER_LEARNING_MODE;
+
 export const activeRiskLimits = {
   ...defaultRiskLimits,
   maxStakePerTrade: env.MAX_STAKE_PER_TRADE_PAPER,
   maxDailyLoss: env.MAX_DAILY_PAPER_LOSS,
-  maxOpenExposure: env.MAX_OPEN_PAPER_EXPOSURE,
-  maxDailyTrades: env.MAX_DAILY_TRADES,
+  maxDailyTrades: paperLearningMode ? 10_000 : env.MAX_DAILY_TRADES,
+  maxOpenExposure: paperLearningMode ? 10_000 : env.MAX_OPEN_PAPER_EXPOSURE,
+  maxExposurePerCity: paperLearningMode ? 10_000 : defaultRiskLimits.maxExposurePerCity,
+  maxExposurePerWeatherType: paperLearningMode ? 10_000 : defaultRiskLimits.maxExposurePerWeatherType,
+  maxOpenPositions: paperLearningMode ? 10_000 : defaultRiskLimits.maxOpenPositions,
   maxSpread: env.MAX_SPREAD,
+  maxUncertaintyPenalty: paperLearningMode ? 1 : defaultRiskLimits.maxUncertaintyPenalty,
+  maxFillPenalty: paperLearningMode ? 1 : defaultRiskLimits.maxFillPenalty,
+  maxDiversificationPenalty: paperLearningMode ? 1 : defaultRiskLimits.maxDiversificationPenalty,
+  maxCorrelationExposure: paperLearningMode ? 10_000 : defaultRiskLimits.maxCorrelationExposure,
   staleMarketDataSeconds: env.STALE_MARKET_DATA_SECONDS,
   staleForecastDataMinutes: env.STALE_FORECAST_DATA_MINUTES
 };

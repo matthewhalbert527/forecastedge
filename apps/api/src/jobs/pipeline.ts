@@ -676,7 +676,7 @@ export class ForecastEdgePipeline {
     this.store.mappings = [...byTicker.values()];
   }
 
-  private async placePaperOrdersForCandidates(candidates: TrainingCandidate[], report: ReturnType<MemoryStore["startScan"]>, maxOrders = env.QUOTE_REFRESH_MAX_PAPER_ORDERS) {
+  private async placePaperOrdersForCandidates(candidates: TrainingCandidate[], report: ReturnType<MemoryStore["startScan"]>, maxOrders = paperOrderLimit()) {
     let placed = 0;
     for (const candidate of rankPurchaseCandidates(candidates)) {
       if (placed >= maxOrders) break;
@@ -810,6 +810,10 @@ function baseTrainingCandidateConfig(): TrainingCandidateConfig {
     maxStake: env.MAX_STAKE_PER_TRADE_PAPER,
     maxContracts: activeRiskLimits.maxContractsPerTrade
   };
+}
+
+function paperOrderLimit() {
+  return env.APP_MODE === "paper" && env.PAPER_LEARNING_MODE ? 10_000 : env.QUOTE_REFRESH_MAX_PAPER_ORDERS;
 }
 
 function rankPurchaseCandidates(candidates: TrainingCandidate[]) {
