@@ -124,14 +124,16 @@ export function createScheduledJobRegistry(deps: {
           endDate: reportDate
         });
         const best = result.bestCandidate as { evaluatedMarkets?: number; roi?: number; totalPnl?: number } | null;
-        const email = await sendDailyAlphaEmail({
-          reportDate,
-          recommendation: result.recommendation,
-          champion: result.champion as Parameters<typeof sendDailyAlphaEmail>[0]["champion"],
-          bestCandidate: result.bestCandidate as Parameters<typeof sendDailyAlphaEmail>[0]["bestCandidate"],
-          challengers: result.challengers as Parameters<typeof sendDailyAlphaEmail>[0]["challengers"]
-        });
         const status = result.status === "failed" ? "failed" : result.status === "skipped" ? "skipped" : "completed";
+        const email = status === "skipped"
+          ? { sent: false, reason: result.recommendation }
+          : await sendDailyAlphaEmail({
+              reportDate,
+              recommendation: result.recommendation,
+              champion: result.champion as Parameters<typeof sendDailyAlphaEmail>[0]["champion"],
+              bestCandidate: result.bestCandidate as Parameters<typeof sendDailyAlphaEmail>[0]["bestCandidate"],
+              challengers: result.challengers as Parameters<typeof sendDailyAlphaEmail>[0]["challengers"]
+            });
         return jobRun("run_nightly_backtests", status, result.recommendation, {
           runId: result.id,
           reportDate,
