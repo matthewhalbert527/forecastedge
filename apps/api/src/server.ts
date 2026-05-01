@@ -26,7 +26,7 @@ export function buildServer() {
   const store = new MemoryStore();
   const audit = new AuditLog();
   const prisma = getPrisma();
-  const persistentStore = prisma ? new PersistentStore(prisma) : null;
+  let persistentStore = prisma ? new PersistentStore(prisma) : null;
   const pipeline = new ForecastEdgePipeline(store, audit, persistentStore);
   const worker = new BackgroundWorker(pipeline, {
     enabled: env.RUN_BACKGROUND_WORKER,
@@ -36,7 +36,7 @@ export function buildServer() {
     quoteRefreshIntervalMinutes: env.QUOTE_REFRESH_INTERVAL_MINUTES,
     logger: app.log
   });
-  const scheduledJobs = createScheduledJobRegistry({ pipeline, persistentStore });
+  const scheduledJobs = createScheduledJobRegistry({ pipeline, persistentStore: () => persistentStore });
   const demoBroker = new KalshiDemoBroker();
   const liveBroker = new LiveBrokerSafetyShell();
 
@@ -206,9 +206,23 @@ export function buildServer() {
 
   app.addHook("onReady", async () => {
     if (persistentStore) {
-      await ensureDatabaseSchema();
-      await persistentStore.hydrateMemory(store);
-      app.log.info("Hydrated ForecastEdge memory from Postgres");
+      try {
+        await ensureDatabaseSchema();
+        await persistentStore.hydrateMemory(store);
+        app.log.info("Hydrated ForecastEdge memory from Postgres");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown database startup error";
+        app.log.error({ err: error }, `Postgres unavailable; continuing with in-memory store: ${message}`);
+        audit.record({
+          actor: "system",
+          type: "error",
+          message: `Postgres unavailable; continuing with in-memory store: ${message}`,
+          metadata: {}
+        });
+        pipeline.disablePersistence();
+        persistentStore = null;
+        await prisma?.$disconnect();
+      }
     }
     worker.start();
   });

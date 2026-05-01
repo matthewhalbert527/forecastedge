@@ -32,8 +32,12 @@ export class ForecastEdgePipeline {
   constructor(
     private readonly store: MemoryStore,
     private readonly audit: AuditLog,
-    private readonly persistentStore: PersistentStore | null = null
+    private persistentStore: PersistentStore | null = null
   ) {}
+
+  disablePersistence() {
+    this.persistentStore = null;
+  }
 
   async runOnce(trigger: "manual" | "scheduled" | "startup" = "manual") {
     const report = this.store.startScan(trigger);

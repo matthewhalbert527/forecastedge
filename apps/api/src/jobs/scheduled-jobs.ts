@@ -71,14 +71,14 @@ export class ScheduledJobRegistry {
 
 export function createScheduledJobRegistry(deps: {
   pipeline: ForecastEdgePipeline;
-  persistentStore: PersistentStore | null;
+  persistentStore: () => PersistentStore | null;
 }) {
   const definitions: ScheduledJobDefinition[] = [
     {
       id: "refresh_historical_market_data",
       label: "Refresh historical market data",
       description: "Pull recent historical markets, candles, and trades for configured series.",
-      run: async () => refreshHistoricalMarketData(deps.persistentStore)
+      run: async () => refreshHistoricalMarketData(deps.persistentStore())
     },
     {
       id: "refresh_forecast_archive_data",

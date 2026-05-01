@@ -7,7 +7,10 @@ const schema = process.env.PRISMA_SCHEMA ?? "prisma/schema.prisma";
 for (let attempt = 1; attempt <= attempts; attempt += 1) {
   const result = await runPrismaDbPush(schema);
   if (result === 0) process.exit(0);
-  if (attempt === attempts) process.exit(result);
+  if (attempt === attempts) {
+    console.warn(`prisma db push failed after ${attempts} attempts; continuing so the API can boot in memory mode until the database is reachable`);
+    process.exit(process.env.DB_PUSH_STRICT === "true" ? result : 0);
+  }
 
   const delayMs = baseDelayMs * attempt;
   console.warn(`prisma db push failed with exit code ${result}; retrying in ${Math.round(delayMs / 1000)}s (${attempt}/${attempts})`);
