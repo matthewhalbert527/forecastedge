@@ -26,7 +26,7 @@ type DashboardData = {
   paperOrders: Array<{ id: string; marketTicker: string; side: string; action: string; requestedContracts: number; limitPrice: number; status: string; filledContracts: number; unfilledContracts: number; simulatedAvgFillPrice: number | null; reason: string; timestamp: string }>;
   paperPositions: Array<{ id: string; marketTicker: string; side: string; contracts: number; avgEntryPrice: number; realizedPnl: number; markPrice: number | null; openedAt: string; closedAt: string | null; settlementId: string | null }>;
   settlements: Array<{ id: string; marketTicker: string; result: string; settledPrice: number; source: string; rawPayload?: unknown; createdAt: string }>;
-  trainingCandidates: Array<{ id: string; marketTicker: string; title: string; city: string | null; stationId: string | null; variable: string; targetDate: string | null; threshold: number | null; thresholdOperator: string; forecastValue: number | null; entryPrice: number | null; yesProbability: number | null; impliedProbability: number | null; edge: number | null; spread: number | null; liquidityScore: number; status: "WOULD_BUY" | "WATCH" | "BLOCKED"; blockers: string[]; settlementResult: string | null; counterfactualPnl: number | null; reason: string; createdAt: string }>;
+  trainingCandidates: Array<{ id: string; marketTicker: string; title: string; city: string | null; stationId: string | null; variable: string; targetDate: string | null; threshold: number | null; thresholdOperator: string; forecastValue: number | null; entryPrice: number | null; yesProbability: number | null; impliedProbability: number | null; edge: number | null; netEdge?: number | null; qualityScore?: number | null; uncertaintyPenalty?: number | null; fillPenalty?: number | null; diversificationPenalty?: number | null; recommendedStake?: number | null; recommendedContracts?: number | null; spread: number | null; liquidityScore: number; status: "WOULD_BUY" | "WATCH" | "BLOCKED"; blockers: string[]; settlementResult: string | null; counterfactualPnl: number | null; reason: string; createdAt: string }>;
   modelForecasts: Array<{ id: string; city: string; state: string; stationId: string | null; model: string; targetDate: string; horizonHours: number; highTempF: number | null; lowTempF: number | null; precipitationAmountIn: number | null; windGustMph: number | null; confidence: string; createdAt: string }>;
   ensembles: Array<{ id: string; city: string; state: string; stationId: string | null; targetDate: string; variable: string; prediction: number | null; uncertaintyStdDev: number | null; confidence: string; contributingModels: string[]; disagreement: number | null; reason: string; createdAt: string }>;
   performance: { totalTrades: number; simulatedContracts: number; averageEntryPrice: number; totalCost: number; rejectedOrders: number; realizedPnl: number; unrealizedExposure: number; winRate: number; roi: number; maxDrawdown: number; longestLosingStreak: number; settledTrades: number; openPositions: number };
@@ -60,7 +60,7 @@ type DashboardData = {
     decisions: Array<{ stage: string; itemId: string; status: string; reason: string }>;
   }>;
   safety: { liveTradingEnabled: boolean; killSwitchEnabled: boolean; requireManualConfirmation: boolean; demoConfigured: boolean; prodCredentialConfigured: boolean };
-  riskLimits?: { maxStakePerTrade: number; maxDailyTrades: number; maxOpenExposure: number; maxOpenPositions: number; maxContractsPerTrade: number };
+  riskLimits?: { maxStakePerTrade: number; maxDailyTrades: number; maxOpenExposure: number; maxOpenPositions: number; maxContractsPerTrade: number; minQualityScore?: number; maxUncertaintyPenalty?: number; maxFillPenalty?: number; maxDiversificationPenalty?: number };
   backgroundWorker?: {
     enabled: boolean;
     running: boolean;
@@ -1009,11 +1009,17 @@ function candidateRiskBlockers(candidate: DashboardData["trainingCandidates"][nu
   if (riskState.openPositions >= limits.maxOpenPositions) blockers.push("open position limit reached");
   if (candidate.entryPrice === null) blockers.push("entry unavailable");
   if (candidate.entryPrice !== null) {
-    const contracts = Math.max(1, Math.min(limits.maxContractsPerTrade, Math.floor(limits.maxStakePerTrade / Math.max(candidate.entryPrice, 0.01))));
-    const maxCost = contracts * candidate.entryPrice;
+    const contracts = Math.max(0, Math.min(limits.maxContractsPerTrade, candidate.recommendedContracts ?? Math.floor(limits.maxStakePerTrade / Math.max(candidate.entryPrice, 0.01))));
+    const maxCost = candidate.recommendedStake ?? contracts * candidate.entryPrice;
+    if (contracts <= 0) blockers.push("no fillable recommended size");
     if (maxCost > limits.maxStakePerTrade) blockers.push("entry exceeds max stake");
     if (riskState.openExposure + maxCost > limits.maxOpenExposure) blockers.push("open exposure limit reached");
   }
+  if (candidate.netEdge !== undefined && candidate.netEdge !== null && candidate.netEdge <= 0) blockers.push("net edge is not positive");
+  if (candidate.qualityScore !== undefined && candidate.qualityScore !== null && limits.minQualityScore !== undefined && candidate.qualityScore < limits.minQualityScore) blockers.push("quality score is too low");
+  if ((candidate.uncertaintyPenalty ?? 0) > (limits.maxUncertaintyPenalty ?? Infinity)) blockers.push("forecast uncertainty or ensemble disagreement is too high");
+  if ((candidate.fillPenalty ?? 0) > (limits.maxFillPenalty ?? Infinity)) blockers.push("expected fill quality is too low");
+  if ((candidate.diversificationPenalty ?? 0) > (limits.maxDiversificationPenalty ?? Infinity)) blockers.push("portfolio diversification penalty is too high");
   return blockers;
 }
 
