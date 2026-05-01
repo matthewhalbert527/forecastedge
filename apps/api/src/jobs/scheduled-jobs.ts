@@ -6,6 +6,7 @@ import {
   getHistoricalTrades,
   isPlausibleWeatherMarket
 } from "../kalshi/client.js";
+import { sendDailyAlphaEmail } from "../notifications/daily-report-email.js";
 import type { ForecastEdgePipeline } from "./pipeline.js";
 
 export type ScheduledJobId =
@@ -114,18 +115,30 @@ export function createScheduledJobRegistry(deps: {
       label: "Run nightly backtests",
       description: "Replay baseline and alpha-selective rules, then report hypothetical P/L.",
       run: async () => {
+        const reportDate = previousCentralDate();
         const result = await deps.pipeline.runDailyAlphaReport({
           trigger: "scheduled_daily_alpha_report",
           validationMode: "walk_forward",
-          slippageCents: 2
+          slippageCents: 2,
+          startDate: reportDate,
+          endDate: reportDate
         });
         const best = result.bestCandidate as { evaluatedMarkets?: number; roi?: number; totalPnl?: number } | null;
+        const email = await sendDailyAlphaEmail({
+          reportDate,
+          recommendation: result.recommendation,
+          champion: result.champion as Parameters<typeof sendDailyAlphaEmail>[0]["champion"],
+          bestCandidate: result.bestCandidate as Parameters<typeof sendDailyAlphaEmail>[0]["bestCandidate"],
+          challengers: result.challengers as Parameters<typeof sendDailyAlphaEmail>[0]["challengers"]
+        });
         const status = result.status === "failed" ? "failed" : result.status === "skipped" ? "skipped" : "completed";
         return jobRun("run_nightly_backtests", status, result.recommendation, {
           runId: result.id,
+          reportDate,
           evaluatedMarkets: best?.evaluatedMarkets ?? null,
           roi: best?.roi ?? null,
-          totalPnl: best?.totalPnl ?? null
+          totalPnl: best?.totalPnl ?? null,
+          email
         });
       }
     },
@@ -205,4 +218,16 @@ function jobRun(jobId: ScheduledJobId, status: ScheduledJobRun["status"], messag
     message,
     metadata
   };
+}
+
+function previousCentralDate(now = new Date()) {
+  const central = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Chicago",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(now);
+  const [year = "1970", month = "01", day = "01"] = central.split("-");
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day) - 1));
+  return date.toISOString().slice(0, 10);
 }
