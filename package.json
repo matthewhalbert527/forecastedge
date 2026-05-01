@@ -22,7 +22,8 @@
     "job:run": "node scripts/run-scheduled-job.mjs",
     "research:nightly-export": "node scripts/fetch-nightly-research.mjs",
     "db:generate": "prisma generate",
-    "db:push": "prisma db push",
+    "db:push": "node scripts/render-db-push.mjs",
+    "db:push:direct": "prisma db push",
     "db:push:render": "node scripts/render-db-push.mjs"
   },
   "engines": {
