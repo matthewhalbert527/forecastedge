@@ -3,20 +3,25 @@ import {
   checkRisk,
   buildEnsembles,
   calculateExpectancyMetrics,
+  buildBucketCalibrationMap,
   defaultRiskLimits,
   defaultStrategyApprovalThresholds,
   detectForecastDeltas,
   detectAntiOverfitting,
   evaluateStrategyApproval,
   estimateMarketProbability,
+  calibrateProbability,
+  computeTradeQuality,
+  fractionalKellyForBinary,
   generateSignal,
   parseKalshiWeatherMarket,
   buildPaperPositionsFromOrders,
   scoreDataQuality,
+  summarizePaperPerformanceWindows,
   summarizePaperOrders,
   simulatePaperOrder
 } from "../src/index.js";
-import type { KalshiMarketCandidate, NormalizedForecastSnapshot, NormalizedOrderBook, RiskState } from "../src/index.js";
+import type { KalshiMarketCandidate, NormalizedForecastSnapshot, NormalizedOrderBook, ProbabilityEstimate, RiskState } from "../src/index.js";
 
 const location = {
   id: "chicago",
@@ -78,6 +83,26 @@ const riskState: RiskState = {
   exposureByCity: {},
   exposureByWeatherType: {}
 };
+
+function probability(overrides: Partial<ProbabilityEstimate> = {}): ProbabilityEstimate {
+  return {
+    marketTicker: "KXHIGHCHI-26MAY02-B85",
+    rawYesProbability: 0.68,
+    calibratedYesProbability: 0.66,
+    yesProbability: 0.66,
+    noProbability: 0.34,
+    impliedProbability: 0.48,
+    grossEdge: 0.18,
+    edge: 0.18,
+    uncertaintyStdDev: 3,
+    disagreement: 0.02,
+    confidence: "medium",
+    modelVersion: "test",
+    reason: "test probability",
+    passesModelFilters: true,
+    ...overrides
+  };
+}
 
 describe("forecast deltas", () => {
   it("detects meaningful temperature and rain probability changes", () => {
@@ -165,9 +190,31 @@ describe("probability and signal engine", () => {
     expect(signal.status).toBe("FIRED");
     expect(signal.explanation).toContain("Paper buy allowed");
   });
+
+  it("separates raw and calibrated probability with safe bucket fallback", () => {
+    const sparseMap = buildBucketCalibrationMap([{ predictedProbability: 0.7, outcome: false }], { minSamples: 10 });
+    expect(calibrateProbability(0.7, sparseMap)).toBe(0.7);
+
+    const observations = Array.from({ length: 30 }, () => ({ predictedProbability: 0.72, outcome: false }))
+      .concat(Array.from({ length: 10 }, () => ({ predictedProbability: 0.72, outcome: true })));
+    const map = buildBucketCalibrationMap(observations, { bucketCount: 5, minSamples: 10 });
+    expect(calibrateProbability(0.72, map)).toBeLessThan(0.72);
+  });
+
+  it("sizes with fractional Kelly and shrinks for uncertainty", () => {
+    const clean = computeTradeQuality({ probability: probability(), entryPrice: 0.48, spread: 0.02, liquidityScore: 0.8, config: { maxStake: 1, maxContracts: 10 } });
+    const uncertain = computeTradeQuality({ probability: probability({ uncertaintyStdDev: 12, disagreement: 0.2 }), entryPrice: 0.48, spread: 0.02, liquidityScore: 0.8, config: { maxStake: 1, maxContracts: 10 } });
+    expect(fractionalKellyForBinary(0.66, 0.48, 0.12)).toBeGreaterThan(0);
+    expect(clean.qualityScore ?? 0).toBeGreaterThan(uncertain.qualityScore ?? 0);
+    expect(clean.recommendedStake ?? 0).toBeGreaterThanOrEqual(uncertain.recommendedStake ?? 0);
+  });
 });
 
 describe("risk limits", () => {
+  it("allows up to 30 paper purchases per day by default", () => {
+    expect(defaultRiskLimits.maxDailyTrades).toBe(30);
+  });
+
   it("rejects stale market data and wide spreads", () => {
     const mapping = parseKalshiWeatherMarket(market);
     const result = checkRisk(
@@ -184,6 +231,25 @@ describe("risk limits", () => {
     expect(result.reasons).toContain("market data is stale");
     expect(result.reasons).toContain("spread is too wide");
   });
+
+  it("rejects correlated exposure and low quality fills", () => {
+    const mapping = parseKalshiWeatherMarket(market);
+    const correlationKey = `${mapping.location?.city}:2026-05-02:${mapping.variable}:${market.eventTicker}`;
+    const result = checkRisk(
+      { maxCost: 0.5, contracts: 1, qualityScore: 2, netEdge: 0.01, fillPenalty: 0.12, uncertaintyPenalty: 0.02 },
+      { ...riskState, exposureByCorrelationKey: { [correlationKey]: defaultRiskLimits.maxCorrelationExposure } },
+      defaultRiskLimits,
+      mapping,
+      market,
+      "2026-05-01T12:00:00Z",
+      "2026-05-01T12:00:00Z",
+      new Date("2026-05-01T12:01:00Z")
+    );
+    expect(result.allowed).toBe(false);
+    expect(result.reasons).toContain("quality score is too low");
+    expect(result.reasons).toContain("expected fill quality is too low");
+    expect(result.reasons).toContain("correlated city/date/variable exposure would be exceeded");
+  });
 });
 
 describe("paper broker", () => {
@@ -192,16 +258,18 @@ describe("paper broker", () => {
     const mapping = parseKalshiWeatherMarket(market);
     const estimate = estimateMarketProbability(mapping, delta!, market);
     const risk = { allowed: true, reasons: [] };
-    const signal = generateSignal(delta!, market, mapping, estimate, risk, undefined, new Date("2026-05-01T12:01:00Z"));
+    const signal = generateSignal(delta!, market, mapping, estimate, risk, { minEdge: 0.08, minNetEdge: 0.03, minQualityScore: 3, maxStake: 20, maxContracts: 10, maxLongshotPrice: 0.15 }, new Date("2026-05-01T12:01:00Z"));
     const orderBook: NormalizedOrderBook = {
       marketTicker: market.ticker,
       yesBids: [[0.08, 10]].map(([price, contracts]) => ({ price, contracts })),
       noBids: [{ price: 0.9, contracts: 2 }],
       observedAt: "2026-05-01T12:01:00Z"
     };
-    const order = simulatePaperOrder(signal, orderBook, { staleQuoteMs: 120_000, slippageCents: 1, fillApprovedSignalsHypothetically: false }, new Date("2026-05-01T12:01:01Z"));
+    const largerSignal = { ...signal, contracts: Math.max(3, signal.contracts), maxCost: Number((Math.max(3, signal.contracts) * signal.limitPrice).toFixed(2)) };
+    const order = simulatePaperOrder(largerSignal, orderBook, { staleQuoteMs: 120_000, slippageCents: 1, fillApprovedSignalsHypothetically: false }, new Date("2026-05-01T12:01:01Z"));
     expect(order.status).toBe("PARTIAL");
-    expect(order.filledContracts).toBe(2);
+    expect(order.filledContracts).toBeGreaterThan(0);
+    expect(order.filledContracts).toBeLessThan(largerSignal.contracts);
     expect(order.unfilledContracts).toBeGreaterThan(0);
   });
 
@@ -326,6 +394,10 @@ describe("paper settlement performance", () => {
     expect(summary.winRate).toBe(0.5);
     expect(summary.maxDrawdown).toBe(0.4);
     expect(summary.longestLosingStreak).toBe(1);
+    const [window] = summarizePaperPerformanceWindows(positions, [{ key: "24h", label: "24 hours", hours: 24 }], new Date("2026-05-04T12:00:00Z"));
+    expect(window?.settledTrades).toBe(1);
+    expect(window?.score).toBe(0);
+    expect(window?.totalPnl).toBe(-0.4);
   });
 });
 
@@ -414,6 +486,24 @@ describe("strategy decision engine", () => {
     expect(decision.approvedForRecommendation).toBe(true);
   });
 
+  it("calculates trade-quality validation metrics for approval gates", () => {
+    const qualityTrades = strategyTrades.map((trade, index) => ({
+      ...trade,
+      qualityScore: index,
+      calibratedYesProbability: 0.9,
+      impliedProbability: 0.5,
+      grossEdge: trade.pnl > 0 ? 0.22 : -0.12,
+      netEdge: trade.pnl > 0 ? 0.12 : 0.02,
+      pnl: index < 10 ? 0.05 : index < 20 ? 0.1 : 0.2,
+      roi: index < 10 ? 0.1 : index < 20 ? 0.2 : 0.4
+    }));
+    const metrics = calculateExpectancyMetrics(qualityTrades, { ...defaultStrategyApprovalThresholds, maxDrawdown: 100 });
+    expect(metrics.positiveNetEdgeShare).toBeGreaterThan(0.6);
+    expect(metrics.calibrationMeanAbsoluteError).toBeLessThan(defaultStrategyApprovalThresholds.maxCalibrationError);
+    expect(metrics.monotonicQualityDeciles).toBe(true);
+    expect(metrics.fillAdjustedEdgeCaptureRatio).toBeGreaterThan(0);
+  });
+
   it("rejects strategies where one long-shot win explains profitability", () => {
     const trades = [
       ...Array.from({ length: 35 }, (_, index) => ({
@@ -494,6 +584,7 @@ describe("strategy decision engine", () => {
         signalNoFill: 0,
         fillEdgeDisappeared: 0,
         liveEdgeDegraded: false,
+        edgePreservationByScoreBucket: null,
         warnings: []
       }
     });

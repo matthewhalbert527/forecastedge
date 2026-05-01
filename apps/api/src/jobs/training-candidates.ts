@@ -1,15 +1,41 @@
-import type { EnsembleForecast, KalshiMarketCandidate, MarketMapping, Settlement, TrainingCandidate } from "@forecastedge/core";
+import {
+  computeTradeQuality,
+  estimateMarketProbability,
+  type EnsembleForecast,
+  type KalshiMarketCandidate,
+  type MarketMapping,
+  type Settlement,
+  type TrainingCandidate
+} from "@forecastedge/core";
 
 export interface TrainingCandidateConfig {
   minEdge: number;
+  minNetEdge: number;
+  minQualityScore: number;
   maxSpread: number;
   minLiquidityScore: number;
+  maxStake: number;
+  maxContracts: number;
+  maxEntryPrice?: number | null;
+  learnedEdgeAdjustments?: LearnedEdgeAdjustment[];
+}
+
+export interface LearnedEdgeAdjustment {
+  id: string;
+  label: string;
+  minEdgeAdjustment: number;
+  reason: string;
+  variable?: string | null;
 }
 
 const defaultConfig: TrainingCandidateConfig = {
   minEdge: 0.08,
+  minNetEdge: 0.03,
+  minQualityScore: 3,
   maxSpread: 0.1,
-  minLiquidityScore: 0.01
+  minLiquidityScore: 0.01,
+  maxStake: 0.5,
+  maxContracts: 10
 };
 
 export function buildTrainingCandidates(input: {
@@ -34,11 +60,39 @@ export function buildTrainingCandidates(input: {
       const entryPrice = market ? yesEntryPrice(market) : null;
       const spread = market ? yesSpread(market) : null;
       const forecastValue = ensemble?.prediction ?? null;
-      const yesProbability = estimateYesProbability(mapping, forecastValue, ensemble?.uncertaintyStdDev ?? null);
-      const impliedProbability = entryPrice;
-      const edge = yesProbability !== null && impliedProbability !== null ? round(yesProbability - impliedProbability) : null;
-      const blockers = blockersFor({ mapping, market, forecastValue, entryPrice, spread, edge, config });
-      const status = blockers.length === 0 ? "WOULD_BUY" : edge !== null && edge > 0 ? "WATCH" : "BLOCKED";
+      const selectivity = selectivityFor(mapping, config);
+      const probability = market
+        ? estimateMarketProbability(
+            mapping,
+            {
+              forecastValue,
+              uncertaintyStdDev: ensemble?.uncertaintyStdDev ?? null,
+              disagreement: ensemble?.disagreement ?? null,
+              confidence: ensemble?.confidence ?? mapping.confidence
+            },
+            market,
+            { sameDayTempStdDevF: 2, oneDayTempStdDevF: 3, multiDayTempStdDevF: 4.5, minEdge: selectivity.requiredEdge }
+          )
+        : null;
+      const quality = probability
+        ? computeTradeQuality({
+            probability,
+            entryPrice,
+            spread,
+            liquidityScore: mapping.liquidityScore,
+            config: {
+              minNetEdge: config.minNetEdge,
+              minQualityScore: config.minQualityScore,
+              maxStake: config.maxStake,
+              maxContracts: config.maxContracts
+            }
+          })
+        : null;
+      const grossEdge = probability?.grossEdge ?? null;
+      const netEdge = quality?.netEdge ?? null;
+      const qualityScore = quality?.qualityScore ?? null;
+      const blockers = blockersFor({ mapping, market, forecastValue, entryPrice, spread, grossEdge, netEdge, quality, config, selectivity });
+      const status = statusFor({ blockers, grossEdge, netEdge, qualityScore, config });
       const counterfactualPnl = settlement && entryPrice !== null ? round((settlement.result === "yes" ? 1 : 0) - entryPrice) : null;
 
       return {
@@ -54,20 +108,35 @@ export function buildTrainingCandidates(input: {
         thresholdOperator: mapping.thresholdOperator,
         forecastValue,
         entryPrice,
-        yesProbability,
-        impliedProbability,
-        edge,
+        yesProbability: probability?.yesProbability ?? null,
+        rawYesProbability: probability?.rawYesProbability ?? null,
+        calibratedYesProbability: probability?.calibratedYesProbability ?? null,
+        impliedProbability: probability?.impliedProbability ?? entryPrice,
+        edge: grossEdge,
+        grossEdge,
+        expectedSlippage: quality?.expectedSlippage ?? null,
+        spreadPenalty: quality?.spreadPenalty ?? null,
+        feePenalty: quality?.feePenalty ?? null,
+        netEdge,
+        uncertaintyPenalty: quality?.uncertaintyPenalty ?? null,
+        fillPenalty: quality?.fillPenalty ?? null,
+        diversificationPenalty: quality?.diversificationPenalty ?? null,
+        qualityScore,
+        kellyFraction: quality?.kellyFraction ?? null,
+        recommendedStake: quality?.recommendedStake ?? null,
+        recommendedContracts: quality?.recommendedContracts ?? null,
+        rankingReason: quality?.rankingReason ?? null,
         spread,
         liquidityScore: mapping.liquidityScore,
         status,
         blockers,
         settlementResult: settlement?.result ?? null,
         counterfactualPnl,
-        reason: reasonFor(mapping, forecastValue, yesProbability, entryPrice, edge, blockers, settlement, counterfactualPnl),
+        reason: reasonFor(mapping, forecastValue, probability, entryPrice, blockers, settlement, counterfactualPnl, selectivity, quality),
         createdAt
       } satisfies TrainingCandidate;
     })
-    .sort((a, b) => (b.edge ?? -1) - (a.edge ?? -1));
+    .sort((a, b) => (b.qualityScore ?? -1) - (a.qualityScore ?? -1));
 }
 
 function findEnsemble(mapping: MarketMapping, ensembles: EnsembleForecast[]) {
@@ -89,36 +158,17 @@ function yesSpread(market: KalshiMarketCandidate) {
   return round(market.yesAsk - market.yesBid);
 }
 
-function estimateYesProbability(mapping: MarketMapping, forecastValue: number | null, uncertaintyStdDev: number | null) {
-  if (forecastValue === null || mapping.threshold === null) return null;
-
-  if (mapping.variable === "high_temp" || mapping.variable === "low_temp") {
-    const stdDev = Math.max(uncertaintyStdDev ?? 3, 1);
-    const aboveProbability = normalCdf((forecastValue - mapping.threshold) / stdDev);
-    return round(mapping.thresholdOperator === "below" ? 1 - aboveProbability : aboveProbability);
-  }
-
-  if (mapping.variable === "rainfall") {
-    const ratio = Math.max(0, Math.min(1, forecastValue / Math.max(mapping.threshold, 0.01)));
-    return round(Math.max(0.05, Math.min(0.75, ratio * 0.55 + 0.1)));
-  }
-
-  if (mapping.variable === "wind_gust") {
-    const stdDev = Math.max(uncertaintyStdDev ?? 6, 2);
-    return round(normalCdf((forecastValue - mapping.threshold) / stdDev));
-  }
-
-  return null;
-}
-
 function blockersFor(input: {
   mapping: MarketMapping;
   market: KalshiMarketCandidate | undefined;
   forecastValue: number | null;
   entryPrice: number | null;
   spread: number | null;
-  edge: number | null;
+  grossEdge: number | null;
+  netEdge: number | null;
+  quality: ReturnType<typeof computeTradeQuality> | null;
   config: TrainingCandidateConfig;
+  selectivity: ReturnType<typeof selectivityFor>;
 }) {
   const blockers: string[] = [];
   if (!input.mapping.accepted) blockers.push(input.mapping.reviewReason ?? "mapping is not accepted");
@@ -126,44 +176,64 @@ function blockersFor(input: {
   if (input.mapping.threshold === null) blockers.push("market threshold is unknown");
   if (input.forecastValue === null) blockers.push("no ensemble forecast matched this market");
   if (input.entryPrice === null) blockers.push("no executable YES ask");
+  if (input.entryPrice !== null && input.config.maxEntryPrice !== null && input.config.maxEntryPrice !== undefined && input.entryPrice > input.config.maxEntryPrice) blockers.push("entry price above learned cap");
   if (input.spread !== null && input.spread > input.config.maxSpread) blockers.push("spread is too wide");
   if (input.mapping.liquidityScore < input.config.minLiquidityScore) blockers.push("liquidity score is too low");
-  if (input.edge !== null && input.edge < input.config.minEdge) blockers.push("edge below threshold");
-  if (input.edge === null) blockers.push("edge could not be calculated");
+  if (input.grossEdge !== null && input.grossEdge < input.selectivity.requiredEdge) blockers.push(input.selectivity.requiredEdge > input.config.minEdge ? `gross edge below learned threshold (${percent(input.selectivity.requiredEdge)} required)` : "gross edge below threshold");
+  if (input.netEdge !== null && input.netEdge < input.config.minNetEdge) blockers.push(`net edge below quality threshold (${percent(input.config.minNetEdge)} required)`);
+  if (input.quality?.qualityScore !== null && input.quality?.qualityScore !== undefined && input.quality.qualityScore < input.config.minQualityScore) blockers.push(`quality score below threshold (${input.config.minQualityScore.toFixed(1)} required)`);
+  if ((input.quality?.recommendedContracts ?? 0) <= 0) blockers.push("Kelly sizing recommends no fillable contracts");
+  if (input.grossEdge === null) blockers.push("gross edge could not be calculated");
   return blockers;
+}
+
+function statusFor(input: { blockers: string[]; grossEdge: number | null; netEdge: number | null; qualityScore: number | null; config: TrainingCandidateConfig }): TrainingCandidate["status"] {
+  if (input.blockers.length === 0 && (input.netEdge ?? -Infinity) >= input.config.minNetEdge && (input.qualityScore ?? -Infinity) >= input.config.minQualityScore) return "WOULD_BUY";
+  if ((input.grossEdge ?? 0) > 0) return "WATCH";
+  return "BLOCKED";
 }
 
 function reasonFor(
   mapping: MarketMapping,
   forecastValue: number | null,
-  yesProbability: number | null,
+  probability: ReturnType<typeof estimateMarketProbability> | null,
   entryPrice: number | null,
-  edge: number | null,
   blockers: string[],
   settlement: Settlement | null,
-  counterfactualPnl: number | null
+  counterfactualPnl: number | null,
+  selectivity: ReturnType<typeof selectivityFor>,
+  quality: ReturnType<typeof computeTradeQuality> | null
 ) {
   const base = [
     forecastValue === null || mapping.threshold === null ? "Forecast or threshold missing" : `${mapping.variable} forecast ${forecastValue.toFixed(2)} vs ${mapping.thresholdOperator} ${mapping.threshold}`,
-    yesProbability === null ? "model probability unavailable" : `model YES ${(yesProbability * 100).toFixed(1)}%`,
+    probability === null ? "probability unavailable" : `raw YES ${(probability.rawYesProbability * 100).toFixed(1)}%, calibrated YES ${(probability.calibratedYesProbability * 100).toFixed(1)}%`,
     entryPrice === null ? "entry unavailable" : `entry $${entryPrice.toFixed(2)}`,
-    edge === null ? "edge unavailable" : `edge ${(edge * 100).toFixed(1)} pp`
+    probability === null ? "gross edge unavailable" : `gross edge ${(probability.grossEdge * 100).toFixed(1)} pp`,
+    quality?.netEdge === null || quality?.netEdge === undefined ? "net edge unavailable" : `net edge ${(quality.netEdge * 100).toFixed(1)} pp`,
+    quality ? `penalties: slippage ${((quality.expectedSlippage ?? 0) * 100).toFixed(1)} pp, spread ${((quality.spreadPenalty ?? 0) * 100).toFixed(1)} pp, fee ${((quality.feePenalty ?? 0) * 100).toFixed(1)} pp, uncertainty ${((quality.uncertaintyPenalty ?? 0) * 100).toFixed(1)} pp, fill ${((quality.fillPenalty ?? 0) * 100).toFixed(1)} pp` : "quality unavailable",
+    quality?.qualityScore === null || quality?.qualityScore === undefined ? "quality score unavailable" : `quality score ${quality.qualityScore.toFixed(2)}`,
+    quality ? `recommended $${(quality.recommendedStake ?? 0).toFixed(2)} / ${quality.recommendedContracts ?? 0} contracts` : "recommended size unavailable"
   ];
+  if (selectivity.rules.length > 0) base.push(`learned gross-edge threshold ${(selectivity.requiredEdge * 100).toFixed(1)} pp`);
   if (settlement && counterfactualPnl !== null) base.push(`settled ${settlement.result.toUpperCase()}, counterfactual P/L ${counterfactualPnl >= 0 ? "+" : ""}${counterfactualPnl.toFixed(2)}`);
   if (blockers.length > 0) base.push(`blocked by ${blockers.join("; ")}`);
   return base.join(". ");
 }
 
-function normalCdf(x: number) {
-  return 0.5 * (1 + erf(x / Math.SQRT2));
+function selectivityFor(mapping: MarketMapping, config: TrainingCandidateConfig) {
+  const rules = (config.learnedEdgeAdjustments ?? []).filter((rule) => {
+    if (rule.variable && rule.variable !== mapping.variable) return false;
+    return true;
+  });
+  const adjustment = rules.reduce((sum, rule) => sum + Math.max(0, rule.minEdgeAdjustment), 0);
+  return {
+    requiredEdge: round(Math.min(0.35, config.minEdge + adjustment)),
+    rules
+  };
 }
 
-function erf(x: number) {
-  const sign = x >= 0 ? 1 : -1;
-  const abs = Math.abs(x);
-  const t = 1 / (1 + 0.3275911 * abs);
-  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-abs * abs);
-  return sign * y;
+function percent(value: number) {
+  return `${(value * 100).toFixed(1)} pp`;
 }
 
 function round(value: number) {

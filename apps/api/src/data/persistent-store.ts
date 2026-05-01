@@ -8,6 +8,7 @@ import {
   detectAntiOverfitting,
   evaluateStrategyApproval,
   scoreDataQuality,
+  summarizePaperPerformanceWindows,
   summarizePaperOrders,
   summarizePaperValidation,
   type EnsembleForecast,
@@ -28,7 +29,7 @@ import {
 import type { AuditEntry } from "../audit/audit-log.js";
 import { activeRiskLimits, env } from "../config/env.js";
 import type { ScanReport, StationObservation, MemoryStore } from "./store.js";
-import { buildTrainingCandidates } from "../jobs/training-candidates.js";
+import { buildTrainingCandidates, type LearnedEdgeAdjustment, type TrainingCandidateConfig } from "../jobs/training-candidates.js";
 import type { KalshiCandlestick, KalshiHistoricalMarket, KalshiTradePrint } from "../kalshi/client.js";
 
 type PrismaJson = Prisma.InputJsonValue;
@@ -118,7 +119,8 @@ export class PersistentStore {
   }
 
   async dashboardSummary(fallback: MemoryStore) {
-    const [scanReports, snapshots, stationObservations, deltas, markets, mappings, signals, paperOrders, positions, settlements, auditLogs, modelForecasts, ensembles] = await Promise.all([
+    const performanceWindowSince = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+    const [scanReports, snapshots, stationObservations, deltas, markets, mappings, signals, paperOrders, positions, performancePositions, settlements, auditLogs, modelForecasts, ensembles, candidateConfig] = await Promise.all([
       this.prisma.scanReport.findMany({ orderBy: { startedAt: "desc" }, take: 20 }),
       this.prisma.forecastSnapshot.findMany({ include: { location: true }, orderBy: { createdAt: "desc" }, take: 10 }),
       this.prisma.stationObservation.findMany({ orderBy: { observedAt: "desc" }, take: 20 }),
@@ -128,10 +130,12 @@ export class PersistentStore {
       this.prisma.signal.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
       this.prisma.paperOrder.findMany({ orderBy: { timestamp: "desc" }, take: 100 }),
       this.prisma.paperPosition.findMany({ orderBy: { openedAt: "desc" }, take: 100 }),
+      this.prisma.paperPosition.findMany({ where: { closedAt: { gte: performanceWindowSince } }, orderBy: { closedAt: "desc" }, take: 2000 }),
       this.prisma.settlement.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
       this.prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
       this.prisma.modelForecast.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
-      this.prisma.ensembleForecast.findMany({ orderBy: { createdAt: "desc" }, take: 100 })
+      this.prisma.ensembleForecast.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
+      this.learnedTrainingCandidateConfig(baseTrainingCandidateConfig())
     ]);
 
     const heldMarketTickers = [...new Set([...paperOrders.map((order) => order.marketTicker), ...positions.map((position) => position.marketTicker)])];
@@ -140,6 +144,18 @@ export class PersistentStore {
 
     const typedOrders = paperOrders.map(fromPrismaPaperOrder);
     const typedPositions = positions.map((position) => ({
+      id: position.id,
+      marketTicker: position.marketTicker,
+      side: position.side as "YES" | "NO",
+      contracts: position.contracts,
+      avgEntryPrice: position.avgEntryPrice,
+      markPrice: position.markPrice,
+      realizedPnl: position.realizedPnl,
+      openedAt: position.openedAt.toISOString(),
+      closedAt: position.closedAt?.toISOString() ?? null,
+      settlementId: position.settlementId
+    }));
+    const typedPerformancePositions = performancePositions.map((position) => ({
       id: position.id,
       marketTicker: position.marketTicker,
       side: position.side as "YES" | "NO",
@@ -161,11 +177,7 @@ export class PersistentStore {
       mappings: typedMappings,
       ensembles: typedEnsembles,
       settlements: typedSettlements,
-      config: {
-        minEdge: env.MIN_EDGE_PERCENTAGE_POINTS / 100,
-        maxSpread: activeRiskLimits.maxSpread,
-        minLiquidityScore: activeRiskLimits.minLiquidityScore
-      }
+      config: candidateConfig
     });
 
     const [learning, strategyDecisionEngine] = await Promise.all([
@@ -208,6 +220,7 @@ export class PersistentStore {
       modelForecasts: modelForecasts.map(fromPrismaModelForecast),
       ensembles: typedEnsembles,
       performance: summarizePaperOrders(typedOrders, typedPositions, typedSettlements),
+      performanceWindows: summarizePaperPerformanceWindows(typedPerformancePositions),
       learning,
       strategyDecisionEngine,
       auditLogs: auditLogs.map((log) => ({
@@ -295,6 +308,23 @@ export class PersistentStore {
         roi: example.roi
       }))
     };
+  }
+
+  async learnedTrainingCandidateConfig(base: TrainingCandidateConfig): Promise<TrainingCandidateConfig> {
+    const examples = await this.prisma.paperTradeTrainingExample.findMany({
+      where: { status: { in: ["won", "lost"] }, settledAt: { not: null } },
+      orderBy: [{ settledAt: "desc" }, { openedAt: "desc" }],
+      take: 100,
+      select: {
+        status: true,
+        variable: true,
+        entryPrice: true,
+        pnl: true,
+        roi: true,
+        cost: true
+      }
+    });
+    return adaptiveTrainingCandidateConfig(base, examples);
   }
 
   async strategyDecisionDashboard() {
@@ -610,6 +640,8 @@ export class PersistentStore {
         expectedPnl: expectedPaperPnl(example),
         actualPnl: example.pnl,
         expectedWinProbability: example.modelProbability,
+        expectedNetEdge: example.netEdge ?? example.edge,
+        qualityScore: example.qualityScore,
         status: paperValidationStatus(example.status),
         skippedReason: example.filledContracts > 0 ? null : example.order.reason,
         signalGenerated: true,
@@ -678,7 +710,7 @@ export class PersistentStore {
     const modelTrainingRows = candidateSnapshots.map((candidate) => {
       const settlement = settlementByTicker.get(candidate.marketTicker) ?? null;
       const quote = quoteByScanAndTicker.get(`${candidate.scanId}:${candidate.marketTicker}`) ?? null;
-      const contracts = candidate.entryPrice === null ? null : simulatedContracts(candidate.entryPrice);
+      const contracts = simulatedContractsForCandidate(candidate);
       const cost = candidate.entryPrice === null || contracts === null ? null : Number((candidate.entryPrice * contracts).toFixed(4));
       const payout = settlement && contracts !== null ? settlementPayout("YES", settlement.result, contracts) : null;
       const pnl = payout === null || cost === null ? null : Number((payout - cost).toFixed(4));
@@ -705,8 +737,23 @@ export class PersistentStore {
         volume: quote?.volume ?? null,
         openInterest: quote?.openInterest ?? null,
         yesProbability: candidate.yesProbability,
+        rawYesProbability: candidate.rawYesProbability,
+        calibratedYesProbability: candidate.calibratedYesProbability,
         impliedProbability: candidate.impliedProbability,
         edge: candidate.edge,
+        grossEdge: candidate.grossEdge,
+        expectedSlippage: candidate.expectedSlippage,
+        spreadPenalty: candidate.spreadPenalty,
+        feePenalty: candidate.feePenalty,
+        netEdge: candidate.netEdge,
+        uncertaintyPenalty: candidate.uncertaintyPenalty,
+        fillPenalty: candidate.fillPenalty,
+        diversificationPenalty: candidate.diversificationPenalty,
+        qualityScore: candidate.qualityScore,
+        kellyFraction: candidate.kellyFraction,
+        recommendedStake: candidate.recommendedStake,
+        recommendedContracts: candidate.recommendedContracts,
+        rankingReason: candidate.rankingReason,
         spread: candidate.spread,
         liquidityScore: candidate.liquidityScore,
         decision: candidate.status,
@@ -902,7 +949,7 @@ export class PersistentStore {
       if (candidates.length === 0) break;
       for (const candidate of candidates) {
         const settlement = settlements.get(candidate.marketTicker) ?? null;
-        const contracts = candidate.entryPrice === null ? null : simulatedContracts(candidate.entryPrice);
+        const contracts = simulatedContractsForCandidate(candidate);
         const cost = candidate.entryPrice === null || contracts === null ? null : Number((candidate.entryPrice * contracts).toFixed(4));
         const payout = settlement && contracts !== null ? settlementPayout("YES", settlement.result, contracts) : null;
         const pnl = payout === null || cost === null ? null : Number((payout - cost).toFixed(4));
@@ -924,8 +971,23 @@ export class PersistentStore {
             forecastValue: candidate.forecastValue,
             entryPrice: candidate.entryPrice,
             yesProbability: candidate.yesProbability,
+            rawYesProbability: candidate.rawYesProbability,
+            calibratedYesProbability: candidate.calibratedYesProbability,
             impliedProbability: candidate.impliedProbability,
             edge: candidate.edge,
+            grossEdge: candidate.grossEdge,
+            expectedSlippage: candidate.expectedSlippage,
+            spreadPenalty: candidate.spreadPenalty,
+            feePenalty: candidate.feePenalty,
+            netEdge: candidate.netEdge,
+            uncertaintyPenalty: candidate.uncertaintyPenalty,
+            fillPenalty: candidate.fillPenalty,
+            diversificationPenalty: candidate.diversificationPenalty,
+            qualityScore: candidate.qualityScore,
+            kellyFraction: candidate.kellyFraction,
+            recommendedStake: candidate.recommendedStake,
+            recommendedContracts: candidate.recommendedContracts,
+            rankingReason: candidate.rankingReason,
             spread: candidate.spread,
             liquidityScore: candidate.liquidityScore,
             decision: candidate.status,
@@ -1259,9 +1321,24 @@ export class PersistentStore {
           contracts: signal.contracts,
           limitPrice: signal.limitPrice,
           maxCost: signal.maxCost,
-          modelProbability: probability?.yesProbability ?? trainingCandidate?.yesProbability ?? 0,
+          modelProbability: signal.calibratedYesProbability ?? probability?.yesProbability ?? trainingCandidate?.yesProbability ?? 0,
+          rawYesProbability: signal.rawYesProbability ?? null,
+          calibratedYesProbability: signal.calibratedYesProbability ?? null,
           impliedProbability: probability?.impliedProbability ?? trainingCandidate?.impliedProbability ?? signal.limitPrice,
           edge: signal.edge,
+          grossEdge: signal.grossEdge ?? signal.edge,
+          expectedSlippage: signal.expectedSlippage ?? null,
+          spreadPenalty: signal.spreadPenalty ?? null,
+          feePenalty: signal.feePenalty ?? null,
+          netEdge: signal.netEdge ?? null,
+          uncertaintyPenalty: signal.uncertaintyPenalty ?? null,
+          fillPenalty: signal.fillPenalty ?? null,
+          diversificationPenalty: signal.diversificationPenalty ?? null,
+          qualityScore: signal.qualityScore ?? null,
+          kellyFraction: signal.kellyFraction ?? null,
+          recommendedStake: signal.recommendedStake ?? null,
+          recommendedContracts: signal.recommendedContracts ?? null,
+          rankingReason: signal.rankingReason ?? null,
           confidence: signal.confidence,
           explanation: signal.explanation,
           status: signal.status,
@@ -1329,8 +1406,22 @@ export class PersistentStore {
           entryPrice: order.simulatedAvgFillPrice,
           cost,
           modelProbability: candidate?.yesProbability ?? order.signal.modelProbability,
+          rawYesProbability: candidate?.rawYesProbability ?? order.signal.rawYesProbability,
+          calibratedYesProbability: candidate?.calibratedYesProbability ?? order.signal.calibratedYesProbability,
           impliedProbability: candidate?.impliedProbability ?? order.signal.impliedProbability,
           edge: candidate?.edge ?? order.signal.edge,
+          grossEdge: candidate?.grossEdge ?? order.signal.grossEdge,
+          expectedSlippage: candidate?.expectedSlippage ?? order.signal.expectedSlippage,
+          spreadPenalty: candidate?.spreadPenalty ?? order.signal.spreadPenalty,
+          feePenalty: candidate?.feePenalty ?? order.signal.feePenalty,
+          netEdge: candidate?.netEdge ?? order.signal.netEdge,
+          uncertaintyPenalty: candidate?.uncertaintyPenalty ?? order.signal.uncertaintyPenalty,
+          fillPenalty: candidate?.fillPenalty ?? order.signal.fillPenalty,
+          diversificationPenalty: candidate?.diversificationPenalty ?? order.signal.diversificationPenalty,
+          qualityScore: candidate?.qualityScore ?? order.signal.qualityScore,
+          kellyFraction: candidate?.kellyFraction ?? order.signal.kellyFraction,
+          recommendedStake: candidate?.recommendedStake ?? order.signal.recommendedStake,
+          recommendedContracts: candidate?.recommendedContracts ?? order.signal.recommendedContracts,
           forecastValue: candidate?.forecastValue ?? null,
           threshold: candidate?.threshold ?? null,
           thresholdOperator: candidate?.thresholdOperator ?? null,
@@ -1347,8 +1438,15 @@ export class PersistentStore {
             signal: {
               id: order.signal.id,
               modelProbability: order.signal.modelProbability,
+              rawYesProbability: order.signal.rawYesProbability,
+              calibratedYesProbability: order.signal.calibratedYesProbability,
               impliedProbability: order.signal.impliedProbability,
               edge: order.signal.edge,
+              grossEdge: order.signal.grossEdge,
+              netEdge: order.signal.netEdge,
+              qualityScore: order.signal.qualityScore,
+              recommendedStake: order.signal.recommendedStake,
+              recommendedContracts: order.signal.recommendedContracts,
               explanation: order.signal.explanation,
               skipReason: order.signal.skipReason
             },
@@ -1360,8 +1458,22 @@ export class PersistentStore {
           entryPrice: order.simulatedAvgFillPrice,
           cost,
           modelProbability: candidate?.yesProbability ?? order.signal.modelProbability,
+          rawYesProbability: candidate?.rawYesProbability ?? order.signal.rawYesProbability,
+          calibratedYesProbability: candidate?.calibratedYesProbability ?? order.signal.calibratedYesProbability,
           impliedProbability: candidate?.impliedProbability ?? order.signal.impliedProbability,
           edge: candidate?.edge ?? order.signal.edge,
+          grossEdge: candidate?.grossEdge ?? order.signal.grossEdge,
+          expectedSlippage: candidate?.expectedSlippage ?? order.signal.expectedSlippage,
+          spreadPenalty: candidate?.spreadPenalty ?? order.signal.spreadPenalty,
+          feePenalty: candidate?.feePenalty ?? order.signal.feePenalty,
+          netEdge: candidate?.netEdge ?? order.signal.netEdge,
+          uncertaintyPenalty: candidate?.uncertaintyPenalty ?? order.signal.uncertaintyPenalty,
+          fillPenalty: candidate?.fillPenalty ?? order.signal.fillPenalty,
+          diversificationPenalty: candidate?.diversificationPenalty ?? order.signal.diversificationPenalty,
+          qualityScore: candidate?.qualityScore ?? order.signal.qualityScore,
+          kellyFraction: candidate?.kellyFraction ?? order.signal.kellyFraction,
+          recommendedStake: candidate?.recommendedStake ?? order.signal.recommendedStake,
+          recommendedContracts: candidate?.recommendedContracts ?? order.signal.recommendedContracts,
           forecastValue: candidate?.forecastValue ?? null,
           threshold: candidate?.threshold ?? null,
           thresholdOperator: candidate?.thresholdOperator ?? null,
@@ -1378,8 +1490,15 @@ export class PersistentStore {
             signal: {
               id: order.signal.id,
               modelProbability: order.signal.modelProbability,
+              rawYesProbability: order.signal.rawYesProbability,
+              calibratedYesProbability: order.signal.calibratedYesProbability,
               impliedProbability: order.signal.impliedProbability,
               edge: order.signal.edge,
+              grossEdge: order.signal.grossEdge,
+              netEdge: order.signal.netEdge,
+              qualityScore: order.signal.qualityScore,
+              recommendedStake: order.signal.recommendedStake,
+              recommendedContracts: order.signal.recommendedContracts,
               explanation: order.signal.explanation,
               skipReason: order.signal.skipReason
             },
@@ -1463,10 +1582,12 @@ export class PersistentStore {
       return true;
     });
 
-    const orderedSnapshots = options.selection === "best_edge"
+    const orderedSnapshots = options.selection === "best_edge" || options.selection === "best_quality"
       ? [...filteredSnapshots].sort((a, b) => {
-          const edgeDiff = (b.edge ?? -Infinity) - (a.edge ?? -Infinity);
-          return edgeDiff !== 0 ? edgeDiff : a.observedAt.getTime() - b.observedAt.getTime();
+          const primaryDiff = options.selection === "best_quality"
+            ? (qualityScoreForSnapshot(b) - qualityScoreForSnapshot(a))
+            : ((b.edge ?? -Infinity) - (a.edge ?? -Infinity));
+          return primaryDiff !== 0 ? primaryDiff : a.observedAt.getTime() - b.observedAt.getTime();
         })
       : filteredSnapshots;
     const marketTickers = [...new Set(orderedSnapshots.map((snapshot) => snapshot.marketTicker))];
@@ -1495,11 +1616,12 @@ export class PersistentStore {
       );
       const rawEntryPrice = replay.entryPrice ?? snapshot.entryPrice;
       const entryPrice = applyHistoricalExecution(rawEntryPrice, options);
-      const contracts = simulatedContractsForBacktest(entryPrice, options);
+      const contracts = simulatedContractsForBacktest(snapshot, entryPrice, options);
       const cost = Number((entryPrice * contracts).toFixed(4));
       const payout = settlement.result === "yes" ? contracts : 0;
       const pnl = Number((payout - cost).toFixed(4));
       const targetDate = snapshot.targetDate?.toISOString().slice(0, 10) ?? null;
+      const rawCandidate = jsonRecord(snapshot.rawPayload);
       trades.push({
         marketTicker: snapshot.marketTicker,
         observedAt: snapshot.observedAt.toISOString(),
@@ -1518,6 +1640,13 @@ export class PersistentStore {
         pnl,
         roi: cost > 0 ? Number((pnl / cost).toFixed(4)) : 0,
         edge: snapshot.edge,
+        rawYesProbability: snapshot.rawYesProbability ?? numberField(rawCandidate, "rawYesProbability"),
+        calibratedYesProbability: snapshot.calibratedYesProbability ?? numberField(rawCandidate, "calibratedYesProbability") ?? snapshot.yesProbability,
+        grossEdge: snapshot.grossEdge ?? numberField(rawCandidate, "grossEdge") ?? snapshot.edge,
+        netEdge: snapshot.netEdge ?? numberField(rawCandidate, "netEdge"),
+        qualityScore: snapshot.qualityScore ?? numberField(rawCandidate, "qualityScore"),
+        expectedSlippage: snapshot.expectedSlippage ?? numberField(rawCandidate, "expectedSlippage"),
+        actualSlippage: Number((entryPrice - rawEntryPrice).toFixed(4)),
         modelProbability: snapshot.yesProbability,
         impliedProbability: snapshot.impliedProbability,
         spread: snapshot.spread,
@@ -1604,7 +1733,7 @@ export class PersistentStore {
   }
 }
 
-type BacktestSelection = "first_signal" | "best_edge" | "each_signal";
+type BacktestSelection = "first_signal" | "best_edge" | "best_quality" | "each_signal";
 
 type BacktestOptions = {
   strategyKey: string;
@@ -1645,7 +1774,7 @@ function defaultBacktestOptions(): BacktestOptions {
     strategyKey: "candidate_snapshot_v2",
     validationMode: "backtest",
     status: "WOULD_BUY",
-    selection: "first_signal",
+    selection: "best_quality",
     minEdge: null,
     maxEntryPrice: null,
     minLiquidityScore: null,
@@ -1668,7 +1797,7 @@ function parseBacktestParameters(parameters: Record<string, unknown>): BacktestO
     strategyKey: stringParam(parameters.strategyKey) ?? defaults.strategyKey,
     validationMode: validationMode === "walk_forward" || validationMode === "paper" || validationMode === "backtest" ? validationMode : defaults.validationMode,
     status: stringParam(parameters.status) ?? defaults.status,
-    selection: selection === "best_edge" || selection === "each_signal" || selection === "first_signal" ? selection : defaults.selection,
+    selection: selection === "best_edge" || selection === "best_quality" || selection === "each_signal" || selection === "first_signal" ? selection : defaults.selection,
     minEdge: nullableNumber(parameters.minEdge, 0, 1),
     maxEntryPrice: nullableNumber(parameters.maxEntryPrice, 0.01, 1),
     minLiquidityScore: nullableNumber(parameters.minLiquidityScore, 0, 1),
@@ -1702,7 +1831,15 @@ function dateParam(value: unknown) {
   return text && /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
 }
 
-function simulatedContractsForBacktest(entryPrice: number, options: BacktestOptions) {
+function simulatedContractsForBacktest(
+  snapshot: { recommendedContracts?: number | null; rawPayload?: unknown },
+  entryPrice: number,
+  options: BacktestOptions
+) {
+  const recommendedContracts = snapshot.recommendedContracts ?? numberField(jsonRecord(snapshot.rawPayload), "recommendedContracts");
+  if (recommendedContracts !== null && recommendedContracts > 0) {
+    return Math.max(1, Math.min(options.maxContracts, Math.floor(recommendedContracts)));
+  }
   return Math.max(1, Math.min(options.maxContracts, Math.floor(options.stakePerTrade / Math.max(entryPrice, 0.01))));
 }
 
@@ -1711,9 +1848,14 @@ function applyHistoricalExecution(entryPrice: number, options: BacktestOptions) 
 }
 
 function backtestMethodLabel(options: BacktestOptions) {
+  if (options.selection === "best_quality") return "best quality candidate per settled market";
   if (options.selection === "best_edge") return "best edge candidate per settled market";
   if (options.selection === "each_signal") return "every eligible settled candidate snapshot";
   return "first eligible candidate per settled market";
+}
+
+function qualityScoreForSnapshot(snapshot: { qualityScore?: number | null; rawPayload?: unknown }) {
+  return snapshot.qualityScore ?? numberField(jsonRecord(snapshot.rawPayload), "qualityScore") ?? -Infinity;
 }
 
 function buildEquityCurve(trades: BacktestTrade[]) {
@@ -2062,6 +2204,84 @@ function paperOutcomeStats(examples: Array<{ status: string; pnl: number | null;
     medianRoi: median(settled.map((example) => example.roi)),
     averagePnl: settled.length > 0 ? roundMetric(netPnl / settled.length) : 0
   };
+}
+
+function baseTrainingCandidateConfig(): TrainingCandidateConfig {
+  return {
+    minEdge: env.MIN_EDGE_PERCENTAGE_POINTS / 100,
+    minNetEdge: 0.03,
+    minQualityScore: activeRiskLimits.minQualityScore,
+    maxSpread: activeRiskLimits.maxSpread,
+    minLiquidityScore: activeRiskLimits.minLiquidityScore,
+    maxStake: env.MAX_STAKE_PER_TRADE_PAPER,
+    maxContracts: activeRiskLimits.maxContractsPerTrade
+  };
+}
+
+function adaptiveTrainingCandidateConfig(
+  base: TrainingCandidateConfig,
+  examples: Array<{
+    status: string;
+    variable: string | null;
+    entryPrice: number | null;
+    pnl: number | null;
+    roi: number | null;
+    cost: number | null;
+  }>
+): TrainingCandidateConfig {
+  const settled = examples.filter((example) => (example.status === "won" || example.status === "lost") && example.pnl !== null);
+  if (settled.length < 10) return base;
+
+  const stats = paperOutcomeStats(settled);
+  let minEdge = base.minEdge;
+  let maxSpread = base.maxSpread;
+  let minLiquidityScore = base.minLiquidityScore;
+  let maxEntryPrice = base.maxEntryPrice ?? null;
+  const learnedEdgeAdjustments: LearnedEdgeAdjustment[] = [];
+
+  if (stats.netPnl < 0 || (stats.roi ?? 0) < 0 || (stats.winRate ?? 0) < 0.48) {
+    minEdge += 0.02;
+    maxSpread = Math.min(maxSpread, 0.08);
+    minLiquidityScore = Math.max(minLiquidityScore, 0.03);
+  }
+  if ((stats.roi ?? 0) < -0.15 || (stats.winRate ?? 0) < 0.4) {
+    minEdge += 0.02;
+    maxSpread = Math.min(maxSpread, 0.06);
+    minLiquidityScore = Math.max(minLiquidityScore, 0.05);
+  }
+
+  const highEntry = settled.filter((example) => (example.entryPrice ?? 0) >= 0.75);
+  const highEntryStats = paperOutcomeStats(highEntry);
+  if (highEntry.length >= 4 && highEntryStats.netPnl < 0) {
+    maxEntryPrice = Math.min(maxEntryPrice ?? 0.75, 0.75);
+  }
+
+  for (const [variable, variableExamples] of groupBy(settled.filter((example) => example.variable), (example) => String(example.variable)).entries()) {
+    if (variableExamples.length < 4) continue;
+    const variableStats = paperOutcomeStats(variableExamples);
+    if (variableStats.netPnl >= 0 || (variableStats.winRate ?? 0) >= 0.5) continue;
+    const adjustment = (variableStats.roi ?? 0) < -0.15 || (variableStats.winRate ?? 0) < 0.35 ? 0.03 : 0.02;
+    learnedEdgeAdjustments.push({
+      id: `variable_${variable}`,
+      label: variable.replaceAll("_", " "),
+      variable,
+      minEdgeAdjustment: adjustment,
+      reason: `${variable} recent settled paper sample: ${formatSignedMoney(variableStats.netPnl)} P/L, ${((variableStats.winRate ?? 0) * 100).toFixed(1)}% win rate`
+    });
+  }
+
+  return {
+    ...base,
+    minEdge: roundMetric(Math.min(0.25, minEdge)) ?? base.minEdge,
+    maxSpread: roundMetric(maxSpread) ?? base.maxSpread,
+    minLiquidityScore: roundMetric(minLiquidityScore) ?? base.minLiquidityScore,
+    maxEntryPrice,
+    learnedEdgeAdjustments: learnedEdgeAdjustments.slice(0, 4)
+  };
+}
+
+function formatSignedMoney(value: number) {
+  return `${value < 0 ? "-" : "+"}$${Math.abs(value).toFixed(2)}`;
 }
 
 function median(values: Array<number | null>) {
@@ -2536,8 +2756,23 @@ function candidateSnapshotWrite(candidate: TrainingCandidate, report: ScanReport
     forecastValue: candidate.forecastValue,
     entryPrice: candidate.entryPrice,
     yesProbability: candidate.yesProbability,
+    rawYesProbability: candidate.rawYesProbability ?? null,
+    calibratedYesProbability: candidate.calibratedYesProbability ?? null,
     impliedProbability: candidate.impliedProbability,
     edge: candidate.edge,
+    grossEdge: candidate.grossEdge ?? null,
+    expectedSlippage: candidate.expectedSlippage ?? null,
+    spreadPenalty: candidate.spreadPenalty ?? null,
+    feePenalty: candidate.feePenalty ?? null,
+    netEdge: candidate.netEdge ?? null,
+    uncertaintyPenalty: candidate.uncertaintyPenalty ?? null,
+    fillPenalty: candidate.fillPenalty ?? null,
+    diversificationPenalty: candidate.diversificationPenalty ?? null,
+    qualityScore: candidate.qualityScore ?? null,
+    kellyFraction: candidate.kellyFraction ?? null,
+    recommendedStake: candidate.recommendedStake ?? null,
+    recommendedContracts: candidate.recommendedContracts ?? null,
+    rankingReason: candidate.rankingReason ?? null,
     spread: candidate.spread,
     liquidityScore: candidate.liquidityScore,
     status: candidate.status,
@@ -2578,6 +2813,15 @@ function scanCadenceMinutesFor(report: ScanReport) {
   if (report.trigger === "quote_refresh") return env.QUOTE_REFRESH_INTERVAL_MINUTES;
   if (report.trigger === "scheduled" || report.trigger === "startup") return env.BACKGROUND_POLL_INTERVAL_MINUTES;
   return null;
+}
+
+function simulatedContractsForCandidate(candidate: { entryPrice: number | null; rawPayload?: unknown }) {
+  if (candidate.entryPrice === null) return null;
+  const recommendedContracts = numberField(jsonRecord(candidate.rawPayload), "recommendedContracts");
+  if (recommendedContracts !== null && recommendedContracts > 0) {
+    return Math.max(1, Math.min(activeRiskLimits.maxContractsPerTrade, Math.floor(recommendedContracts)));
+  }
+  return simulatedContracts(candidate.entryPrice);
 }
 
 function simulatedContracts(entryPrice: number) {
@@ -2752,6 +2996,21 @@ function fromPrismaSignal(signal: {
   limitPrice: number;
   maxCost: number;
   edge: number;
+  rawYesProbability?: number | null;
+  calibratedYesProbability?: number | null;
+  grossEdge?: number | null;
+  expectedSlippage?: number | null;
+  spreadPenalty?: number | null;
+  feePenalty?: number | null;
+  netEdge?: number | null;
+  uncertaintyPenalty?: number | null;
+  fillPenalty?: number | null;
+  diversificationPenalty?: number | null;
+  qualityScore?: number | null;
+  kellyFraction?: number | null;
+  recommendedStake?: number | null;
+  recommendedContracts?: number | null;
+  rankingReason?: string | null;
   confidence: string;
   explanation: string;
   status: string;
@@ -2768,6 +3027,21 @@ function fromPrismaSignal(signal: {
     limitPrice: signal.limitPrice,
     maxCost: signal.maxCost,
     edge: signal.edge,
+    rawYesProbability: signal.rawYesProbability ?? null,
+    calibratedYesProbability: signal.calibratedYesProbability ?? null,
+    grossEdge: signal.grossEdge ?? null,
+    expectedSlippage: signal.expectedSlippage ?? null,
+    spreadPenalty: signal.spreadPenalty ?? null,
+    feePenalty: signal.feePenalty ?? null,
+    netEdge: signal.netEdge ?? null,
+    uncertaintyPenalty: signal.uncertaintyPenalty ?? null,
+    fillPenalty: signal.fillPenalty ?? null,
+    diversificationPenalty: signal.diversificationPenalty ?? null,
+    qualityScore: signal.qualityScore ?? null,
+    kellyFraction: signal.kellyFraction ?? null,
+    recommendedStake: signal.recommendedStake ?? null,
+    recommendedContracts: signal.recommendedContracts ?? null,
+    rankingReason: signal.rankingReason ?? null,
     confidence: signal.confidence as Signal["confidence"],
     explanation: signal.explanation,
     status: signal.status as Signal["status"],

@@ -327,8 +327,23 @@ model CandidateDecisionSnapshot {
   forecastValue      Float?
   entryPrice         Float?
   yesProbability     Float?
+  rawYesProbability  Float?
+  calibratedYesProbability Float?
   impliedProbability Float?
   edge               Float?
+  grossEdge          Float?
+  expectedSlippage   Float?
+  spreadPenalty      Float?
+  feePenalty         Float?
+  netEdge            Float?
+  uncertaintyPenalty Float?
+  fillPenalty        Float?
+  diversificationPenalty Float?
+  qualityScore       Float?
+  kellyFraction      Float?
+  recommendedStake   Float?
+  recommendedContracts Int?
+  rankingReason      String?
   spread             Float?
   liquidityScore     Float
   status             String
@@ -357,8 +372,23 @@ model Signal {
   limitPrice         Float
   maxCost            Float
   modelProbability   Float
+  rawYesProbability  Float?
+  calibratedYesProbability Float?
   impliedProbability Float
   edge               Float
+  grossEdge          Float?
+  expectedSlippage   Float?
+  spreadPenalty      Float?
+  feePenalty         Float?
+  netEdge            Float?
+  uncertaintyPenalty Float?
+  fillPenalty        Float?
+  diversificationPenalty Float?
+  qualityScore       Float?
+  kellyFraction      Float?
+  recommendedStake   Float?
+  recommendedContracts Int?
+  rankingReason      String?
   confidence         Confidence
   explanation        String
   status             SignalStatus
@@ -411,8 +441,22 @@ model PaperTradeTrainingExample {
   entryPrice         Float?
   cost               Float
   modelProbability   Float?
+  rawYesProbability  Float?
+  calibratedYesProbability Float?
   impliedProbability Float?
   edge               Float?
+  grossEdge          Float?
+  expectedSlippage   Float?
+  spreadPenalty      Float?
+  feePenalty         Float?
+  netEdge            Float?
+  uncertaintyPenalty Float?
+  fillPenalty        Float?
+  diversificationPenalty Float?
+  qualityScore       Float?
+  kellyFraction      Float?
+  recommendedStake   Float?
+  recommendedContracts Int?
   forecastValue      Float?
   threshold          Float?
   thresholdOperator  String?

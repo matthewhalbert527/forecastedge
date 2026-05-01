@@ -4,7 +4,7 @@ export const defaultRiskLimits: RiskLimits = {
   maxStakePerTrade: 0.5,
   maxContractsPerTrade: 10,
   maxDailyLoss: 10,
-  maxDailyTrades: 20,
+  maxDailyTrades: 30,
   maxOpenExposure: 25,
   maxExposurePerCity: 10,
   maxExposurePerWeatherType: 10,
@@ -13,11 +13,16 @@ export const defaultRiskLimits: RiskLimits = {
   staleMarketDataSeconds: 120,
   staleForecastDataMinutes: 90,
   maxSpread: 0.1,
-  minLiquidityScore: 0.01
+  minLiquidityScore: 0.01,
+  maxUncertaintyPenalty: 0.12,
+  maxFillPenalty: 0.08,
+  maxDiversificationPenalty: 0.12,
+  minQualityScore: 3,
+  maxCorrelationExposure: 5
 };
 
 export function checkRisk(
-  signal: Pick<Signal, "maxCost" | "contracts">,
+  signal: Pick<Signal, "maxCost" | "contracts"> & Partial<Pick<Signal, "qualityScore" | "netEdge" | "uncertaintyPenalty" | "fillPenalty" | "diversificationPenalty">>,
   state: RiskState,
   limits: RiskLimits,
   mapping: MarketMapping,
@@ -30,6 +35,7 @@ export function checkRisk(
   const spread = market.yesAsk !== null && market.yesBid !== null ? market.yesAsk - market.yesBid : Infinity;
   const city = mapping.location?.city ?? "unknown";
   const weatherType = mapping.variable;
+  const correlationKey = `${city}:${mapping.targetDate ?? "unknown"}:${weatherType}:${market.eventTicker}`;
 
   if (!mapping.accepted || mapping.confidence !== "high") reasons.push("market mapping is not high confidence");
   if (signal.maxCost > limits.maxStakePerTrade) reasons.push("stake exceeds max stake per trade");
@@ -45,6 +51,12 @@ export function checkRisk(
   if (secondsBetween(forecastObservedAt, now) > limits.staleForecastDataMinutes * 60) reasons.push("forecast data is stale");
   if (!Number.isFinite(spread) || spread > limits.maxSpread) reasons.push("spread is too wide");
   if (mapping.liquidityScore < limits.minLiquidityScore) reasons.push("liquidity score is too low");
+  if (signal.qualityScore !== undefined && signal.qualityScore !== null && signal.qualityScore < limits.minQualityScore) reasons.push("quality score is too low");
+  if (signal.netEdge !== undefined && signal.netEdge !== null && signal.netEdge <= 0) reasons.push("net edge is not positive after execution costs");
+  if ((signal.uncertaintyPenalty ?? 0) > limits.maxUncertaintyPenalty) reasons.push("forecast uncertainty or ensemble disagreement is too high");
+  if ((signal.fillPenalty ?? 0) > limits.maxFillPenalty) reasons.push("expected fill quality is too low");
+  if ((signal.diversificationPenalty ?? 0) > limits.maxDiversificationPenalty) reasons.push("portfolio diversification penalty is too high");
+  if ((state.exposureByCorrelationKey?.[correlationKey] ?? 0) + signal.maxCost > limits.maxCorrelationExposure) reasons.push("correlated city/date/variable exposure would be exceeded");
 
   return { allowed: reasons.length === 0, reasons };
 }

@@ -139,13 +139,37 @@ export interface NormalizedOrderBook {
 
 export interface ProbabilityEstimate {
   marketTicker: string;
+  rawYesProbability: number;
+  calibratedYesProbability: number;
   yesProbability: number;
   noProbability: number;
   impliedProbability: number;
+  grossEdge: number;
   edge: number;
+  uncertaintyStdDev: number | null;
+  disagreement: number | null;
   confidence: Confidence;
+  modelVersion: string;
   reason: string;
   passesModelFilters: boolean;
+}
+
+export interface TradeQualityFields {
+  rawYesProbability: number | null;
+  calibratedYesProbability: number | null;
+  grossEdge: number | null;
+  expectedSlippage: number | null;
+  spreadPenalty: number | null;
+  feePenalty: number | null;
+  netEdge: number | null;
+  uncertaintyPenalty: number | null;
+  fillPenalty: number | null;
+  diversificationPenalty: number | null;
+  qualityScore: number | null;
+  kellyFraction: number | null;
+  recommendedStake: number | null;
+  recommendedContracts: number | null;
+  rankingReason: string | null;
 }
 
 export interface TrainingCandidate {
@@ -162,8 +186,23 @@ export interface TrainingCandidate {
   forecastValue: number | null;
   entryPrice: number | null;
   yesProbability: number | null;
+  rawYesProbability?: number | null;
+  calibratedYesProbability?: number | null;
   impliedProbability: number | null;
   edge: number | null;
+  grossEdge?: number | null;
+  expectedSlippage?: number | null;
+  spreadPenalty?: number | null;
+  feePenalty?: number | null;
+  netEdge?: number | null;
+  uncertaintyPenalty?: number | null;
+  fillPenalty?: number | null;
+  diversificationPenalty?: number | null;
+  qualityScore?: number | null;
+  kellyFraction?: number | null;
+  recommendedStake?: number | null;
+  recommendedContracts?: number | null;
+  rankingReason?: string | null;
   spread: number | null;
   liquidityScore: number;
   status: "WOULD_BUY" | "WATCH" | "BLOCKED";
@@ -183,6 +222,21 @@ export interface Signal {
   limitPrice: number;
   maxCost: number;
   edge: number;
+  rawYesProbability?: number | null;
+  calibratedYesProbability?: number | null;
+  grossEdge?: number | null;
+  expectedSlippage?: number | null;
+  spreadPenalty?: number | null;
+  feePenalty?: number | null;
+  netEdge?: number | null;
+  uncertaintyPenalty?: number | null;
+  fillPenalty?: number | null;
+  diversificationPenalty?: number | null;
+  qualityScore?: number | null;
+  kellyFraction?: number | null;
+  recommendedStake?: number | null;
+  recommendedContracts?: number | null;
+  rankingReason?: string | null;
   confidence: Confidence;
   explanation: string;
   status: "FIRED" | "SKIPPED";
@@ -205,6 +259,11 @@ export interface RiskLimits {
   staleForecastDataMinutes: number;
   maxSpread: number;
   minLiquidityScore: number;
+  maxUncertaintyPenalty: number;
+  maxFillPenalty: number;
+  maxDiversificationPenalty: number;
+  minQualityScore: number;
+  maxCorrelationExposure: number;
 }
 
 export interface RiskState {
@@ -215,6 +274,7 @@ export interface RiskState {
   losingStreak: number;
   exposureByCity: Record<string, number>;
   exposureByWeatherType: Record<string, number>;
+  exposureByCorrelationKey?: Record<string, number>;
 }
 
 export interface RiskCheckResult {
@@ -315,4 +375,22 @@ export interface PaperPerformanceSummary {
   longestLosingStreak: number;
   settledTrades: number;
   openPositions: number;
+}
+
+export type PaperPerformanceWindowKey = "24h" | "3d" | "7d" | "14d" | "30d";
+
+export interface PaperPerformanceWindowSummary {
+  key: PaperPerformanceWindowKey;
+  label: string;
+  hours: number;
+  settledTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number | null;
+  totalCost: number;
+  totalPayout: number;
+  totalPnl: number;
+  roi: number | null;
+  positiveProfit: boolean | null;
+  score: number | null;
 }

@@ -4,6 +4,8 @@ export * from "./kalshi/parser.js";
 export * from "./kalshi/stations.js";
 export * from "./data/datasets.js";
 export * from "./probability/model.js";
+export * from "./probability/calibration.js";
+export * from "./trading/trade-quality.js";
 export * from "./risk/risk-manager.js";
 export * from "./signals/signal-engine.js";
 export * from "./paper/broker.js";

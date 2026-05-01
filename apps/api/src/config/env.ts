@@ -13,7 +13,7 @@ const schema = z.object({
   NODE_ENV: z.string().default("development"),
   APP_MODE: z.enum(["watch", "paper", "demo", "live"]).default("paper"),
   API_PORT: z.coerce.number().default(4000),
-  RUN_BACKGROUND_WORKER: booleanFromEnv.default(false),
+  RUN_BACKGROUND_WORKER: booleanFromEnv.default(true),
   RUN_ON_STARTUP: booleanFromEnv.default(true),
   BACKGROUND_POLL_INTERVAL_MINUTES: z.coerce.number().default(15).transform((minutes) => Math.min(minutes, 15)),
   RUN_QUOTE_REFRESH_WORKER: booleanFromEnv.default(true),

@@ -3,7 +3,6 @@
 import {
   AlertTriangle,
   BarChart3,
-  BriefcaseBusiness,
   ChevronDown,
   CircleHelp,
   Clock3,
@@ -11,15 +10,11 @@ import {
   Download,
   Gauge,
   ListChecks,
-  Play,
   RefreshCw,
   ShieldCheck,
-  SlidersHorizontal,
-  ShoppingCart,
-  ThermometerSun,
-  Trophy
+  ThermometerSun
 } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 
 type DashboardData = {
   mode: "watch" | "paper" | "demo" | "live";
@@ -35,6 +30,7 @@ type DashboardData = {
   modelForecasts: Array<{ id: string; city: string; state: string; stationId: string | null; model: string; targetDate: string; horizonHours: number; highTempF: number | null; lowTempF: number | null; precipitationAmountIn: number | null; windGustMph: number | null; confidence: string; createdAt: string }>;
   ensembles: Array<{ id: string; city: string; state: string; stationId: string | null; targetDate: string; variable: string; prediction: number | null; uncertaintyStdDev: number | null; confidence: string; contributingModels: string[]; disagreement: number | null; reason: string; createdAt: string }>;
   performance: { totalTrades: number; simulatedContracts: number; averageEntryPrice: number; totalCost: number; rejectedOrders: number; realizedPnl: number; unrealizedExposure: number; winRate: number; roi: number; maxDrawdown: number; longestLosingStreak: number; settledTrades: number; openPositions: number };
+  performanceWindows?: PerformanceWindow[];
   learning?: {
     collection: { quoteSnapshots: number; candidateSnapshots: number; paperTradeExamples: number; settledPaperTradeExamples: number; scanReports?: number; fullScans?: number; quoteRefreshScans?: number; historicalMarkets?: number; historicalCandlesticks?: number; historicalTrades?: number; latestQuoteAt: string | null; latestCandidateAt: string | null; latestFullScanAt?: string | null; latestQuoteRefreshAt?: string | null };
     backtest: BacktestSummary;
@@ -74,6 +70,22 @@ type DashboardData = {
   };
   scheduledJobs?: Array<{ id: string; label: string; description: string; running: boolean; lastRun: { status: string; completedAt: string; message: string } | null }>;
   strategyDecisionEngine?: StrategyDecisionData;
+};
+
+type PerformanceWindow = {
+  key: "24h" | "3d" | "7d" | "14d" | "30d";
+  label: string;
+  hours: number;
+  settledTrades: number;
+  wins: number;
+  losses: number;
+  winRate: number | null;
+  totalCost: number;
+  totalPayout: number;
+  totalPnl: number;
+  roi: number | null;
+  positiveProfit: boolean | null;
+  score: number | null;
 };
 
 type StrategyDecisionData = {
@@ -118,7 +130,7 @@ type StrategyRow = {
 
 type BacktestSummary = {
   method: string;
-  parameters?: BacktestParameters;
+  parameters?: Record<string, unknown>;
   candidateSnapshots: number;
   eligibleSnapshots?: number;
   evaluatedMarkets: number;
@@ -156,24 +168,6 @@ type BacktestSummary = {
   trades?: BacktestTrade[];
 };
 
-type BacktestParameters = {
-  strategyKey?: string;
-  validationMode?: "backtest" | "walk_forward" | "paper";
-  selection: "first_signal" | "best_edge" | "each_signal";
-  status: string;
-  minEdge: number | null;
-  maxEntryPrice: number | null;
-  minLiquidityScore: number | null;
-  maxSpread: number | null;
-  stakePerTrade: number;
-  maxContracts: number;
-  slippageCents: number;
-  startDate: string | null;
-  endDate: string | null;
-  paperTradingStartDate?: string | null;
-  notes?: string | null;
-};
-
 type BacktestTrade = {
   marketTicker: string;
   observedAt: string;
@@ -204,53 +198,10 @@ type BacktestTrade = {
   impliedProbabilityMove?: number | null;
 };
 
-type BacktestPresetKey = "balanced" | "strict" | "exploratory";
-type View = "cockpit" | "buy" | "holdings" | "results" | "backtest" | "research" | "details";
-type BusyAction = "scan" | "buy" | "settle" | "backtest" | null;
+type View = "overview" | "decisions" | "learning" | "ledger";
+type BusyAction = "scan" | "settle" | null;
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? process.env.WEB_PUBLIC_API_URL ?? "http://localhost:4000";
-
-const backtestPresets: Record<BacktestPresetKey, BacktestParameters> = {
-  balanced: {
-    selection: "first_signal",
-    status: "WOULD_BUY",
-    minEdge: 0.05,
-    maxEntryPrice: null,
-    minLiquidityScore: null,
-    maxSpread: null,
-    stakePerTrade: 5,
-    maxContracts: 10,
-    slippageCents: 1,
-    startDate: null,
-    endDate: null
-  },
-  strict: {
-    selection: "best_edge",
-    status: "WOULD_BUY",
-    minEdge: 0.08,
-    maxEntryPrice: 0.75,
-    minLiquidityScore: 0.2,
-    maxSpread: 0.1,
-    stakePerTrade: 5,
-    maxContracts: 8,
-    slippageCents: 2,
-    startDate: null,
-    endDate: null
-  },
-  exploratory: {
-    selection: "each_signal",
-    status: "WOULD_BUY",
-    minEdge: 0,
-    maxEntryPrice: null,
-    minLiquidityScore: null,
-    maxSpread: null,
-    stakePerTrade: 5,
-    maxContracts: 10,
-    slippageCents: 1,
-    startDate: null,
-    endDate: null
-  }
-};
 
 const emptyPerformance: DashboardData["performance"] = {
   totalTrades: 0,
@@ -268,22 +219,25 @@ const emptyPerformance: DashboardData["performance"] = {
   openPositions: 0
 };
 
+const emptyPerformanceWindows: PerformanceWindow[] = [
+  { key: "24h", label: "24 hours", hours: 24, settledTrades: 0, wins: 0, losses: 0, winRate: null, totalCost: 0, totalPayout: 0, totalPnl: 0, roi: null, positiveProfit: null, score: null },
+  { key: "3d", label: "3 days", hours: 72, settledTrades: 0, wins: 0, losses: 0, winRate: null, totalCost: 0, totalPayout: 0, totalPnl: 0, roi: null, positiveProfit: null, score: null },
+  { key: "7d", label: "7 days", hours: 168, settledTrades: 0, wins: 0, losses: 0, winRate: null, totalCost: 0, totalPayout: 0, totalPnl: 0, roi: null, positiveProfit: null, score: null },
+  { key: "14d", label: "2 weeks", hours: 336, settledTrades: 0, wins: 0, losses: 0, winRate: null, totalCost: 0, totalPayout: 0, totalPnl: 0, roi: null, positiveProfit: null, score: null },
+  { key: "30d", label: "1 month", hours: 720, settledTrades: 0, wins: 0, losses: 0, winRate: null, totalCost: 0, totalPayout: 0, totalPnl: 0, roi: null, positiveProfit: null, score: null }
+];
+
 const navItems: Array<{ key: View; label: string; icon: typeof Gauge }> = [
-  { key: "cockpit", label: "Overview", icon: Gauge },
-  { key: "buy", label: "Buy", icon: ShoppingCart },
-  { key: "holdings", label: "Holdings", icon: BriefcaseBusiness },
-  { key: "results", label: "Results", icon: Trophy },
-  { key: "backtest", label: "Backtest", icon: BarChart3 },
-  { key: "research", label: "Research", icon: ShieldCheck },
-  { key: "details", label: "Details", icon: Database }
+  { key: "overview", label: "Overview", icon: Gauge },
+  { key: "decisions", label: "Decisions", icon: ListChecks },
+  { key: "learning", label: "Learning", icon: BarChart3 },
+  { key: "ledger", label: "Ledger", icon: Database }
 ];
 
 export default function Page() {
   const [data, setData] = useState<DashboardData | null>(null);
-  const [view, setView] = useState<View>("cockpit");
+  const [view, setView] = useState<View>("overview");
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
-  const [buyingTicker, setBuyingTicker] = useState<string | null>(null);
-  const [backtest, setBacktest] = useState<BacktestSummary | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -302,64 +256,9 @@ export default function Page() {
       if (!response.ok) throw new Error(`Request failed with ${response.status}`);
       await response.json().catch(() => null);
       await refresh();
-      if (action === "buy") setView("holdings");
-      if (action === "settle") setView("results");
+      if (action === "settle") setView("ledger");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown request error");
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
-  async function buyOne(marketTicker: string) {
-    setBuyingTicker(marketTicker);
-    setError(null);
-    setNotice(null);
-    try {
-      const response = await fetch(`${apiUrl}/api/quotes/buy-one`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ marketTicker })
-      });
-      const body = await response.json().catch(() => null);
-      if (!response.ok) {
-        const apiError = body && typeof body === "object" && "error" in body ? String((body as { error: unknown }).error) : `Request failed with ${response.status}`;
-        throw new Error(apiError);
-      }
-      await refresh();
-      if (body && typeof body === "object" && "bought" in body && (body as { bought?: boolean }).bought) {
-        setNotice(`Bought ${marketTicker} in paper mode.`);
-        setView("holdings");
-      } else {
-        const reason = body && typeof body === "object" && "reason" in body ? String((body as { reason?: unknown }).reason) : "No paper order was created.";
-        setNotice(reason);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown request error");
-    } finally {
-      setBuyingTicker(null);
-    }
-  }
-
-  async function runBacktest(parameters: BacktestParameters) {
-    setBusyAction("backtest");
-    setError(null);
-    setNotice(null);
-    try {
-      const response = await fetch(`${apiUrl}/api/backtests/run`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(parameters)
-      });
-      const body = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(`Backtest failed with ${response.status}`);
-      const summary = body && typeof body === "object" && "summary" in body ? (body as { summary: BacktestSummary }).summary : null;
-      if (!summary) throw new Error("Backtest response did not include a summary");
-      setBacktest(summary);
-      setNotice(`Backtest evaluated ${summary.evaluatedMarkets} settled markets.`);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown backtest error");
     } finally {
       setBusyAction(null);
     }
@@ -376,6 +275,8 @@ export default function Page() {
   const scanVerdict = latestScan ? scanHealth(latestScan) : { label: "Waiting", tone: "watch" as const };
   const performance = { ...emptyPerformance, ...(data?.performance ?? {}) };
   const worker = data?.backgroundWorker;
+  const strategy = data?.strategyDecisionEngine ?? null;
+  const latestLearning = data?.learning?.backtest ?? null;
 
   return (
     <main className="app-shell">
@@ -396,8 +297,8 @@ export default function Page() {
           ))}
         </nav>
         <div className="sidebar-status">
-          <StatusDot tone={data?.safety?.killSwitchEnabled ? "watch" : "good"} label={data?.safety?.killSwitchEnabled ? "Paper safe" : "Ready"} />
-          <span>{worker?.quoteRefresh?.enabled ? `Quotes every ${worker.quoteRefresh.intervalMinutes} min` : "Quote refresh idle"}</span>
+          <StatusDot tone={worker?.quoteRefresh?.enabled ? "good" : "watch"} label={worker?.quoteRefresh?.enabled ? "Autonomous" : "Idle"} />
+          <span>{worker?.quoteRefresh?.enabled ? `Rechecks every ${worker.quoteRefresh.intervalMinutes} min` : "Quote loop paused"}</span>
         </div>
       </aside>
 
@@ -405,7 +306,7 @@ export default function Page() {
         <header className="topbar">
           <div>
             <p className="eyebrow">{data?.mode ?? "paper"} mode</p>
-            <h2>Paper trading cockpit</h2>
+            <h2>{viewTitle(view)}</h2>
           </div>
           <div className="topbar-actions">
             <button className="ghost-button" onClick={() => runAction("scan", "/api/run-once")} disabled={busyAction !== null}>
@@ -415,10 +316,6 @@ export default function Page() {
             <button className="ghost-button" onClick={() => runAction("settle", "/api/settlements/run-once")} disabled={busyAction !== null}>
               <Clock3 size={16} />
               {busyAction === "settle" ? "Checking" : "Check results"}
-            </button>
-            <button className="buy-button" onClick={() => runAction("buy", "/api/quotes/refresh-once")} disabled={busyAction !== null || model.strong.length === 0}>
-              <ShoppingCart size={17} />
-              {busyAction === "buy" ? "Buying" : "Buy strongest paper bets"}
             </button>
           </div>
         </header>
@@ -434,23 +331,23 @@ export default function Page() {
               <span>{latestScan ? `${labelForTrigger(latestScan.trigger)} at ${time(latestScan.startedAt)}` : "No scan yet"}</span>
               <span>{model.strong.length} strong buys</span>
               <span>{model.openPositions.length} held</span>
+              <span>{data.riskLimits?.maxDailyTrades ?? 30} daily paper cap</span>
             </section>
 
-            {view === "cockpit" ? (
-              <CockpitView
+            {view === "overview" ? (
+              <OverviewView
+                data={data}
                 model={model}
                 performance={performance}
-                buyAction={() => runAction("buy", "/api/quotes/refresh-once")}
-                buyBusy={busyAction === "buy"}
+                performanceWindows={data.performanceWindows ?? []}
+                strategy={strategy}
+                latest={latestLearning}
               />
             ) : null}
 
-            {view === "buy" ? <BuyView candidates={model.strong} watch={model.watch} heldStrongCount={model.heldStrong.length} riskBlockedStrongCount={model.riskBlockedStrong.length} buyAction={() => runAction("buy", "/api/quotes/refresh-once")} buyOne={buyOne} busy={busyAction === "buy"} buyingTicker={buyingTicker} /> : null}
-            {view === "holdings" ? <HoldingsView positions={model.openPositions} /> : null}
-            {view === "results" ? <ResultsView results={model.results} performance={performance} settleAction={() => runAction("settle", "/api/settlements/run-once")} busy={busyAction === "settle"} /> : null}
-            {view === "backtest" ? <BacktestView latest={backtest ?? data.learning?.backtest ?? null} runBacktest={runBacktest} busy={busyAction === "backtest"} /> : null}
-            {view === "research" ? <ResearchView strategy={data.strategyDecisionEngine ?? null} jobs={data.scheduledJobs ?? []} latest={backtest ?? data.learning?.backtest ?? null} /> : null}
-            {view === "details" ? <DetailsView data={data} model={model} /> : null}
+            {view === "decisions" ? <DecisionsView model={model} /> : null}
+            {view === "learning" ? <LearningView strategy={strategy} jobs={data.scheduledJobs ?? []} latest={latestLearning} learning={data.learning ?? null} /> : null}
+            {view === "ledger" ? <LedgerView data={data} model={model} performance={performance} settleAction={() => runAction("settle", "/api/settlements/run-once")} busy={busyAction === "settle"} /> : null}
           </>
         ) : null}
       </section>
@@ -458,487 +355,161 @@ export default function Page() {
   );
 }
 
-function CockpitView({ model, performance, buyAction, buyBusy }: { model: DashboardModel; performance: DashboardData["performance"]; buyAction: () => void; buyBusy: boolean }) {
-  const unavailableStrongText = unavailableStrongSummary(model);
+function OverviewView({ data, model, performance, performanceWindows, strategy, latest }: { data: DashboardData; model: DashboardModel; performance: DashboardData["performance"]; performanceWindows: PerformanceWindow[]; strategy: StrategyDecisionData | null; latest: BacktestSummary | null }) {
+  const latestScan = data.scanReports[0] ?? null;
+  const loop = autonomyLoop(data);
+  const bestWindow = bestPerformanceWindow(performanceWindows);
+  const latestResults = model.results.slice(0, 3);
   return (
-    <section className="page-grid">
-      <div className="hero-panel">
+    <section className="overview-stack">
+      <section className="command-panel">
         <div>
-          <h3>{model.strong.length > 0 ? `${model.strong.length} buyable model-approved bets` : unavailableStrongText ? "Strong bets unavailable" : "No buyable model-approved bets"}</h3>
-          <p>{model.strong[0] ? `${model.strong[0].marketTicker} leads the buy board at ${formatPct(model.strong[0].edge)} edge.` : unavailableStrongText ?? "The next quote refresh will update the buy board."}</p>
+          <h3>{loop.title}</h3>
+          <p>{loop.detail}</p>
         </div>
-        <button className="buy-button large" onClick={buyAction} disabled={buyBusy || model.strong.length === 0}>
-          <ShoppingCart size={18} />
-          {buyBusy ? "Buying" : "Buy strongest paper bets"}
-        </button>
-      </div>
-
-      <Metric label="Strong buys" value={model.strong.length} detail={`${model.watch.length} watch${model.heldStrong.length > 0 ? `, ${model.heldStrong.length} held` : ""}${model.riskBlockedStrong.length > 0 ? `, ${model.riskBlockedStrong.length} risk-blocked` : ""}`} />
-      <Metric label="Open holdings" value={model.openPositions.length} detail={`${money(model.openCost)} at risk`} />
-      <Metric label="Max payout" value={money(model.maxOpenPayout)} detail={`${model.openContracts} contracts`} />
-      <Metric label="Settled P/L" value={money(model.realizedPnl)} detail={`${model.results.length || performance.settledTrades} settled`} />
-
-      <Panel title="Best bets">
-        <CandidateList candidates={model.strong.slice(0, 5)} empty="No strong paper buys right now" />
-      </Panel>
-      <Panel title="Currently held">
-        <HoldingList positions={model.openPositions.slice(0, 5)} />
-      </Panel>
-    </section>
-  );
-}
-
-function unavailableStrongSummary(model: DashboardModel) {
-  if (model.strong.length > 0) return null;
-  const parts = [];
-  if (model.heldStrong.length > 0) parts.push(`${model.heldStrong.length} already held`);
-  if (model.riskBlockedStrong.length > 0) parts.push(`${model.riskBlockedStrong.length} blocked by risk limits`);
-  return parts.length > 0 ? `Model still sees strong signals, but ${parts.join(" and ")}.` : null;
-}
-
-function BuyView({ candidates, watch, heldStrongCount, riskBlockedStrongCount, buyAction, buyOne, busy, buyingTicker }: { candidates: CandidateView[]; watch: CandidateView[]; heldStrongCount: number; riskBlockedStrongCount: number; buyAction: () => void; buyOne: (marketTicker: string) => void; busy: boolean; buyingTicker: string | null }) {
-  return (
-    <section className="stack">
-      <div className="section-head">
-        <div>
-          <h3>Buy board</h3>
-          <p>{candidates.length} buyable bets currently clear the model threshold{heldStrongCount > 0 ? `; ${heldStrongCount} strong signals are already held` : ""}{riskBlockedStrongCount > 0 ? `; ${riskBlockedStrongCount} are risk-blocked` : ""}.</p>
+        <div className="loop-facts">
+          <Fact label="Last scan" value={latestScan ? dateTime(latestScan.startedAt) : "pending"} />
+          <Fact label="Quote loop" value={data.backgroundWorker?.quoteRefresh?.enabled ? `${data.backgroundWorker.quoteRefresh.intervalMinutes} min` : "paused"} />
+          <Fact label="Daily cap" value={data.riskLimits?.maxDailyTrades ?? 30} />
+          <Fact label="Mode" value={data.mode} />
         </div>
-        <button className="buy-button" onClick={buyAction} disabled={busy || candidates.length === 0}>
-          <Play size={16} />
-          {busy ? "Buying" : "Buy strongest paper bets"}
-        </button>
-      </div>
-      <StrategyPanel />
-      <CandidateList candidates={candidates} empty="No strong buys right now" expanded onBuy={buyOne} buyingTicker={buyingTicker} />
-      <Disclosure title={`Watch list (${watch.length})`}>
-        <CandidateList candidates={watch} empty="No positive-edge watch items" compact />
-      </Disclosure>
-    </section>
-  );
-}
-
-function HoldingsView({ positions }: { positions: HoldingView[] }) {
-  return (
-    <section className="stack">
-      <div className="section-head">
-        <div>
-          <h3>Holdings</h3>
-          <p>{positions.length} paper positions waiting for final outcome.</p>
-        </div>
-      </div>
-      <HoldingList positions={positions} expanded />
-    </section>
-  );
-}
-
-function ResultsView({ results, performance, settleAction, busy }: { results: ResultView[]; performance: DashboardData["performance"]; settleAction: () => void; busy: boolean }) {
-  const analytics = resultAnalytics(results);
-  return (
-    <section className="stack">
-      <div className="section-head">
-        <div>
-          <h3>Results</h3>
-          <p>{money(performance.realizedPnl)} settled paper P/L.</p>
-        </div>
-        <button className="ghost-button" onClick={settleAction} disabled={busy}>
-          <Clock3 size={16} />
-          {busy ? "Checking" : "Check results"}
-        </button>
-      </div>
-      <section className="result-graphs" aria-label="Settled paper result charts">
-        <ResultStatsPanel title="Yesterday" stats={analytics.yesterday} />
-        <ResultStatsPanel title="All time" stats={analytics.allTime} />
       </section>
-      <Disclosure title={`Settled results (${results.length})`}>
-        <ResultList results={results} expanded />
-      </Disclosure>
+      <PerformanceScorePanel windows={performanceWindows} />
+      <section className="page-grid">
+        <Metric label="Best score" value={bestWindow ? scoreLabel(bestWindow.score) : "n/a"} detail={bestWindow ? `${bestWindow.label}, ${money(bestWindow.totalPnl)} P/L` : "waiting for settled trades"} />
+        <Metric label="Settled P/L" value={money(performance.realizedPnl)} detail={`${performance.settledTrades || model.results.length} settled outcomes`} />
+        <Metric label="Open exposure" value={money(model.openCost)} detail={`${model.openPositions.length} positions, ${model.openContracts} contracts`} />
+        <Metric label="Learning sample" value={data.learning?.collection.settledPaperTradeExamples ?? 0} detail={`${data.learning?.collection.paperTradeExamples ?? 0} paper examples stored`} />
+      </section>
+      <section className="overview-columns">
+        <Panel title="What it is winning">
+          {latestResults.length > 0 ? <ResultList results={latestResults} /> : <EmptyState>No settled wins or losses yet</EmptyState>}
+        </Panel>
+        <Panel title="Current decisions">
+          <CandidateList candidates={model.strong.slice(0, 4)} empty="No model-approved buys right now" />
+        </Panel>
+        <Panel title="Current holdings">
+          <HoldingList positions={model.openPositions.slice(0, 4)} />
+        </Panel>
+        <Panel title="Improvement loop">
+          <ImprovementSnapshot strategy={strategy} latest={latest} learning={data.learning ?? null} />
+        </Panel>
+      </section>
     </section>
   );
 }
 
-function BacktestView({ latest, runBacktest, busy }: { latest: BacktestSummary | null; runBacktest: (parameters: BacktestParameters) => void; busy: boolean }) {
-  const [preset, setPreset] = useState<BacktestPresetKey>("balanced");
-  const [strategyKey, setStrategyKey] = useState("candidate_snapshot_v2");
-  const [validationMode, setValidationMode] = useState<NonNullable<BacktestParameters["validationMode"]>>("backtest");
-  const [selection, setSelection] = useState<BacktestParameters["selection"]>(backtestPresets.balanced.selection);
-  const [minEdge, setMinEdge] = useState(String(backtestPresets.balanced.minEdge ?? ""));
-  const [maxEntryPrice, setMaxEntryPrice] = useState("");
-  const [minLiquidityScore, setMinLiquidityScore] = useState("");
-  const [maxSpread, setMaxSpread] = useState("");
-  const [stakePerTrade, setStakePerTrade] = useState(String(backtestPresets.balanced.stakePerTrade));
-  const [maxContracts, setMaxContracts] = useState(String(backtestPresets.balanced.maxContracts));
-  const [slippageCents, setSlippageCents] = useState(String(backtestPresets.balanced.slippageCents));
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
-  const [paperTradingStartDate, setPaperTradingStartDate] = useState("");
-  const [notes, setNotes] = useState("");
-  const [syncTickers, setSyncTickers] = useState("");
-  const [syncSeries, setSyncSeries] = useState("KXHIGHCHI");
-  const [syncSource, setSyncSource] = useState<"historical" | "live">("historical");
-  const [syncStartDate, setSyncStartDate] = useState("");
-  const [syncEndDate, setSyncEndDate] = useState("");
-  const [syncing, setSyncing] = useState(false);
-  const [syncNotice, setSyncNotice] = useState<string | null>(null);
-
-  function applyPreset(key: BacktestPresetKey) {
-    const next = backtestPresets[key];
-    setPreset(key);
-    setSelection(next.selection);
-    setMinEdge(next.minEdge === null ? "" : String(next.minEdge));
-    setMaxEntryPrice(next.maxEntryPrice === null ? "" : String(next.maxEntryPrice));
-    setMinLiquidityScore(next.minLiquidityScore === null ? "" : String(next.minLiquidityScore));
-    setMaxSpread(next.maxSpread === null ? "" : String(next.maxSpread));
-    setStakePerTrade(String(next.stakePerTrade));
-    setMaxContracts(String(next.maxContracts));
-    setSlippageCents(String(next.slippageCents));
-    setStartDate(next.startDate ?? "");
-    setEndDate(next.endDate ?? "");
-  }
-
-  function parametersFromForm(): BacktestParameters {
-    return {
-      strategyKey,
-      validationMode,
-      selection,
-      status: "WOULD_BUY",
-      minEdge: formNumber(minEdge),
-      maxEntryPrice: formNumber(maxEntryPrice),
-      minLiquidityScore: formNumber(minLiquidityScore),
-      maxSpread: formNumber(maxSpread),
-      stakePerTrade: formNumber(stakePerTrade) ?? backtestPresets.balanced.stakePerTrade,
-      maxContracts: formNumber(maxContracts) ?? backtestPresets.balanced.maxContracts,
-      slippageCents: formNumber(slippageCents) ?? backtestPresets.balanced.slippageCents,
-      startDate: startDate || null,
-      endDate: endDate || null,
-      paperTradingStartDate: paperTradingStartDate || null,
-      notes: notes || null
-    };
-  }
-
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    runBacktest(parametersFromForm());
-  }
-
-  async function syncHistorical(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSyncing(true);
-    setSyncNotice(null);
-    try {
-      const response = await fetch(`${apiUrl}/api/historical/sync`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tickers: syncTickers,
-          seriesTicker: syncSeries,
-          source: syncSource,
-          startTs: dateToEpochSeconds(syncStartDate, false),
-          endTs: dateToEpochSeconds(syncEndDate, true),
-          periodInterval: 60,
-          includeTrades: true,
-          includeCandlesticks: true,
-          maxPages: 5
-        })
-      });
-      const body = await response.json().catch(() => null);
-      if (!response.ok) {
-        const message = body && typeof body === "object" && "error" in body ? String((body as { error: unknown }).error) : `Sync failed with ${response.status}`;
-        throw new Error(message);
-      }
-      const result = body as { markets?: number; tickers?: number; candlesticks?: number; trades?: number };
-      setSyncNotice(`Synced ${result.tickers ?? 0} tickers, ${result.candlesticks ?? 0} candles, ${result.trades ?? 0} trades.`);
-    } catch (err) {
-      setSyncNotice(err instanceof Error ? err.message : "Historical sync failed");
-    } finally {
-      setSyncing(false);
-    }
-  }
-
+function PerformanceScorePanel({ windows }: { windows: PerformanceWindow[] }) {
+  const windowByKey = new Map(windows.map((window) => [window.key, window]));
+  const displayWindows = emptyPerformanceWindows.map((window) => windowByKey.get(window.key) ?? window);
   return (
-    <section className="stack details-stack">
-      <div className="section-head">
-        <div>
-          <h3>Backtest lab</h3>
-          <p>{latest ? `${latest.method}; ${latest.evaluatedMarkets} settled trades evaluated.` : "Run candidate snapshots against settled market outcomes."}</p>
-        </div>
+    <section className="score-panel">
+      <div className="panel-head">
+        <h3>Prediction score</h3>
       </div>
-
-      <form className="backtest-controls sync-controls" onSubmit={syncHistorical}>
-        <label>
-          Tickers
-          <input value={syncTickers} onChange={(event) => setSyncTickers(event.target.value)} placeholder="comma-separated or blank" />
-        </label>
-        <label>
-          Series
-          <input value={syncSeries} onChange={(event) => setSyncSeries(event.target.value.toUpperCase())} placeholder="KXHIGHCHI" />
-        </label>
-        <label>
-          Source
-          <select value={syncSource} onChange={(event) => setSyncSource(event.target.value as "historical" | "live")}>
-            <option value="historical">Historical</option>
-            <option value="live">Live/recent</option>
-          </select>
-        </label>
-        <label>
-          From
-          <input type="date" value={syncStartDate} onChange={(event) => setSyncStartDate(event.target.value)} />
-        </label>
-        <label>
-          To
-          <input type="date" value={syncEndDate} onChange={(event) => setSyncEndDate(event.target.value)} />
-        </label>
-        <button className="ghost-button" disabled={syncing}>
-          <RefreshCw size={16} />
-          {syncing ? "Syncing" : "Sync history"}
-        </button>
-        {syncNotice ? <span className="form-note">{syncNotice}</span> : null}
-      </form>
-
-      <form className="backtest-runner" onSubmit={submit}>
-        <div className="runner-main">
-          <label>
-            Preset
-            <select value={preset} onChange={(event) => applyPreset(event.target.value as BacktestPresetKey)}>
-              <option value="balanced">Balanced replay</option>
-              <option value="strict">Strict quality</option>
-              <option value="exploratory">Explore all signals</option>
-            </select>
-          </label>
-          <div className="preset-summary">
-            <span>{validationMode === "walk_forward" ? "Walk-forward" : validationMode === "paper" ? "Paper validation" : "Backtest"}</span>
-            <span>{selectionLabel(selection)}</span>
-            <span>{formatPct(formNumber(minEdge))} min edge</span>
-            <span>{money(formNumber(stakePerTrade) ?? 0)} stake</span>
-            <span>{formNumber(slippageCents) ?? 0}c slippage</span>
-          </div>
-          <button className="buy-button" disabled={busy}>
-            <Play size={16} />
-            {busy ? "Running" : "Run backtest"}
-          </button>
-        </div>
-        <details className="advanced-dropdown">
-          <summary>
-            <SlidersHorizontal size={15} />
-            Change inputs
-          </summary>
-          <div className="advanced-grid">
-            <label>
-              Strategy key
-              <input value={strategyKey} onChange={(event) => setStrategyKey(event.target.value)} />
-            </label>
-            <label>
-              Validation
-              <select value={validationMode} onChange={(event) => setValidationMode(event.target.value as NonNullable<BacktestParameters["validationMode"]>)}>
-                <option value="backtest">Backtest</option>
-                <option value="walk_forward">Walk-forward</option>
-                <option value="paper">Paper validation</option>
-              </select>
-            </label>
-            <label>
-              Selection
-              <select value={selection} onChange={(event) => setSelection(event.target.value as BacktestParameters["selection"])}>
-                <option value="first_signal">First signal per market</option>
-                <option value="best_edge">Best edge per market</option>
-                <option value="each_signal">Every eligible signal</option>
-              </select>
-            </label>
-            <label>
-              Min edge
-              <input inputMode="decimal" value={minEdge} onChange={(event) => setMinEdge(event.target.value)} placeholder="0.05" />
-            </label>
-            <label>
-              Max entry
-              <input inputMode="decimal" value={maxEntryPrice} onChange={(event) => setMaxEntryPrice(event.target.value)} placeholder="optional" />
-            </label>
-            <label>
-              Min liquidity
-              <input inputMode="decimal" value={minLiquidityScore} onChange={(event) => setMinLiquidityScore(event.target.value)} placeholder="optional" />
-            </label>
-            <label>
-              Max spread
-              <input inputMode="decimal" value={maxSpread} onChange={(event) => setMaxSpread(event.target.value)} placeholder="optional" />
-            </label>
-            <label>
-              Stake
-              <input inputMode="decimal" value={stakePerTrade} onChange={(event) => setStakePerTrade(event.target.value)} />
-            </label>
-            <label>
-              Max contracts
-              <input inputMode="numeric" value={maxContracts} onChange={(event) => setMaxContracts(event.target.value)} />
-            </label>
-            <label>
-              Slippage
-              <input inputMode="decimal" value={slippageCents} onChange={(event) => setSlippageCents(event.target.value)} />
-            </label>
-            <label>
-              From
-              <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
-            </label>
-            <label>
-              To
-              <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
-            </label>
-            <label>
-              Paper since
-              <input type="date" value={paperTradingStartDate} onChange={(event) => setPaperTradingStartDate(event.target.value)} />
-            </label>
-            <label className="wide-field">
-              Notes
-              <input value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="validation note" />
-            </label>
-          </div>
-        </details>
-      </form>
-
-      {latest ? (
-        <>
-          <section className="page-grid">
-            <Metric label="Trades" value={latest.evaluatedMarkets} detail={`${latest.eligibleSnapshots ?? latest.candidateSnapshots} eligible snapshots`} />
-            <Metric label="Win rate" value={formatPct(latest.winRate)} detail={`${latest.wins} wins, ${latest.losses} losses`} />
-            <Metric label="P/L" value={money(latest.totalPnl)} detail={`${formatPct(latest.roi)} ROI`} />
-            <Metric label="Drawdown" value={money(latest.maxDrawdown ?? 0)} detail={`${latest.longestLosingStreak ?? 0} longest loss streak`} />
-            <Metric label="Avg edge" value={formatPct(latest.averageEdge ?? null)} detail={`Avg entry ${price(latest.averageEntryPrice ?? null)}`} />
-            <Metric label="Liquidity" value={latest.averageLiquidityScore === null || latest.averageLiquidityScore === undefined ? "n/a" : latest.averageLiquidityScore.toFixed(3)} detail={`Profit factor ${latest.profitFactor === null || latest.profitFactor === undefined ? "n/a" : latest.profitFactor.toFixed(2)}`} />
-            <Metric label="Approval" value={latest.approval?.status ?? "Draft"} detail={latest.approval?.approvedForRecommendation ? "eligible for recommendation" : "not promotable"} />
-            <Metric label="Expectancy" value={money(latest.expectancy?.expectedValuePerTrade ?? 0)} detail={`Risk of ruin ${formatPct(latest.expectancy?.riskOfRuin ?? null)}`} />
-            <Metric label="Data quality" value={latest.dataQuality ? `${latest.dataQuality.score}/100` : "n/a"} detail={latest.dataQuality?.reliability ?? "not scored"} />
-            <Metric label="Outliers" value={formatPct(latest.expectancy?.singleTradePnlShare ?? null)} detail={latest.expectancy?.rareLongShotWin ? "rare win dependency" : "concentration clear"} />
-          </section>
-          <section className="chart-grid">
-            <MiniLineChart title="Equity curve" points={(latest.equityCurve ?? []).map((point) => point.equity)} format={money} />
-            <MiniLineChart title="Implied probability move" points={(latest.trades ?? []).slice().reverse().map((trade) => trade.impliedProbabilityMove ?? 0)} format={formatPct} />
-          </section>
-          <ApprovalPanel latest={latest} />
-          <Disclosure title="Recent simulated trades">
-            <SimpleTable
-              columns={["Time", "Ticker", "Entry", "Contracts", "Move", "Result", "P/L"]}
-              rows={(latest.trades ?? []).slice(0, 30).map((trade) => [
-                dateTime(trade.observedAt),
-                trade.marketTicker,
-                `${price(trade.entryPrice)} ${trade.entrySource ? `(${trade.entrySource}${trade.slippageCents ? ` +${trade.slippageCents}c` : ""})` : ""}`,
-                String(trade.contracts),
-                formatPct(trade.impliedProbabilityMove ?? null),
-                trade.settlementResult,
-                money(trade.pnl)
-              ])}
-              empty="No settled trades matched this backtest"
-            />
-          </Disclosure>
-        </>
-      ) : <EmptyState>No backtest has run yet</EmptyState>}
+      <div className="score-grid">
+        {displayWindows.map((window) => (
+          <article className={`score-card ${scoreTone(window.score)}`} key={window.key}>
+            <span>{window.label}</span>
+            <strong>{window.score === null ? "n/a" : window.score}</strong>
+            <small>{window.settledTrades > 0 ? `${formatPct(window.winRate)} win, ${money(window.totalPnl)} P/L` : "No settled trades"}</small>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }
 
-function ApprovalPanel({ latest }: { latest: BacktestSummary }) {
-  const approval = latest.approval;
-  const warnings = [...(latest.overfitting?.warnings ?? []), ...(approval?.warnings ?? [])];
-  if (!approval && !latest.expectancy && !latest.dataQuality) return null;
+function scoreTone(score: number | null) {
+  if (score === null) return "neutral";
+  if (score >= 70) return "good";
+  if (score >= 45) return "watch";
+  return "danger";
+}
+
+function DecisionsView({ model }: { model: DashboardModel }) {
   return (
-    <section className="approval-grid">
-      <Panel title="Recommendation">
-        {approval ? (
-          <div className="recommendation-copy">
-            <StatusPill tone={approval.status === "Rejected" ? "danger" : approval.status === "Paper Approved" ? "good" : "watch"}>{approval.status}</StatusPill>
-            <p>{approval.explanation.summary}</p>
-            <p>{approval.explanation.edge}</p>
-            <p>{approval.explanation.failsWhen}</p>
-          </div>
-        ) : <EmptyState>No approval decision yet</EmptyState>}
-      </Panel>
-      <Panel title="Approval gates">
-        <SimpleTable
-          columns={["Gate", "Status", "Actual", "Threshold"]}
-          rows={(approval?.gates ?? []).map((gate) => [
-            gate.name,
-            <StatusPill key={`${gate.name}-status`} tone={gate.passed ? "good" : "danger"}>{gate.passed ? "pass" : "fail"}</StatusPill>,
-            String(gate.actual ?? "n/a"),
-            String(gate.threshold)
-          ])}
-          empty="No gate results"
-        />
-      </Panel>
-      <Panel title="Paper validation">
-        <SimpleTable
-          columns={["Metric", "Value"]}
-          rows={latest.paperValidation ? [
-            ["Paper trades", String(latest.paperValidation.paperTrades)],
-            ["Settled paper trades", String(latest.paperValidation.settledPaperTrades)],
-            ["Expected win rate", formatPct(latest.paperValidation.expectedWinRate)],
-            ["Observed win rate", formatPct(latest.paperValidation.observedWinRate)],
-            ["Expected P/L trade", moneyOrPending(latest.paperValidation.expectedPnlPerTrade)],
-            ["Observed P/L trade", moneyOrPending(latest.paperValidation.observedPnlPerTrade)],
-            ["Signals no fill", String(latest.paperValidation.signalNoFill)],
-            ["Edge disappeared", String(latest.paperValidation.fillEdgeDisappeared)]
-          ] : []}
-          empty="No paper validation sample yet"
-        />
-      </Panel>
-      <Panel title="Warnings">
-        <SimpleTable
-          columns={["Severity", "Code", "Message"]}
-          rows={warnings.map((warning) => [warning.severity, warning.code, warning.message])}
-          empty={latest.dataQuality?.warnings.length ? latest.dataQuality.warnings.join("; ") : "No strategy warnings"}
-        />
-      </Panel>
+    <section className="stack">
+      <section className="section-head simple-head">
+        <div>
+          <h3>Current decision board</h3>
+          <p>{model.strong.length} model-approved, {model.heldStrong.length} already held, {model.riskBlockedStrong.length} blocked by risk controls.</p>
+        </div>
+      </section>
+      <section className="page-grid">
+        <Metric label="Approved now" value={model.strong.length} detail="clear model and risk checks" />
+        <Metric label="Already held" value={model.heldStrong.length} detail="not doubled up" />
+        <Metric label="Watching" value={model.watch.length} detail="positive edge, not enough yet" />
+        <Metric label="Risk blocked" value={model.riskBlockedStrong.length} detail="held back by limits" />
+      </section>
+      <section className="overview-columns">
+        <Panel title="Approved">
+          <CandidateList candidates={model.strong} empty="No approved buys right now" expanded />
+        </Panel>
+        <Panel title="Held">
+          <HoldingList positions={model.openPositions} expanded />
+        </Panel>
+        <Panel title="Watch">
+          <CandidateList candidates={model.watch.slice(0, 12)} empty="No positive-edge watch items" compact />
+        </Panel>
+        <Panel title="Risk blocked">
+          <CandidateList candidates={model.riskBlockedStrong.slice(0, 12)} empty="No risk-blocked strong signals" compact />
+        </Panel>
+      </section>
     </section>
   );
 }
 
-function ResearchView({ strategy, jobs, latest }: { strategy: StrategyDecisionData | null; jobs: NonNullable<DashboardData["scheduledJobs"]>; latest: BacktestSummary | null }) {
+function LearningView({ strategy, jobs, latest, learning }: { strategy: StrategyDecisionData | null; jobs: NonNullable<DashboardData["scheduledJobs"]>; latest: BacktestSummary | null; learning: DashboardData["learning"] | null }) {
   const statuses = strategy?.statuses;
+  const paper = strategy?.latestPaperTradingHealth;
   return (
     <section className="stack details-stack">
-      <div className="section-head">
+      <section className="section-head simple-head">
         <div>
-          <h3>Research decision engine</h3>
-          <p>Only strategies that pass data quality, out-of-sample validation, paper checks, and risk gates should graduate from here.</p>
+          <h3>Automatic learning</h3>
+          <p>{learningNarrative(strategy, latest, learning)}</p>
         </div>
         <ShieldCheck size={22} />
-      </div>
-      <section className="page-grid">
-        <Metric label="Paper approved" value={statuses?.paperApproved ?? 0} detail="eligible strategy versions" />
-        <Metric label="Paper testing" value={(statuses?.paperTesting ?? 0) + (statuses?.walkForwardPassed ?? 0)} detail="needs live-condition validation" />
-        <Metric label="Rejected" value={statuses?.rejected ?? 0} detail="review failed gates" />
-        <Metric label="Warnings" value={strategy?.warningsRequiringReview.length ?? 0} detail="requiring research review" />
       </section>
-      <section className="research-grid">
-        <Panel title="Approved strategies">
-          <StrategyTable rows={strategy?.approvedStrategies ?? []} empty="No paper-approved strategies yet" />
-        </Panel>
-        <Panel title="Paper testing">
-          <StrategyTable rows={strategy?.paperTestingStrategies ?? []} empty="No strategies in paper testing" />
-        </Panel>
-        <Panel title="Rejected strategies">
-          <StrategyTable rows={strategy?.rejectedStrategies ?? []} empty="No rejected strategy versions" />
-        </Panel>
-        <Panel title="Latest health">
+      <section className="page-grid">
+        <Metric label="Paper approved" value={statuses?.paperApproved ?? 0} detail="strategy versions ready" />
+        <Metric label="Paper testing" value={(statuses?.paperTesting ?? 0) + (statuses?.walkForwardPassed ?? 0)} detail="under validation" />
+        <Metric label="Latest ROI" value={formatPct(latestBacktestRoi(strategy?.latestBacktestHealth ?? latest))} detail={latestBacktestStatus(strategy?.latestBacktestHealth ?? latest)} />
+        <Metric label="Warnings" value={strategy?.warningsRequiringReview.length ?? 0} detail="gates requiring review" />
+      </section>
+      <section className="learning-flow">
+        <FlowStep title="Collect" value={learning?.collection.quoteSnapshots ?? 0} detail="quote snapshots" />
+        <FlowStep title="Decide" value={learning?.collection.candidateSnapshots ?? 0} detail="candidate decisions" />
+        <FlowStep title="Paper trade" value={learning?.collection.paperTradeExamples ?? 0} detail="paper examples" />
+        <FlowStep title="Adjust" value={strategy?.latestOptimizerReport?.status ?? "pending"} detail={strategy?.latestOptimizerReport?.completedAt ? dateTime(strategy.latestOptimizerReport.completedAt) : "waiting for optimizer"} />
+      </section>
+      <section className="overview-columns">
+        <Panel title="Current adjustment">
           <SimpleTable
-            columns={["Metric", "Value"]}
+            columns={["Signal", "Value"]}
             rows={[
-              ["Latest status", latestBacktestStatus(strategy?.latestBacktestHealth ?? latest)],
-              ["Latest ROI", formatPct(latestBacktestRoi(strategy?.latestBacktestHealth ?? latest))],
-              ["Data quality", latestBacktestDataQuality(strategy?.latestBacktestHealth ?? latest)],
-              ["Paper edge", strategy?.latestPaperTradingHealth?.liveEdgeDegraded ? "degraded" : strategy?.latestPaperTradingHealth ? "preserved" : "pending"],
-              ["Paper trades", String(strategy?.latestPaperTradingHealth?.paperTrades ?? 0)]
+              ["Optimizer", strategy?.latestOptimizerReport?.status ?? "pending"],
+              ["Recommendation", strategy?.latestOptimizerReport?.recommendation ?? "No optimizer recommendation yet"],
+              ["Best candidate", strategy?.latestOptimizerReport?.bestCandidate?.optimizerCandidateId ?? "none"],
+              ["Best ROI", formatPct(strategy?.latestOptimizerReport?.bestCandidate?.roi ?? null)],
+              ["Paper edge", paper?.liveEdgeDegraded ? "degraded" : paper ? "preserved" : "pending"]
             ]}
-            empty="No strategy health"
+            empty="No automatic adjustment data"
           />
         </Panel>
-        <Panel title="Latest optimizer">
+        <Panel title="Paper validation">
           <SimpleTable
             columns={["Metric", "Value"]}
-            rows={strategy?.latestOptimizerReport ? [
-              ["Status", strategy.latestOptimizerReport.status],
-              ["Recommendation", strategy.latestOptimizerReport.recommendation],
-              ["Best candidate", strategy.latestOptimizerReport.bestCandidate?.optimizerCandidateId ?? "none"],
-              ["Best status", strategy.latestOptimizerReport.bestCandidate?.approvalStatus ?? "pending"],
-              ["Best ROI", formatPct(strategy.latestOptimizerReport.bestCandidate?.roi ?? null)],
-              ["Challengers", String(strategy.latestOptimizerReport.challengers.length)],
-              ["Completed", dateTimeOrPending(strategy.latestOptimizerReport.completedAt)]
+            rows={paper ? [
+              ["Paper trades", String(paper.paperTrades ?? 0)],
+              ["Settled paper trades", String(paper.settledPaperTrades ?? 0)],
+              ["Expected win rate", formatPct(paper.expectedWinRate)],
+              ["Observed win rate", formatPct(paper.observedWinRate)],
+              ["Expected P/L trade", moneyOrPending(paper.expectedPnlPerTrade)],
+              ["Observed P/L trade", moneyOrPending(paper.observedPnlPerTrade)]
             ] : []}
-            empty="Optimizer has not run yet"
+            empty="No paper validation sample yet"
           />
         </Panel>
         <Panel title="Data freshness">
@@ -954,7 +525,7 @@ function ResearchView({ strategy, jobs, latest }: { strategy: StrategyDecisionDa
             empty="No freshness data"
           />
         </Panel>
-        <Panel title="Scheduled-job hooks" action={<ListChecks size={18} />}>
+        <Panel title="Scheduled work">
           <SimpleTable
             columns={["Job", "State", "Last message"]}
             rows={jobs.map((job) => [
@@ -966,6 +537,12 @@ function ResearchView({ strategy, jobs, latest }: { strategy: StrategyDecisionDa
           />
         </Panel>
       </section>
+      {latest ? (
+        <section className="chart-grid">
+          <MiniLineChart title="Automatic replay equity" points={(latest.equityCurve ?? []).map((point) => point.equity)} format={money} />
+          <MiniLineChart title="Probability movement" points={(latest.trades ?? []).slice().reverse().map((trade) => trade.impliedProbabilityMove ?? 0)} format={formatPct} />
+        </section>
+      ) : null}
       <Disclosure title="Warnings requiring review">
         <SimpleTable
           columns={["Time", "Status", "Severity", "Code", "Message"]}
@@ -983,50 +560,34 @@ function ResearchView({ strategy, jobs, latest }: { strategy: StrategyDecisionDa
   );
 }
 
-function StrategyTable({ rows, empty }: { rows: StrategyRow[]; empty: string }) {
-  return (
-    <SimpleTable
-      columns={["Strategy", "Status", "Trades", "ROI", "Summary"]}
-      rows={rows.slice(0, 8).map((row) => [
-        `${row.strategyKey} (${row.configHash})`,
-        row.approvalStatus,
-        String(row.evaluatedMarkets ?? 0),
-        formatPct(row.roi),
-        row.summary ?? row.notes ?? "No summary"
-      ])}
-      empty={empty}
-    />
-  );
-}
-
-function DetailsView({ data, model }: { data: DashboardData; model: DashboardModel }) {
-  const latestScan = (data.scanReports ?? [])[0] ?? null;
+function LedgerView({ data, model, performance, settleAction, busy }: { data: DashboardData; model: DashboardModel; performance: DashboardData["performance"]; settleAction: () => void; busy: boolean }) {
+  const analytics = resultAnalytics(model.results);
+  const latestScan = data.scanReports[0] ?? null;
   const learning = data.learning ?? null;
   return (
     <section className="stack details-stack">
-      <div className="section-head">
+      <section className="section-head simple-head">
         <div>
-          <h3>Technical details</h3>
-          <p>Backend data is collapsed by default. Dataset download streams every saved scan row.</p>
+          <h3>Result ledger</h3>
+          <p>{money(performance.realizedPnl)} settled P/L across {performance.settledTrades || model.results.length} settled outcomes.</p>
         </div>
-        <a className="ghost-button" href={`${apiUrl}/api/dataset/export`}>
-          <Download size={16} />
-          Download dataset
-        </a>
-      </div>
-      <Disclosure title="Model candidates">
-        <SimpleTable
-          columns={["Ticker", "Status", "Forecast", "Ask", "Edge", "Reason"]}
-          rows={(data.trainingCandidates ?? []).slice(0, 60).map((candidate) => [
-            candidate.marketTicker,
-            statusLabel(candidate.status),
-            forecastText(candidate),
-            price(candidate.entryPrice),
-            formatPct(candidate.edge),
-            candidate.reason
-          ])}
-          empty="No candidates"
-        />
+        <div className="topbar-actions">
+          <button className="ghost-button" onClick={settleAction} disabled={busy}>
+            <Clock3 size={16} />
+            {busy ? "Checking" : "Check results"}
+          </button>
+          <a className="ghost-button" href={`${apiUrl}/api/dataset/export`}>
+            <Download size={16} />
+            Dataset
+          </a>
+        </div>
+      </section>
+      <section className="result-graphs" aria-label="Settled paper result charts">
+        <ResultStatsPanel title="Last local day" stats={analytics.yesterday} />
+        <ResultStatsPanel title="All time" stats={analytics.allTime} />
+      </section>
+      <Disclosure title={`Settled results (${model.results.length})`}>
+        <ResultList results={model.results} expanded />
       </Disclosure>
       <Disclosure title="Latest scan">
         <SimpleTable
@@ -1042,52 +603,10 @@ function DetailsView({ data, model }: { data: DashboardData; model: DashboardMod
           empty="No provider checks"
         />
       </Disclosure>
-      <Disclosure title="Signals and orders">
-        <SimpleTable
-          columns={["Time", "Ticker", "Status", "Edge", "Reason"]}
-          rows={(data.signals ?? []).slice(0, 80).map((signal) => [time(signal.createdAt), signal.marketTicker, signal.status, formatPct(signal.edge), signal.skipReason ?? signal.explanation])}
-          empty="No signals"
-        />
-      </Disclosure>
-      <Disclosure title="Learning database">
-        <SimpleTable
-          columns={["Metric", "Value"]}
-          rows={learning ? [
-            ["Quote snapshots", String(learning.collection.quoteSnapshots)],
-            ["Candidate decisions", String(learning.collection.candidateSnapshots)],
-            ["Paper trade examples", String(learning.collection.paperTradeExamples)],
-            ["Settled examples", String(learning.collection.settledPaperTradeExamples)],
-            ["All scan reports", String(learning.collection.scanReports ?? 0)],
-            ["Full scans", String(learning.collection.fullScans ?? 0)],
-            ["1-minute quote scans", String(learning.collection.quoteRefreshScans ?? 0)],
-            ["Historical markets", String(learning.collection.historicalMarkets ?? 0)],
-            ["Historical candles", String(learning.collection.historicalCandlesticks ?? 0)],
-            ["Historical trades", String(learning.collection.historicalTrades ?? 0)],
-            ["Latest quote", learning.collection.latestQuoteAt ? dateTime(learning.collection.latestQuoteAt) : "pending"],
-            ["Latest candidate", learning.collection.latestCandidateAt ? dateTime(learning.collection.latestCandidateAt) : "pending"],
-            ["Latest full scan", learning.collection.latestFullScanAt ? dateTime(learning.collection.latestFullScanAt) : "pending"],
-            ["Latest quote scan", learning.collection.latestQuoteRefreshAt ? dateTime(learning.collection.latestQuoteRefreshAt) : "pending"]
-          ] : []}
-          empty="No learning data yet"
-        />
-      </Disclosure>
-      <Disclosure title="Backtest snapshot">
-        <SimpleTable
-          columns={["Method", "Trades", "Wins", "P/L", "ROI"]}
-          rows={learning ? [[
-            learning.backtest.method,
-            String(learning.backtest.evaluatedMarkets),
-            `${learning.backtest.wins}/${learning.backtest.losses}`,
-            money(learning.backtest.totalPnl),
-            formatPct(learning.backtest.roi)
-          ]] : []}
-          empty="No settled backtest sample yet"
-        />
-      </Disclosure>
       <Disclosure title="Paper training examples">
         <SimpleTable
           columns={["Time", "Ticker", "Status", "Contracts", "Edge", "P/L"]}
-          rows={(learning?.recentPaperExamples ?? []).slice(0, 30).map((example) => [
+          rows={(learning?.recentPaperExamples ?? []).slice(0, 40).map((example) => [
             dateTime(example.openedAt),
             example.marketTicker,
             example.status,
@@ -1098,45 +617,99 @@ function DetailsView({ data, model }: { data: DashboardData; model: DashboardMod
           empty="No paper training examples yet"
         />
       </Disclosure>
-      <Disclosure title="Locations and mappings">
+      <Disclosure title="All model candidates">
         <SimpleTable
-          columns={["Market", "City", "Target", "Liquidity", "Status"]}
-          rows={(data.mappings ?? []).slice(0, 80).map((mapping) => [mapping.marketTicker, mapping.location ? `${mapping.location.city}, ${mapping.location.state ?? ""}` : "unknown", mappingLine(mapping), mapping.liquidityScore.toFixed(3), mapping.accepted ? "accepted" : mapping.reviewReason ?? "review"])}
-          empty="No mappings"
+          columns={["Ticker", "Status", "Forecast", "Ask", "Edge", "Reason"]}
+          rows={(data.trainingCandidates ?? []).slice(0, 80).map((candidate) => [
+            candidate.marketTicker,
+            statusLabel(candidate.status),
+            forecastText(candidate),
+            price(candidate.entryPrice),
+            formatPct(candidate.edge),
+            candidate.reason
+          ])}
+          empty="No candidates"
         />
       </Disclosure>
-      <div className="quiet-summary">
-        <span>{model.strong.length} strong</span>
-        <span>{model.watch.length} watch</span>
-        <span>{(data.markets ?? []).length} markets</span>
-        <span>{(data.ensembles ?? []).length} forecasts</span>
-        <span>{learning?.collection.quoteSnapshots ?? 0} quote snapshots</span>
-        <span>{learning?.collection.scanReports ?? (data.scanReports ?? []).length} scans</span>
-      </div>
     </section>
   );
 }
 
-function StrategyPanel() {
+function ImprovementSnapshot({ strategy, latest, learning }: { strategy: StrategyDecisionData | null; latest: BacktestSummary | null; learning: DashboardData["learning"] | null }) {
+  const optimizer = strategy?.latestOptimizerReport;
+  const paper = strategy?.latestPaperTradingHealth;
   return (
-    <section className="strategy-panel" aria-label="Paper trading context">
-      <div>
-        <strong>Strong is a signal, not a guarantee.</strong>
-        <p>Use paper results to learn the hit rate before treating a model-approved bet as live-trade worthy.</p>
+    <div className="improvement-copy">
+      <StatusPill tone={paper?.liveEdgeDegraded ? "watch" : optimizer?.status === "completed" ? "good" : "neutral"}>
+        {paper?.liveEdgeDegraded ? "Tightening" : optimizer?.status ?? "Learning"}
+      </StatusPill>
+      <p>{optimizer?.recommendation ?? "Waiting for enough settled paper outcomes before changing thresholds."}</p>
+      <div className="mini-facts">
+        <span>{learning?.collection.candidateSnapshots ?? 0} decisions</span>
+        <span>{learning?.collection.settledPaperTradeExamples ?? 0} settled examples</span>
+        <span>{latestBacktestStatus(strategy?.latestBacktestHealth ?? latest)}</span>
       </div>
-      <div>
-        <strong>Size is capped by risk rules.</strong>
-        <p>The API sizes each paper order from the max paper stake and current ask, then caps it at the per-trade contract limit. Ten contracts is the cap, not always the target.</p>
-      </div>
-      <div>
-        <strong>Bulk or single bet.</strong>
-        <p>Bulk buy attempts the strongest candidates. Row-level Buy refreshes that market and only fills it if it still passes the model.</p>
-      </div>
-    </section>
+    </div>
   );
 }
 
-function CandidateList({ candidates, empty, expanded = false, compact = false, onBuy, buyingTicker }: { candidates: CandidateView[]; empty: string; expanded?: boolean; compact?: boolean; onBuy?: (marketTicker: string) => void; buyingTicker?: string | null }) {
+function FlowStep({ title, value, detail }: { title: string; value: ReactNode; detail: string }) {
+  return (
+    <article className="flow-step">
+      <span>{title}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </article>
+  );
+}
+
+function viewTitle(view: View) {
+  if (view === "decisions") return "Decisions";
+  if (view === "learning") return "Learning";
+  if (view === "ledger") return "Ledger";
+  return "Autonomous overview";
+}
+
+function autonomyLoop(data: DashboardData) {
+  const quote = data.backgroundWorker?.quoteRefresh;
+  if (quote?.running) {
+    return {
+      title: "Reevaluating markets now",
+      detail: `ForecastEdge is refreshing quotes and re-ranking model-approved paper decisions.`
+    };
+  }
+  if (quote?.enabled) {
+    return {
+      title: "Running independently",
+      detail: `ForecastEdge rechecks quotes every ${quote.intervalMinutes} minute${quote.intervalMinutes === 1 ? "" : "s"} and only places paper orders that clear model and risk gates.`
+    };
+  }
+  return {
+    title: "Autonomy paused",
+    detail: "The quote loop is not running, so paper decisions will not update until the worker is enabled or a scan is run."
+  };
+}
+
+function bestPerformanceWindow(windows: PerformanceWindow[]) {
+  return windows
+    .filter((window) => window.score !== null)
+    .sort((a, b) => (b.score ?? -1) - (a.score ?? -1))[0] ?? null;
+}
+
+function scoreLabel(score: number | null) {
+  return score === null ? "n/a" : String(score);
+}
+
+function learningNarrative(strategy: StrategyDecisionData | null, latest: BacktestSummary | null, learning: DashboardData["learning"] | null) {
+  const optimizer = strategy?.latestOptimizerReport;
+  if (optimizer?.recommendation) return optimizer.recommendation;
+  const settled = learning?.collection.settledPaperTradeExamples ?? 0;
+  if (settled < 10) return `Collecting settled paper outcomes before tightening selectivity. ${settled} settled examples are available.`;
+  const status = latestBacktestStatus(strategy?.latestBacktestHealth ?? latest);
+  return `Latest automatic strategy status: ${status}.`;
+}
+
+function CandidateList({ candidates, empty, expanded = false, compact = false }: { candidates: CandidateView[]; empty: string; expanded?: boolean; compact?: boolean }) {
   if (candidates.length === 0) return <EmptyState>{empty}</EmptyState>;
   return (
     <div className={compact ? "candidate-list compact" : "candidate-list"}>
@@ -1157,12 +730,6 @@ function CandidateList({ candidates, empty, expanded = false, compact = false, o
           </div>
           <div className="bet-action">
             <StatusPill tone={candidate.status === "WOULD_BUY" ? "good" : candidate.status === "WATCH" ? "watch" : "neutral"}>{candidate.status === "WOULD_BUY" ? "Strong" : candidate.status === "WATCH" ? "Watch" : "Blocked"}</StatusPill>
-            {onBuy ? (
-              <button className="mini-buy-button" onClick={() => onBuy(candidate.marketTicker)} disabled={buyingTicker !== null}>
-                <ShoppingCart size={14} />
-                {buyingTicker === candidate.marketTicker ? "Buying" : "Buy"}
-              </button>
-            ) : null}
           </div>
         </article>
       ))}
@@ -1660,12 +1227,6 @@ function labelize(value: string) {
   return value.replace(/([A-Z])/g, " $1").replaceAll("_", " ").trim();
 }
 
-function selectionLabel(value: BacktestParameters["selection"]) {
-  if (value === "best_edge") return "Best edge";
-  if (value === "each_signal") return "Every signal";
-  return "First signal";
-}
-
 function valueForVariable(variable: string, value: number) {
   if (variable.includes("temp")) return `${value.toFixed(1)} F`;
   if (variable === "rainfall") return `${value.toFixed(2)} in`;
@@ -1675,17 +1236,6 @@ function valueForVariable(variable: string, value: number) {
 
 function formatPct(value: number | null) {
   return value === null ? "n/a" : `${(value * 100).toFixed(1)}%`;
-}
-
-function formNumber(value: string) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && value.trim() !== "" ? parsed : null;
-}
-
-function dateToEpochSeconds(value: string, endOfDay: boolean) {
-  if (!value) return undefined;
-  const suffix = endOfDay ? "T23:59:59Z" : "T00:00:00Z";
-  return Math.floor(new Date(`${value}${suffix}`).getTime() / 1000);
 }
 
 function price(value: number | null) {

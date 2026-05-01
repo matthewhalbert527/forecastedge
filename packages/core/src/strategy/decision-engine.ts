@@ -27,6 +27,9 @@ export interface StrategyApprovalThresholds {
   maxPaperSlippageDegradation: number;
   maxPaperWinRateDegradation: number;
   maxPaperPnlDegradation: number;
+  minPositiveNetEdgeShare: number;
+  maxCalibrationError: number;
+  minFillAdjustedEdgeCaptureRatio: number;
 }
 
 export const defaultStrategyApprovalThresholds: StrategyApprovalThresholds = {
@@ -44,7 +47,10 @@ export const defaultStrategyApprovalThresholds: StrategyApprovalThresholds = {
   minPaperTrades: 20,
   maxPaperSlippageDegradation: 0.03,
   maxPaperWinRateDegradation: 0.12,
-  maxPaperPnlDegradation: 0.5
+  maxPaperPnlDegradation: 0.5,
+  minPositiveNetEdgeShare: 0.6,
+  maxCalibrationError: 0.16,
+  minFillAdjustedEdgeCaptureRatio: 0.45
 };
 
 export interface StrategyTradeResult {
@@ -62,6 +68,14 @@ export interface StrategyTradeResult {
   variable: string | null;
   targetDate: string | null;
   eventKey: string | null;
+  rawYesProbability?: number | null;
+  calibratedYesProbability?: number | null;
+  impliedProbability?: number | null;
+  grossEdge?: number | null;
+  netEdge?: number | null;
+  qualityScore?: number | null;
+  expectedSlippage?: number | null;
+  actualSlippage?: number | null;
 }
 
 export interface ExpectancyMetrics {
@@ -86,6 +100,11 @@ export interface ExpectancyMetrics {
   maxDrawdown: number;
   longestLosingStreak: number;
   averageLiquidityScore: number | null;
+  averageNetEdge: number | null;
+  positiveNetEdgeShare: number | null;
+  calibrationMeanAbsoluteError: number | null;
+  monotonicQualityDeciles: boolean | null;
+  fillAdjustedEdgeCaptureRatio: number | null;
   singleTradePnlShare: number;
   rareLongShotWin: boolean;
 }
@@ -150,6 +169,8 @@ export interface PaperValidationTrade {
   expectedPnl: number | null;
   actualPnl: number | null;
   expectedWinProbability: number | null;
+  expectedNetEdge?: number | null;
+  qualityScore?: number | null;
   status: "open" | "won" | "lost" | "rejected" | "skipped";
   skippedReason: string | null;
   signalGenerated: boolean;
@@ -173,6 +194,7 @@ export interface PaperValidationSummary {
   signalNoFill: number;
   fillEdgeDisappeared: number;
   liveEdgeDegraded: boolean;
+  edgePreservationByScoreBucket: boolean | null;
   warnings: StrategyWarning[];
 }
 
@@ -232,6 +254,13 @@ export function calculateExpectancyMetrics(
   });
   const equity = buildEquityStats(trades);
   const averageLiquidityScore = average(trades.map((trade) => trade.liquidityScore));
+  const netEdges = trades.map((trade) => trade.netEdge ?? null);
+  const averageNetEdge = average(netEdges);
+  const netEdgeTrades = netEdges.filter((value): value is number => value !== null && Number.isFinite(value));
+  const positiveNetEdgeShare = netEdgeTrades.length > 0 ? netEdgeTrades.filter((value) => value > 0).length / netEdgeTrades.length : null;
+  const calibrationMeanAbsoluteError = calibrationError(trades);
+  const monotonicQualityDeciles = realizedReturnIsMonotonicByQuality(trades);
+  const fillAdjustedEdgeCaptureRatio = edgeCaptureRatio(trades);
   const rareLongShotWin = singleTradePnlShare > thresholds.maxSingleTradePnlShare || outlierAdjustedReturnDrop > thresholds.maxOutlierAdjustedReturnDrop;
 
   return {
@@ -256,6 +285,11 @@ export function calculateExpectancyMetrics(
     maxDrawdown: equity.maxDrawdown,
     longestLosingStreak: equity.longestLosingStreak,
     averageLiquidityScore: averageLiquidityScore === null ? null : round(averageLiquidityScore),
+    averageNetEdge: nullableRound(averageNetEdge),
+    positiveNetEdgeShare: nullableRound(positiveNetEdgeShare),
+    calibrationMeanAbsoluteError: nullableRound(calibrationMeanAbsoluteError),
+    monotonicQualityDeciles,
+    fillAdjustedEdgeCaptureRatio: nullableRound(fillAdjustedEdgeCaptureRatio),
     singleTradePnlShare: round(singleTradePnlShare),
     rareLongShotWin
   };
@@ -391,6 +425,7 @@ export function summarizePaperValidation(
   const pnlDegraded = observedPnlPerTrade !== null && expectedPnlPerTrade !== null && expectedPnlPerTrade > 0 && observedPnlPerTrade < expectedPnlPerTrade * (1 - thresholds.maxPaperPnlDegradation);
   const signalNoFill = trades.filter((trade) => trade.signalGenerated && !trade.filled).length;
   const fillEdgeDisappeared = trades.filter((trade) => trade.edgeDisappeared).length;
+  const edgePreservationByScoreBucket = paperEdgePreservedByScoreBucket(settled);
 
   if (trades.length < thresholds.minPaperTrades) {
     warnings.push({ code: "paper_sample_small", severity: "warning", message: "Paper sample is not large enough for approval." });
@@ -410,6 +445,9 @@ export function summarizePaperValidation(
   if (fillEdgeDisappeared > 0) {
     warnings.push({ code: "fill_edge_disappeared", severity: "warning", message: "Some fills occurred after the modeled edge disappeared." });
   }
+  if (edgePreservationByScoreBucket === false) {
+    warnings.push({ code: "score_bucket_edge_not_preserved", severity: "critical", message: "Higher quality-score paper trades are not preserving edge better than lower-score trades." });
+  }
 
   return {
     paperTrades: trades.length,
@@ -425,7 +463,8 @@ export function summarizePaperValidation(
     skippedTrades: trades.filter((trade) => trade.status === "rejected" || trade.status === "skipped").length,
     signalNoFill,
     fillEdgeDisappeared,
-    liveEdgeDegraded: slippageDegraded || winRateDegraded || pnlDegraded,
+    liveEdgeDegraded: slippageDegraded || winRateDegraded || pnlDegraded || edgePreservationByScoreBucket === false,
+    edgePreservationByScoreBucket,
     warnings
   };
 }
@@ -442,6 +481,10 @@ export function evaluateStrategyApproval(input: {
   const gates: ApprovalGateResult[] = [
     gate("minimum number of trades", input.metrics.totalTrades >= thresholds.minTrades, input.metrics.totalTrades, thresholds.minTrades, "test sample is large enough"),
     gate("positive test-period ROI", input.metrics.roi > thresholds.minTestPeriodRoi, input.metrics.roi, `>${thresholds.minTestPeriodRoi}`, "ROI after fees and slippage must be positive"),
+    qualityGate("positive net EV after spread/slippage", input.metrics.positiveNetEdgeShare, thresholds.minPositiveNetEdgeShare, "most selected trades need positive net edge after execution costs", (actual, threshold) => actual >= threshold),
+    qualityGate("calibration error", input.metrics.calibrationMeanAbsoluteError, thresholds.maxCalibrationError, "calibrated probabilities should be close to realized outcomes", (actual, threshold) => actual <= threshold),
+    gate("quality decile monotonicity", input.metrics.monotonicQualityDeciles !== false, input.metrics.monotonicQualityDeciles === null ? "not available" : input.metrics.monotonicQualityDeciles ? "monotonic" : "not monotonic", "monotonic", "higher quality-score deciles should not realize lower returns"),
+    qualityGate("fill-adjusted edge capture", input.metrics.fillAdjustedEdgeCaptureRatio, thresholds.minFillAdjustedEdgeCaptureRatio, "fills should capture a meaningful share of modeled net edge", (actual, threshold) => actual >= threshold),
     gate("max drawdown limit", input.metrics.maxDrawdown <= thresholds.maxDrawdown, input.metrics.maxDrawdown, thresholds.maxDrawdown, "drawdown stays within risk tolerance"),
     gate("win rate or expectancy", input.metrics.winRate >= thresholds.minWinRate || input.metrics.expectedValuePerTrade > thresholds.minExpectancy, `${input.metrics.winRate}/${input.metrics.expectedValuePerTrade}`, `${thresholds.minWinRate} win rate or EV > ${thresholds.minExpectancy}`, "strategy needs either enough wins or positive expectancy"),
     gate("minimum liquidity", (input.metrics.averageLiquidityScore ?? 0) >= thresholds.minLiquidityScore, input.metrics.averageLiquidityScore, thresholds.minLiquidityScore, "markets must be liquid enough to fill"),
@@ -457,6 +500,7 @@ export function evaluateStrategyApproval(input: {
     const paper = input.paperValidation ?? null;
     gates.push(gate("paper sample", (paper?.paperTrades ?? 0) >= thresholds.minPaperTrades, paper?.paperTrades ?? 0, thresholds.minPaperTrades, "paper validation needs enough fills"));
     gates.push(gate("paper edge preservation", paper ? !paper.liveEdgeDegraded : false, paper ? (paper.liveEdgeDegraded ? "degraded" : "preserved") : "missing", "preserved", "live fills must preserve the backtested edge"));
+    gates.push(gate("paper/live edge preservation by score bucket", paper ? paper.edgePreservationByScoreBucket !== false : false, paper?.edgePreservationByScoreBucket === null ? "not enough data" : paper?.edgePreservationByScoreBucket === false ? "not preserved" : "preserved", "preserved", "higher quality-score paper buckets should preserve edge"));
   }
 
   const failed = gates.filter((item) => !item.passed);
@@ -499,7 +543,7 @@ function explainStrategyRecommendation(
   const paperOnly = status !== "Paper Approved";
   const fragility = overfitting.parameterFragility === "low" ? "nearby checks are not currently fragile" : `parameter fragility is ${overfitting.parameterFragility}`;
   const edge = metrics.expectedValuePerTrade > 0
-    ? `The edge is positive expectancy: ${money(metrics.expectedValuePerTrade)} expected P/L per trade with a ${percent(metrics.winRate)} win rate.`
+    ? `The edge is positive expectancy: ${money(metrics.expectedValuePerTrade)} expected P/L per trade with a ${percent(metrics.winRate)} win rate${metrics.averageNetEdge === null ? "" : ` and ${percent(metrics.averageNetEdge)} average net edge after execution costs`}.`
     : "No durable edge is proven yet because expected value per trade is not positive.";
   const performsBest = metrics.payoffRatio && metrics.payoffRatio > 1
     ? "It performs best when payoff asymmetry is preserved and fills stay close to the expected entry price."
@@ -582,6 +626,50 @@ function feeSensitivityReport(trades: StrategyTradeResult[]): AntiOverfittingRep
   };
 }
 
+function calibrationError(trades: StrategyTradeResult[]) {
+  const scored = trades.filter((trade) => trade.calibratedYesProbability !== null && trade.calibratedYesProbability !== undefined);
+  if (scored.length < 10) return null;
+  return average(scored.map((trade) => Math.abs((trade.calibratedYesProbability ?? 0) - (trade.pnl > 0 ? 1 : 0))));
+}
+
+function realizedReturnIsMonotonicByQuality(trades: StrategyTradeResult[]) {
+  const scored = trades.filter((trade) => trade.qualityScore !== null && trade.qualityScore !== undefined);
+  if (scored.length < 10) return null;
+  const sorted = [...scored].sort((a, b) => (a.qualityScore ?? 0) - (b.qualityScore ?? 0));
+  const bucketCount = Math.min(10, Math.max(2, Math.floor(sorted.length / 5)));
+  const buckets = Array.from({ length: bucketCount }, (_, index) => {
+    const start = Math.floor(index * sorted.length / bucketCount);
+    const end = Math.floor((index + 1) * sorted.length / bucketCount);
+    return sorted.slice(start, end);
+  }).filter((bucket) => bucket.length > 0);
+  const returns = buckets.map((bucket) => average(bucket.map((trade) => trade.roi)) ?? 0);
+  for (let index = 1; index < returns.length; index += 1) {
+    if ((returns[index] ?? 0) + 0.02 < (returns[index - 1] ?? 0)) return false;
+  }
+  return true;
+}
+
+function edgeCaptureRatio(trades: StrategyTradeResult[]) {
+  const qualityTrades = trades.filter((trade) => trade.netEdge !== null && trade.netEdge !== undefined && trade.netEdge > 0);
+  if (qualityTrades.length < 5) return null;
+  const expected = sum(qualityTrades.map((trade) => (trade.netEdge ?? 0) * trade.contracts));
+  if (expected <= 0) return null;
+  return sum(qualityTrades.map((trade) => trade.pnl)) / expected;
+}
+
+function paperEdgePreservedByScoreBucket(trades: PaperValidationTrade[]) {
+  const scored = trades.filter((trade) => trade.qualityScore !== null && trade.qualityScore !== undefined && trade.actualPnl !== null);
+  if (scored.length < 6) return null;
+  const sorted = [...scored].sort((a, b) => (a.qualityScore ?? 0) - (b.qualityScore ?? 0));
+  const midpoint = Math.floor(sorted.length / 2);
+  const low = sorted.slice(0, midpoint);
+  const high = sorted.slice(midpoint);
+  const lowPnl = average(low.map((trade) => trade.actualPnl));
+  const highPnl = average(high.map((trade) => trade.actualPnl));
+  if (lowPnl === null || highPnl === null) return null;
+  return highPnl + 0.01 >= lowPnl;
+}
+
 function largestGroupShare<T>(items: T[], keyFor: (item: T) => string) {
   if (items.length === 0) return 0;
   const counts = new Map<string, number>();
@@ -607,6 +695,11 @@ function largestPositivePnlGroupShare<T>(items: T[], keyFor: (item: T) => string
 
 function gate(name: string, passed: boolean, actual: number | string | null, threshold: number | string, reason: string): ApprovalGateResult {
   return { name, passed, actual, threshold, reason };
+}
+
+function qualityGate(name: string, actual: number | null, threshold: number, reason: string, predicate: (actual: number, threshold: number) => boolean): ApprovalGateResult {
+  if (actual === null) return gate(name, true, "not available", threshold, `${reason}; legacy runs without quality fields are not failed retroactively`);
+  return gate(name, predicate(actual, threshold), actual, threshold, reason);
 }
 
 function average(values: Array<number | null>) {

@@ -1,11 +1,14 @@
 import {
   checkRisk,
   buildEnsembles,
+  computeTradeQuality,
   detectForecastDeltas,
   estimateMarketProbability,
   generateSignal,
   parseKalshiWeatherMarket,
+  buildPaperPositionsFromOrders,
   simulatePaperOrder,
+  summarizePaperPerformanceWindows,
   summarizePaperOrders,
   type KalshiMarketCandidate,
   type MarketMapping,
@@ -23,7 +26,7 @@ import { fetchAccuWeatherDailyForecast } from "../weather/accuweather.js";
 import { fetchNwsLatestStationObservation } from "../weather/nws-station.js";
 import { fetchOpenMeteoForecast } from "../weather/open-meteo.js";
 import { fetchModelForecasts, unavailableModelPoint } from "../weather/model-stack.js";
-import { buildTrainingCandidates } from "./training-candidates.js";
+import { buildTrainingCandidates, type TrainingCandidateConfig } from "./training-candidates.js";
 
 export class ForecastEdgePipeline {
   constructor(
@@ -181,16 +184,13 @@ export class ForecastEdgePipeline {
       });
     }
 
+    const candidateConfig = await this.trainingCandidateConfig();
     this.store.trainingCandidates = buildTrainingCandidates({
       scanId: report.id,
       markets: this.store.markets,
       mappings: this.store.mappings,
       ensembles: this.store.ensembles,
-      config: {
-        minEdge: env.MIN_EDGE_PERCENTAGE_POINTS / 100,
-        maxSpread: activeRiskLimits.maxSpread,
-        minLiquidityScore: activeRiskLimits.minLiquidityScore
-      }
+      config: candidateConfig
     });
     report.counts.trainingCandidates = this.store.trainingCandidates.length;
     for (const candidate of this.store.trainingCandidates.slice(0, 30)) {
@@ -203,7 +203,31 @@ export class ForecastEdgePipeline {
       });
     }
 
+    if (env.APP_MODE === "paper") {
+      await this.placePaperOrdersForCandidates(
+        this.store.trainingCandidates.filter((candidate) => candidate.status === "WOULD_BUY"),
+        report
+      );
+    }
+
     if (env.APP_MODE === "watch") {
+      this.finishReport(report);
+      await this.persist(report);
+      return this.summary();
+    }
+
+    if (env.APP_MODE === "paper") {
+      await this.persist(report);
+      if (this.persistentStore) {
+        const settlementResult = await reconcilePaperSettlements(this.persistentStore, this.audit, report);
+        report.decisions.push({
+          stage: "settlement",
+          itemId: "paper_settlement_run",
+          status: settlementResult.errors > 0 ? "error" : "accepted",
+          reason: `Settlement reconciliation checked ${settlementResult.checked}, settled ${settlementResult.settled}, skipped ${settlementResult.skipped}, errors ${settlementResult.errors}`,
+          metadata: settlementResult
+        });
+      }
       this.finishReport(report);
       await this.persist(report);
       return this.summary();
@@ -221,19 +245,32 @@ export class ForecastEdgePipeline {
       const market = this.store.markets.find((candidate) => candidate.ticker === mapping.marketTicker);
       if (!market) continue;
       const estimate = estimateMarketProbability(mapping, delta, market, { sameDayTempStdDevF: 2, oneDayTempStdDevF: 3, multiDayTempStdDevF: 4.5, minEdge: env.MIN_EDGE_PERCENTAGE_POINTS / 100 });
-      const riskState = {
-        realizedPnlToday: 0,
-        tradesToday: this.store.paperOrders.filter((order) => order.timestamp.slice(0, 10) === new Date().toISOString().slice(0, 10)).length,
-        openExposure: this.store.paperOrders.reduce((sum, order) => sum + (order.simulatedAvgFillPrice ?? 0) * order.filledContracts, 0),
-        openPositions: this.store.paperOrders.filter((order) => order.filledContracts > 0).length,
-        losingStreak: 0,
-        exposureByCity: {},
-        exposureByWeatherType: {}
-      };
       const now = new Date();
+      const entryPrice = market.yesAsk ?? (market.noBid !== null ? 1 - market.noBid : null);
+      const spread = market.yesAsk !== null && market.yesBid !== null ? market.yesAsk - market.yesBid : null;
+      const quality = computeTradeQuality({
+        probability: estimate,
+        entryPrice,
+        spread,
+        liquidityScore: mapping.liquidityScore,
+        config: {
+          minNetEdge: 0.03,
+          minQualityScore: activeRiskLimits.minQualityScore,
+          maxStake: env.MAX_STAKE_PER_TRADE_PAPER,
+          maxContracts: activeRiskLimits.maxContractsPerTrade
+        }
+      });
       const risk = checkRisk(
-        { maxCost: env.MAX_STAKE_PER_TRADE_PAPER, contracts: Math.max(1, Math.floor(env.MAX_STAKE_PER_TRADE_PAPER / Math.max(market.yesAsk ?? 1, 0.01))) },
-        riskState,
+        {
+          maxCost: quality.recommendedStake ?? 0,
+          contracts: quality.recommendedContracts ?? 0,
+          qualityScore: quality.qualityScore,
+          netEdge: quality.netEdge,
+          uncertaintyPenalty: quality.uncertaintyPenalty,
+          fillPenalty: quality.fillPenalty,
+          diversificationPenalty: quality.diversificationPenalty
+        },
+        this.riskState(),
         activeRiskLimits,
         mapping,
         market,
@@ -241,7 +278,14 @@ export class ForecastEdgePipeline {
         now.toISOString(),
         now
       );
-      const signal = generateSignal(delta, market, mapping, estimate, risk, { minEdge: env.MIN_EDGE_PERCENTAGE_POINTS / 100, maxStake: env.MAX_STAKE_PER_TRADE_PAPER, maxLongshotPrice: 0.15 }, now);
+      const signal = generateSignal(delta, market, mapping, estimate, risk, {
+        minEdge: env.MIN_EDGE_PERCENTAGE_POINTS / 100,
+        minNetEdge: 0.03,
+        minQualityScore: activeRiskLimits.minQualityScore,
+        maxStake: env.MAX_STAKE_PER_TRADE_PAPER,
+        maxContracts: activeRiskLimits.maxContractsPerTrade,
+        maxLongshotPrice: 0.15
+      }, now);
       this.store.signals.unshift(signal);
       if (signal.status === "FIRED") {
         report.counts.signalsFired += 1;
@@ -257,39 +301,16 @@ export class ForecastEdgePipeline {
       });
       this.audit.record({ actor: "system", type: signal.status === "FIRED" ? "signal_fired" : "signal_skipped", message: signal.explanation, metadata: signal });
 
-      if (env.APP_MODE === "paper" && signal.status === "FIRED") {
-        const orderBook = await getOrderBook(signal.marketTicker);
-        const order = simulatePaperOrder(signal, orderBook, undefined, now);
-        this.store.paperOrders.unshift(order);
-        report.counts.paperOrders += 1;
-        report.decisions.push({
-          stage: "paper_order",
-          itemId: order.id,
-          status: order.status === "FILLED" ? "filled" : order.status === "PARTIAL" ? "partial" : "rejected",
-          reason: order.reason,
-          metadata: order
-        });
-        this.audit.record({ actor: "system", type: "paper_order", message: `${order.status}: ${order.reason}`, metadata: order });
-      }
     }
 
     await this.persist(report);
-    if (env.APP_MODE === "paper" && this.persistentStore) {
-      const settlementResult = await reconcilePaperSettlements(this.persistentStore, this.audit, report);
-      report.decisions.push({
-        stage: "settlement",
-        itemId: "paper_settlement_run",
-        status: settlementResult.errors > 0 ? "error" : "accepted",
-        reason: `Settlement reconciliation checked ${settlementResult.checked}, settled ${settlementResult.settled}, skipped ${settlementResult.skipped}, errors ${settlementResult.errors}`,
-        metadata: settlementResult
-      });
-    }
     this.finishReport(report);
     await this.persist(report);
     return this.summary();
   }
 
   summary() {
+    const paperPositions = buildPaperPositionsFromOrders(this.store.paperOrders);
     return {
       mode: env.APP_MODE,
       locations: this.store.locations,
@@ -306,7 +327,8 @@ export class ForecastEdgePipeline {
       trainingCandidates: this.store.trainingCandidates.slice(0, 100),
       modelForecasts: this.store.modelForecasts.slice(0, 100),
       ensembles: this.store.ensembles.slice(0, 100),
-      performance: summarizePaperOrders(this.store.paperOrders),
+      performance: summarizePaperOrders(this.store.paperOrders, paperPositions),
+      performanceWindows: summarizePaperPerformanceWindows(paperPositions),
       learning: {
         collection: {
           quoteSnapshots: 0,
@@ -479,6 +501,7 @@ export class ForecastEdgePipeline {
 
   async refreshQuoteCandidates(trigger: "manual" | "quote_refresh" = "manual") {
     const report = this.store.startScan(trigger);
+    const candidateConfig = await this.trainingCandidateConfig();
     const existingCandidates = this.store.trainingCandidates.length > 0
       ? this.store.trainingCandidates
       : buildTrainingCandidates({
@@ -486,7 +509,7 @@ export class ForecastEdgePipeline {
         markets: this.store.markets,
         mappings: this.store.mappings,
         ensembles: this.store.ensembles,
-        config: trainingCandidateConfig()
+        config: candidateConfig
       });
     const candidateTickers = existingCandidates
       .filter((candidate) => candidate.status === "WOULD_BUY" || candidate.status === "WATCH")
@@ -531,7 +554,7 @@ export class ForecastEdgePipeline {
       markets: this.store.markets,
       mappings: this.store.mappings,
       ensembles: this.store.ensembles,
-      config: trainingCandidateConfig()
+      config: candidateConfig
     });
     report.counts.trainingCandidates = this.store.trainingCandidates.length;
 
@@ -588,7 +611,7 @@ export class ForecastEdgePipeline {
           markets: this.store.markets,
           mappings: this.store.mappings,
           ensembles: this.store.ensembles,
-          config: trainingCandidateConfig()
+          config: await this.trainingCandidateConfig()
         });
         report.counts.trainingCandidates = this.store.trainingCandidates.length;
 
@@ -651,7 +674,7 @@ export class ForecastEdgePipeline {
 
   private async placePaperOrdersForCandidates(candidates: TrainingCandidate[], report: ReturnType<MemoryStore["startScan"]>, maxOrders = env.QUOTE_REFRESH_MAX_PAPER_ORDERS) {
     let placed = 0;
-    for (const candidate of candidates) {
+    for (const candidate of rankPurchaseCandidates(candidates)) {
       if (placed >= maxOrders) break;
       if (this.hasPaperExposure(candidate.marketTicker)) {
         report.decisions.push({ stage: "paper_order", itemId: candidate.marketTicker, status: "skipped", reason: "Already holding a filled paper position for this market", metadata: { trainingCandidate: candidate } });
@@ -659,16 +682,19 @@ export class ForecastEdgePipeline {
       }
       const mapping = this.store.mappings.find((item) => item.marketTicker === candidate.marketTicker);
       const market = this.store.markets.find((item) => item.ticker === candidate.marketTicker);
-      if (!mapping || !market || candidate.entryPrice === null || candidate.edge === null) {
+      if (!mapping || !market || candidate.entryPrice === null || candidate.netEdge === null || candidate.qualityScore === null) {
         report.decisions.push({ stage: "paper_order", itemId: candidate.marketTicker, status: "skipped", reason: "Incomplete candidate data; cannot size paper order", metadata: { trainingCandidate: candidate, mapping, market } });
+        continue;
+      }
+      if ((candidate.recommendedContracts ?? 0) <= 0) {
+        report.decisions.push({ stage: "paper_order", itemId: candidate.marketTicker, status: "skipped", reason: "Quality sizing recommended no fillable contracts", metadata: { trainingCandidate: candidate } });
         continue;
       }
 
       const now = new Date();
-      const contracts = Math.max(1, Math.min(activeRiskLimits.maxContractsPerTrade, Math.floor(env.MAX_STAKE_PER_TRADE_PAPER / Math.max(candidate.entryPrice, 0.01))));
-      const signal = candidateSignal(candidate, contracts, now);
+      const signal = candidateSignal(candidate, now);
       const risk = checkRisk(
-        { maxCost: signal.maxCost, contracts: signal.contracts },
+        signal,
         this.riskState(),
         activeRiskLimits,
         mapping,
@@ -713,14 +739,29 @@ export class ForecastEdgePipeline {
   private riskState() {
     const today = new Date().toISOString().slice(0, 10);
     const filledOrders = this.store.paperOrders.filter((order) => order.filledContracts > 0);
+    const exposureByCity: Record<string, number> = {};
+    const exposureByWeatherType: Record<string, number> = {};
+    const exposureByCorrelationKey: Record<string, number> = {};
+    for (const order of filledOrders) {
+      const mapping = this.store.mappings.find((item) => item.marketTicker === order.marketTicker);
+      const market = this.store.markets.find((item) => item.ticker === order.marketTicker);
+      const cost = (order.simulatedAvgFillPrice ?? order.limitPrice) * order.filledContracts;
+      const city = mapping?.location?.city ?? "unknown";
+      const variable = mapping?.variable ?? "unknown";
+      const correlationKey = `${city}:${mapping?.targetDate ?? "unknown"}:${variable}:${market?.eventTicker ?? order.marketTicker}`;
+      exposureByCity[city] = (exposureByCity[city] ?? 0) + cost;
+      exposureByWeatherType[variable] = (exposureByWeatherType[variable] ?? 0) + cost;
+      exposureByCorrelationKey[correlationKey] = (exposureByCorrelationKey[correlationKey] ?? 0) + cost;
+    }
     return {
       realizedPnlToday: 0,
       tradesToday: this.store.paperOrders.filter((order) => order.timestamp.slice(0, 10) === today).length,
       openExposure: filledOrders.reduce((sum, order) => sum + (order.simulatedAvgFillPrice ?? order.limitPrice) * order.filledContracts, 0),
       openPositions: new Set(filledOrders.map((order) => `${order.marketTicker}:${order.side}`)).size,
       losingStreak: 0,
-      exposureByCity: {},
-      exposureByWeatherType: {}
+      exposureByCity,
+      exposureByWeatherType,
+      exposureByCorrelationKey
     };
   }
 
@@ -748,18 +789,40 @@ export class ForecastEdgePipeline {
       });
     }
   }
+
+  private async trainingCandidateConfig(): Promise<TrainingCandidateConfig> {
+    const base = baseTrainingCandidateConfig();
+    return this.persistentStore ? this.persistentStore.learnedTrainingCandidateConfig(base) : base;
+  }
 }
 
-function trainingCandidateConfig() {
+function baseTrainingCandidateConfig(): TrainingCandidateConfig {
   return {
     minEdge: env.MIN_EDGE_PERCENTAGE_POINTS / 100,
+    minNetEdge: 0.03,
+    minQualityScore: activeRiskLimits.minQualityScore,
     maxSpread: activeRiskLimits.maxSpread,
-    minLiquidityScore: activeRiskLimits.minLiquidityScore
+    minLiquidityScore: activeRiskLimits.minLiquidityScore,
+    maxStake: env.MAX_STAKE_PER_TRADE_PAPER,
+    maxContracts: activeRiskLimits.maxContractsPerTrade
   };
 }
 
-function candidateSignal(candidate: TrainingCandidate, contracts: number, now: Date): Signal {
+function rankPurchaseCandidates(candidates: TrainingCandidate[]) {
+  return [...candidates].sort((a, b) => purchaseScore(b) - purchaseScore(a));
+}
+
+function purchaseScore(candidate: TrainingCandidate) {
+  const quality = candidate.qualityScore ?? -1;
+  const netEdge = candidate.netEdge ?? -1;
+  const liquidity = candidate.liquidityScore ?? 0;
+  const spread = candidate.spread ?? 0.5;
+  return quality * 10_000 + netEdge * 100 + liquidity - spread;
+}
+
+function candidateSignal(candidate: TrainingCandidate, now: Date): Signal {
   const limitPrice = candidate.entryPrice ?? 1;
+  const contracts = Math.max(0, Math.min(activeRiskLimits.maxContractsPerTrade, candidate.recommendedContracts ?? 0));
   return {
     id: `quote_signal_${candidate.marketTicker}_${now.getTime()}`,
     marketTicker: candidate.marketTicker,
@@ -768,9 +831,24 @@ function candidateSignal(candidate: TrainingCandidate, contracts: number, now: D
     contracts,
     limitPrice,
     maxCost: Number((contracts * limitPrice).toFixed(4)),
-    edge: candidate.edge ?? 0,
+    edge: candidate.grossEdge ?? candidate.edge ?? 0,
+    rawYesProbability: candidate.rawYesProbability ?? null,
+    calibratedYesProbability: candidate.calibratedYesProbability ?? candidate.yesProbability ?? null,
+    grossEdge: candidate.grossEdge ?? candidate.edge ?? null,
+    expectedSlippage: candidate.expectedSlippage ?? null,
+    spreadPenalty: candidate.spreadPenalty ?? null,
+    feePenalty: candidate.feePenalty ?? null,
+    netEdge: candidate.netEdge ?? null,
+    uncertaintyPenalty: candidate.uncertaintyPenalty ?? null,
+    fillPenalty: candidate.fillPenalty ?? null,
+    diversificationPenalty: candidate.diversificationPenalty ?? null,
+    qualityScore: candidate.qualityScore ?? null,
+    kellyFraction: candidate.kellyFraction ?? null,
+    recommendedStake: candidate.recommendedStake ?? null,
+    recommendedContracts: candidate.recommendedContracts ?? null,
+    rankingReason: candidate.rankingReason ?? null,
     confidence: "medium",
-    explanation: `Quote refresh would buy ${candidate.marketTicker}: ${candidate.reason}`,
+    explanation: `Quote refresh would buy ${candidate.marketTicker}: ${candidate.reason}. Final size ${contracts} contracts / $${(contracts * limitPrice).toFixed(2)}.`,
     status: "FIRED",
     skipReason: null,
     linkedDeltaId: candidate.id,

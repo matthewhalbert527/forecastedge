@@ -1,4 +1,12 @@
-import type { PaperOrder, PaperPerformanceSummary, PaperPosition, Settlement } from "../types.js";
+import type { PaperOrder, PaperPerformanceSummary, PaperPerformanceWindowSummary, PaperPosition, Settlement } from "../types.js";
+
+export const defaultPaperPerformanceWindows: Array<Pick<PaperPerformanceWindowSummary, "key" | "label" | "hours">> = [
+  { key: "24h", label: "24 hours", hours: 24 },
+  { key: "3d", label: "3 days", hours: 72 },
+  { key: "7d", label: "7 days", hours: 168 },
+  { key: "14d", label: "2 weeks", hours: 336 },
+  { key: "30d", label: "1 month", hours: 720 }
+];
 
 export function summarizePaperOrders(orders: PaperOrder[], positions: PaperPosition[] = [], settlements: Settlement[] = []): PaperPerformanceSummary {
   const filled = orders.filter((order) => order.filledContracts > 0);
@@ -56,8 +64,57 @@ export function buildPaperPositionsFromOrders(orders: PaperOrder[], settlements:
   });
 }
 
+export function summarizePaperPerformanceWindows(
+  positions: PaperPosition[],
+  windows = defaultPaperPerformanceWindows,
+  now = new Date()
+): PaperPerformanceWindowSummary[] {
+  const settled = positions.filter((position) => position.closedAt);
+  return windows.map((window) => {
+    const since = now.getTime() - window.hours * 60 * 60 * 1000;
+    const windowPositions = settled.filter((position) => {
+      const closedAt = new Date(position.closedAt ?? "").getTime();
+      return Number.isFinite(closedAt) && closedAt >= since && closedAt <= now.getTime();
+    });
+    const wins = windowPositions.filter((position) => position.realizedPnl > 0).length;
+    const losses = windowPositions.filter((position) => position.realizedPnl < 0).length;
+    const totalCost = windowPositions.reduce((sum, position) => sum + position.avgEntryPrice * position.contracts, 0);
+    const totalPnl = windowPositions.reduce((sum, position) => sum + position.realizedPnl, 0);
+    const totalPayout = totalCost + totalPnl;
+    const winRate = windowPositions.length > 0 ? wins / windowPositions.length : null;
+    const positiveProfit = windowPositions.length > 0 ? totalPnl > 0 : null;
+    return {
+      ...window,
+      settledTrades: windowPositions.length,
+      wins,
+      losses,
+      winRate: roundNullable(winRate),
+      totalCost: roundMoney(totalCost),
+      totalPayout: roundMoney(totalPayout),
+      totalPnl: roundMoney(totalPnl),
+      roi: totalCost > 0 ? roundNullable(totalPnl / totalCost) : null,
+      positiveProfit,
+      score: scorePredictionWindow(winRate, totalPnl, windowPositions.length)
+    };
+  });
+}
+
 export function settlementPayout(side: PaperPosition["side"], result: Settlement["result"], contracts: number) {
   return (side.toLowerCase() === result ? contracts : 0);
+}
+
+function scorePredictionWindow(winRate: number | null, totalPnl: number, settledTrades: number) {
+  if (settledTrades === 0 || winRate === null) return null;
+  const profitScore = totalPnl > 0 ? 1 : totalPnl === 0 ? 0.5 : 0;
+  return Math.round((winRate * 0.7 + profitScore * 0.3) * 100);
+}
+
+function roundMoney(value: number) {
+  return Number(value.toFixed(2));
+}
+
+function roundNullable(value: number | null) {
+  return value === null ? null : Number(value.toFixed(4));
 }
 
 function computeMaxDrawdown(closed: PaperPosition[]) {
