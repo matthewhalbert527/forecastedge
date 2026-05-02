@@ -128,7 +128,24 @@ export class PersistentStore {
 
   async dashboardSummary(fallback: MemoryStore) {
     const performanceWindowSince = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
-    const scanReports = await this.prisma.scanReport.findMany({ orderBy: { startedAt: "desc" }, take: 20 });
+    const scanReports = await this.prisma.scanReport.findMany({
+      orderBy: { startedAt: "desc" },
+      take: 20,
+      select: {
+        id: true,
+        startedAt: true,
+        completedAt: true,
+        status: true,
+        trigger: true,
+        counts: true
+      }
+    });
+    const latestScanDetails = scanReports[0]
+      ? await this.prisma.scanReport.findUnique({
+          where: { id: scanReports[0].id },
+          select: { id: true, providerResults: true, decisions: true }
+        })
+      : null;
     const snapshots = await this.prisma.forecastSnapshot.findMany({ include: { location: true }, orderBy: { createdAt: "desc" }, take: 10 });
     const stationObservations = await this.prisma.stationObservation.findMany({ orderBy: { observedAt: "desc" }, take: 20 });
     const deltas = await this.prisma.forecastDelta.findMany({ orderBy: { createdAt: "desc" }, take: 50 });
@@ -198,9 +215,9 @@ export class PersistentStore {
         completedAt: scan.completedAt?.toISOString() ?? null,
         status: scan.status,
         trigger: scan.trigger,
-        providerResults: scan.providerResults,
+        providerResults: latestScanDetails?.id === scan.id ? scanProviderResults(latestScanDetails.providerResults) : [],
         counts: scan.counts,
-        decisions: scan.decisions
+        decisions: latestScanDetails?.id === scan.id ? scanDecisions(latestScanDetails.decisions) : []
       })),
       forecastSnapshots: snapshots.map((snapshot) => ({
         id: snapshot.id,
@@ -2852,6 +2869,46 @@ function jsonArray(value: unknown): unknown[] {
 function numberField(record: Record<string, unknown> | null, key: string) {
   const value = record?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function scanProviderResults(value: unknown) {
+  return jsonArray(value)
+    .map(jsonRecord)
+    .filter((result): result is Record<string, unknown> => result !== null)
+    .slice(0, 80)
+    .map((result) => ({
+      provider: stringField(result, "provider") ?? "unknown",
+      locationId: stringField(result, "locationId") ?? undefined,
+      status: stringField(result, "status") ?? "unknown",
+      message: truncateText(stringField(result, "message") ?? "", 240),
+      stationId: stringField(result, "stationId") ?? undefined
+    }));
+}
+
+function scanDecisions(value: unknown) {
+  return jsonArray(value)
+    .map(jsonRecord)
+    .filter((decision): decision is Record<string, unknown> => decision !== null)
+    .filter((decision) => {
+      const status = stringField(decision, "status");
+      return status === "error" || status === "rejected";
+    })
+    .slice(0, 80)
+    .map((decision) => ({
+      stage: stringField(decision, "stage") ?? "unknown",
+      itemId: stringField(decision, "itemId") ?? "unknown",
+      status: stringField(decision, "status") ?? "unknown",
+      reason: truncateText(stringField(decision, "reason") ?? "", 240)
+    }));
+}
+
+function stringField(record: Record<string, unknown> | null, key: string) {
+  const value = record?.[key];
+  return typeof value === "string" ? value : null;
+}
+
+function truncateText(value: string, maxLength: number) {
+  return value.length <= maxLength ? value : `${value.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
 function numericCount(value: number | bigint | string) {
