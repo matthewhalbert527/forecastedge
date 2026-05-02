@@ -327,6 +327,7 @@ export class ForecastEdgePipeline {
     const paperPositions = buildPaperPositionsFromOrders(this.store.paperOrders);
     return {
       mode: env.APP_MODE,
+      paperLearningMode: env.APP_MODE === "paper" && env.PAPER_LEARNING_MODE,
       locations: this.store.locations,
       scanReports: this.store.scanReports.slice(0, 20),
       forecastSnapshots: this.store.forecastSnapshots.slice(0, 10),
@@ -370,6 +371,21 @@ export class ForecastEdgePipeline {
           roi: 0
         },
         recentPaperExamples: []
+      },
+      research: {
+        days: 0,
+        totals: {
+          candidateSnapshots: this.store.trainingCandidates.length,
+          paperTrades: this.store.paperOrders.length,
+          settledTrades: 0,
+          wins: 0,
+          losses: 0,
+          totalPnl: 0,
+          roi: null
+        },
+        daily: [],
+        qualityBuckets: [],
+        variables: []
       }
     };
   }
@@ -548,7 +564,7 @@ export class ForecastEdgePipeline {
     const heldTickers = this.store.paperOrders
       .filter((order) => order.filledContracts > 0)
       .map((order) => order.marketTicker);
-    const tickers = [...new Set([...candidateTickers, ...heldTickers])].slice(0, 50);
+    const tickers = [...new Set([...candidateTickers, ...heldTickers])].slice(0, quoteRefreshTickerLimit());
 
     if (tickers.length === 0) {
       report.providerResults.push({ provider: "kalshi_quotes", locationId: "quotes", status: "skipped", message: "No would-buy or watch candidates to refresh yet" });
@@ -840,7 +856,11 @@ function baseTrainingCandidateConfig(): TrainingCandidateConfig {
 }
 
 function paperOrderLimit() {
-  return env.APP_MODE === "paper" && env.PAPER_LEARNING_MODE ? 10_000 : env.QUOTE_REFRESH_MAX_PAPER_ORDERS;
+  return env.APP_MODE === "paper" && env.PAPER_LEARNING_MODE ? Number.MAX_SAFE_INTEGER : env.QUOTE_REFRESH_MAX_PAPER_ORDERS;
+}
+
+function quoteRefreshTickerLimit() {
+  return env.APP_MODE === "paper" && env.PAPER_LEARNING_MODE ? Number.MAX_SAFE_INTEGER : 50;
 }
 
 function rankPurchaseCandidates(candidates: TrainingCandidate[]) {

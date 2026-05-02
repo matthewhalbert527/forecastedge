@@ -69,21 +69,22 @@ export const env = schema.parse(process.env);
 export const listenPort = Number(process.env.PORT ?? env.API_PORT);
 
 const paperLearningMode = env.APP_MODE === "paper" && env.PAPER_LEARNING_MODE;
+const learningModeLargeLimit = 1_000_000;
 
 export const activeRiskLimits = {
   ...defaultRiskLimits,
   maxStakePerTrade: env.MAX_STAKE_PER_TRADE_PAPER,
   maxDailyLoss: env.MAX_DAILY_PAPER_LOSS,
-  maxDailyTrades: paperLearningMode ? 10_000 : env.MAX_DAILY_TRADES,
-  maxOpenExposure: paperLearningMode ? 10_000 : env.MAX_OPEN_PAPER_EXPOSURE,
-  maxExposurePerCity: paperLearningMode ? 10_000 : defaultRiskLimits.maxExposurePerCity,
-  maxExposurePerWeatherType: paperLearningMode ? 10_000 : defaultRiskLimits.maxExposurePerWeatherType,
-  maxOpenPositions: paperLearningMode ? 10_000 : defaultRiskLimits.maxOpenPositions,
+  maxDailyTrades: paperLearningMode ? learningModeLargeLimit : env.MAX_DAILY_TRADES,
+  maxOpenExposure: paperLearningMode ? learningModeLargeLimit : env.MAX_OPEN_PAPER_EXPOSURE,
+  maxExposurePerCity: paperLearningMode ? learningModeLargeLimit : defaultRiskLimits.maxExposurePerCity,
+  maxExposurePerWeatherType: paperLearningMode ? learningModeLargeLimit : defaultRiskLimits.maxExposurePerWeatherType,
+  maxOpenPositions: paperLearningMode ? learningModeLargeLimit : defaultRiskLimits.maxOpenPositions,
   maxSpread: env.MAX_SPREAD,
   maxUncertaintyPenalty: paperLearningMode ? 1 : defaultRiskLimits.maxUncertaintyPenalty,
   maxFillPenalty: paperLearningMode ? 1 : defaultRiskLimits.maxFillPenalty,
   maxDiversificationPenalty: paperLearningMode ? 1 : defaultRiskLimits.maxDiversificationPenalty,
-  maxCorrelationExposure: paperLearningMode ? 10_000 : defaultRiskLimits.maxCorrelationExposure,
+  maxCorrelationExposure: paperLearningMode ? learningModeLargeLimit : defaultRiskLimits.maxCorrelationExposure,
   staleMarketDataSeconds: env.STALE_MARKET_DATA_SECONDS,
   staleForecastDataMinutes: env.STALE_FORECAST_DATA_MINUTES
 };

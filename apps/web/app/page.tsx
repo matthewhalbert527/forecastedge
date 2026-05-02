@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from
 
 type DashboardData = {
   mode: "watch" | "paper" | "demo" | "live";
+  paperLearningMode?: boolean;
   locations: Array<{ id: string; city: string; state: string; pollingIntervalMinutes: number }>;
   forecastDeltas: Array<{ id: string; city: string; state: string; variable: string; targetDate: string; oldValue: number; newValue: number; absoluteChange: number; confidence: string; reason: string; createdAt: string }>;
   markets: Array<{ ticker: string; eventTicker: string; title: string; subtitle?: string | null; closeTime?: string | null; settlementTime?: string | null; yesBid: number | null; yesAsk: number | null; noBid?: number | null; noAsk?: number | null; lastPrice?: number | null; volume: number | null; openInterest: number | null; rawPayload?: unknown }>;
@@ -36,6 +37,7 @@ type DashboardData = {
     backtest: BacktestSummary;
     recentPaperExamples: Array<{ orderId: string; marketTicker: string; openedAt: string; status: string; entryPrice: number | null; contracts: number; cost: number; modelProbability: number | null; impliedProbability: number | null; edge: number | null; settlementResult: string | null; pnl: number | null; roi: number | null }>;
   };
+  research?: ResearchData;
   scanReports: Array<{
     id: string;
     startedAt: string;
@@ -198,7 +200,39 @@ type BacktestTrade = {
   impliedProbabilityMove?: number | null;
 };
 
-type View = "overview" | "decisions" | "learning" | "ledger";
+type ResearchData = {
+  days: number;
+  totals: {
+    candidateSnapshots: number;
+    paperTrades: number;
+    settledTrades: number;
+    wins: number;
+    losses: number;
+    totalPnl: number;
+    roi: number | null;
+  };
+  daily: Array<{
+    date: string;
+    candidateSnapshots: number;
+    wouldBuy: number;
+    watch: number;
+    blocked: number;
+    paperTrades: number;
+    paperCost: number;
+    settledTrades: number;
+    settledCost: number;
+    wins: number;
+    losses: number;
+    totalPnl: number;
+    roi: number | null;
+    winRate: number | null;
+    netCapture: number | null;
+  }>;
+  qualityBuckets: Array<{ bucket: string; trades: number; wins: number; losses: number; totalPnl: number; roi: number | null; winRate: number | null }>;
+  variables: Array<{ variable: string; trades: number; wins: number; losses: number; totalPnl: number; roi: number | null; winRate: number | null }>;
+};
+
+type View = "overview" | "decisions" | "learning" | "research" | "ledger";
 type BusyAction = "scan" | "settle" | null;
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? process.env.WEB_PUBLIC_API_URL ?? "http://localhost:4000";
@@ -231,6 +265,7 @@ const navItems: Array<{ key: View; label: string; icon: typeof Gauge }> = [
   { key: "overview", label: "Overview", icon: Gauge },
   { key: "decisions", label: "Decisions", icon: ListChecks },
   { key: "learning", label: "Learning", icon: BarChart3 },
+  { key: "research", label: "Research", icon: Database },
   { key: "ledger", label: "Ledger", icon: Database }
 ];
 
@@ -331,7 +366,7 @@ export default function Page() {
               <span>{latestScan ? `${labelForTrigger(latestScan.trigger)} at ${time(latestScan.startedAt)}` : "No scan yet"}</span>
               <span>{model.strong.length} strong buys</span>
               <span>{model.openPositions.length} held</span>
-              <span>{data.riskLimits?.maxDailyTrades ?? 30} daily paper cap</span>
+              <span>{data.paperLearningMode ? "learning mode uncapped" : `${data.riskLimits?.maxDailyTrades ?? 30} daily paper cap`}</span>
             </section>
 
             {view === "overview" ? (
@@ -347,6 +382,7 @@ export default function Page() {
 
             {view === "decisions" ? <DecisionsView model={model} /> : null}
             {view === "learning" ? <LearningView strategy={strategy} jobs={data.scheduledJobs ?? []} latest={latestLearning} learning={data.learning ?? null} /> : null}
+            {view === "research" ? <ResearchView data={data} /> : null}
             {view === "ledger" ? <LedgerView data={data} model={model} performance={performance} settleAction={() => runAction("settle", "/api/settlements/run-once")} busy={busyAction === "settle"} /> : null}
           </>
         ) : null}
@@ -562,6 +598,111 @@ function LearningView({ strategy, jobs, latest, learning }: { strategy: Strategy
   );
 }
 
+function ResearchView({ data }: { data: DashboardData }) {
+  const research = data.research;
+  const recentDaily = (research?.daily ?? []).slice(-14).reverse();
+  return (
+    <section className="stack details-stack">
+      <section className="section-head simple-head">
+        <div>
+          <h3>Research dashboard</h3>
+          <p>
+            {data.paperLearningMode
+              ? "Paper learning mode is removing trade-count throttles and refreshing the full candidate set so the model can collect more outcomes."
+              : "Research metrics are based on persisted candidate snapshots and paper outcomes."}
+          </p>
+        </div>
+        <BarChart3 size={22} />
+      </section>
+      <section className="page-grid">
+        <Metric label="Lookback" value={`${research?.days ?? 0}d`} detail="persisted research window" />
+        <Metric label="Candidates" value={research?.totals.candidateSnapshots ?? 0} detail="candidate snapshots captured" />
+        <Metric label="Paper trades" value={research?.totals.paperTrades ?? 0} detail="orders converted into training examples" />
+        <Metric label="Settled trades" value={research?.totals.settledTrades ?? 0} detail="examples available for evaluation" />
+      </section>
+      <section className="page-grid">
+        <Metric label="Wins" value={research?.totals.wins ?? 0} detail="settled YES outcomes" />
+        <Metric label="Losses" value={research?.totals.losses ?? 0} detail="settled NO outcomes" />
+        <Metric label="Settled P/L" value={money(research?.totals.totalPnl ?? 0)} detail="realized paper result in window" />
+        <Metric label="Settled ROI" value={formatPct(research?.totals.roi ?? null)} detail="P/L divided by settled cost" />
+      </section>
+      <section className="overview-columns">
+        <Panel title="Daily capture">
+          <SimpleTable
+            columns={["Date", "Candidates", "Strong", "Paper", "Settled", "Win rate", "P/L"]}
+            rows={recentDaily.map((row) => [
+              row.date,
+              String(row.candidateSnapshots),
+              String(row.wouldBuy),
+              String(row.paperTrades),
+              String(row.settledTrades),
+              formatPct(row.winRate),
+              money(row.totalPnl)
+            ])}
+            empty="No daily research rows yet"
+          />
+        </Panel>
+        <Panel title="Quality buckets">
+          <SimpleTable
+            columns={["Bucket", "Trades", "Win rate", "ROI", "P/L"]}
+            rows={(research?.qualityBuckets ?? []).map((bucket) => [
+              bucket.bucket,
+              String(bucket.trades),
+              formatPct(bucket.winRate),
+              formatPct(bucket.roi),
+              money(bucket.totalPnl)
+            ])}
+            empty="No settled quality buckets yet"
+          />
+        </Panel>
+        <Panel title="Variable performance">
+          <SimpleTable
+            columns={["Variable", "Trades", "Win rate", "ROI", "P/L"]}
+            rows={(research?.variables ?? []).slice(0, 8).map((row) => [
+              labelize(row.variable),
+              String(row.trades),
+              formatPct(row.winRate),
+              formatPct(row.roi),
+              money(row.totalPnl)
+            ])}
+            empty="No settled variable rows yet"
+          />
+        </Panel>
+        <Panel title="Learning controls">
+          <SimpleTable
+            columns={["Control", "Value"]}
+            rows={[
+              ["Paper learning mode", data.paperLearningMode ? "enabled" : "disabled"],
+              ["Daily trade cap", data.paperLearningMode ? "uncapped for learning" : String(data.riskLimits?.maxDailyTrades ?? 0)],
+              ["Open position cap", data.paperLearningMode ? "uncapped for learning" : String(data.riskLimits?.maxOpenPositions ?? 0)],
+              ["Quote refresh orders", data.paperLearningMode ? "uncapped for learning" : "standard"],
+              ["Per-trade paper stake", money(data.riskLimits?.maxStakePerTrade ?? 0)]
+            ]}
+            empty="No learning controls"
+          />
+        </Panel>
+      </section>
+      <Disclosure title="Daily research rows">
+        <SimpleTable
+          columns={["Date", "Candidates", "Watch", "Blocked", "Paper", "Capture", "Settled", "ROI", "P/L"]}
+          rows={(research?.daily ?? []).slice().reverse().map((row) => [
+            row.date,
+            String(row.candidateSnapshots),
+            String(row.watch),
+            String(row.blocked),
+            String(row.paperTrades),
+            formatPct(row.netCapture),
+            String(row.settledTrades),
+            formatPct(row.roi),
+            money(row.totalPnl)
+          ])}
+          empty="No research rows yet"
+        />
+      </Disclosure>
+    </section>
+  );
+}
+
 function LedgerView({ data, model, performance, settleAction, busy }: { data: DashboardData; model: DashboardModel; performance: DashboardData["performance"]; settleAction: () => void; busy: boolean }) {
   const analytics = resultAnalytics(model.results);
   const latestScan = data.scanReports[0] ?? null;
@@ -668,6 +809,7 @@ function FlowStep({ title, value, detail }: { title: string; value: ReactNode; d
 function viewTitle(view: View) {
   if (view === "decisions") return "Decisions";
   if (view === "learning") return "Learning";
+  if (view === "research") return "Research";
   if (view === "ledger") return "Ledger";
   return "Autonomous overview";
 }
@@ -962,7 +1104,7 @@ function useDashboardModel(data: DashboardData | null) {
 function buildDashboardModel(data: DashboardData | null) {
   const mappings = new Map((data?.mappings ?? []).map((mapping) => [mapping.marketTicker, mapping]));
   const markets = new Map((data?.markets ?? []).map((market) => [market.ticker, market]));
-  const candidates = [...(data?.trainingCandidates ?? [])].sort((a, b) => (b.edge ?? -1) - (a.edge ?? -1));
+  const candidates = [...(data?.trainingCandidates ?? [])].sort((a, b) => (b.qualityScore ?? b.edge ?? -1) - (a.qualityScore ?? a.edge ?? -1));
   const settlements = new Map((data?.settlements ?? []).map((settlement) => [settlement.marketTicker, settlement]));
   const positions = data ? paperPositions(data.paperPositions ?? [], data.paperOrders ?? [], settlements) : [];
   const openPositionTickers = new Set(positions.filter((position) => !position.closedAt).map((position) => position.marketTicker));

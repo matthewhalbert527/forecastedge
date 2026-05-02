@@ -180,9 +180,10 @@ export class PersistentStore {
       config: candidateConfig
     });
 
-    const [learning, strategyDecisionEngine] = await Promise.all([
+    const [learning, strategyDecisionEngine, research] = await Promise.all([
       this.learningSummary(),
-      this.strategyDecisionDashboard()
+      this.strategyDecisionDashboard(),
+      this.researchDashboard()
     ]);
 
     return {
@@ -222,6 +223,7 @@ export class PersistentStore {
       performance: summarizePaperOrders(typedOrders, typedPositions, typedSettlements),
       performanceWindows: summarizePaperPerformanceWindows(typedPerformancePositions),
       learning,
+      research,
       strategyDecisionEngine,
       auditLogs: auditLogs.map((log) => ({
         id: log.id,
@@ -390,6 +392,94 @@ export class PersistentStore {
         latestHistoricalTradeAt: latestHistoricalTrade?.createdTime.toISOString() ?? null
       },
       warningsRequiringReview: warnings
+    };
+  }
+
+  async researchDashboard(days = 30) {
+    const lookbackDays = Math.max(7, Math.min(90, Math.floor(days)));
+    const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+    const [candidateSnapshots, paperExamples] = await Promise.all([
+      this.prisma.candidateDecisionSnapshot.findMany({
+        where: { observedAt: { gte: since } },
+        orderBy: { observedAt: "asc" },
+        select: { observedAt: true, status: true }
+      }),
+      this.prisma.paperTradeTrainingExample.findMany({
+        where: { OR: [{ openedAt: { gte: since } }, { settledAt: { gte: since } }] },
+        orderBy: { openedAt: "asc" },
+        select: {
+          openedAt: true,
+          settledAt: true,
+          status: true,
+          cost: true,
+          pnl: true,
+          roi: true,
+          qualityScore: true,
+          variable: true
+        }
+      })
+    ]);
+
+    const daily = buildResearchDailyRows(lookbackDays);
+    const dailyByDate = new Map(daily.map((row) => [row.date, row]));
+
+    for (const snapshot of candidateSnapshots) {
+      const row = dailyByDate.get(chicagoDateKey(snapshot.observedAt));
+      if (!row) continue;
+      row.candidateSnapshots += 1;
+      if (snapshot.status === "WOULD_BUY") row.wouldBuy += 1;
+      else if (snapshot.status === "WATCH") row.watch += 1;
+      else row.blocked += 1;
+    }
+
+    const settledExamples = paperExamples.filter((example) => example.status === "won" || example.status === "lost");
+
+    for (const example of paperExamples) {
+      const openedRow = dailyByDate.get(chicagoDateKey(example.openedAt));
+      if (openedRow) {
+        openedRow.paperTrades += 1;
+        openedRow.paperCost += example.cost;
+      }
+      if (!example.settledAt || (example.status !== "won" && example.status !== "lost")) continue;
+      const settledRow = dailyByDate.get(chicagoDateKey(example.settledAt));
+      if (!settledRow) continue;
+      settledRow.settledTrades += 1;
+      settledRow.settledCost += example.cost;
+      settledRow.totalPnl += example.pnl ?? 0;
+      if (example.status === "won") settledRow.wins += 1;
+      if (example.status === "lost") settledRow.losses += 1;
+    }
+
+    for (const row of daily) {
+      row.paperCost = Number(row.paperCost.toFixed(2));
+      row.settledCost = Number(row.settledCost.toFixed(2));
+      row.totalPnl = Number(row.totalPnl.toFixed(2));
+      row.roi = row.settledCost > 0 ? Number((row.totalPnl / row.settledCost).toFixed(4)) : null;
+      row.winRate = row.settledTrades > 0 ? Number((row.wins / row.settledTrades).toFixed(4)) : null;
+      row.netCapture = row.candidateSnapshots > 0 ? Number((row.paperTrades / row.candidateSnapshots).toFixed(4)) : null;
+    }
+
+    const qualityBuckets = buildQualityResearchBuckets(settledExamples);
+    const variables = buildVariableResearchRows(settledExamples);
+    const settledCost = settledExamples.reduce((sum, example) => sum + example.cost, 0);
+    const totalPnl = settledExamples.reduce((sum, example) => sum + (example.pnl ?? 0), 0);
+    const wins = settledExamples.filter((example) => example.status === "won").length;
+    const losses = settledExamples.filter((example) => example.status === "lost").length;
+
+    return {
+      days: lookbackDays,
+      totals: {
+        candidateSnapshots: candidateSnapshots.length,
+        paperTrades: paperExamples.length,
+        settledTrades: settledExamples.length,
+        wins,
+        losses,
+        totalPnl: Number(totalPnl.toFixed(2)),
+        roi: settledCost > 0 ? Number((totalPnl / settledCost).toFixed(4)) : null
+      },
+      daily,
+      qualityBuckets,
+      variables
     };
   }
 
@@ -3337,6 +3427,126 @@ function fromPrismaEnsemble(ensemble: {
     reason: ensemble.reason,
     createdAt: ensemble.createdAt.toISOString()
   };
+}
+
+function buildResearchDailyRows(days: number) {
+  const rows: Array<{
+    date: string;
+    candidateSnapshots: number;
+    wouldBuy: number;
+    watch: number;
+    blocked: number;
+    paperTrades: number;
+    paperCost: number;
+    settledTrades: number;
+    settledCost: number;
+    wins: number;
+    losses: number;
+    totalPnl: number;
+    roi: number | null;
+    winRate: number | null;
+    netCapture: number | null;
+  }> = [];
+
+  for (let offset = days - 1; offset >= 0; offset -= 1) {
+    const date = new Date();
+    date.setUTCDate(date.getUTCDate() - offset);
+    rows.push({
+      date: chicagoDateKey(date),
+      candidateSnapshots: 0,
+      wouldBuy: 0,
+      watch: 0,
+      blocked: 0,
+      paperTrades: 0,
+      paperCost: 0,
+      settledTrades: 0,
+      settledCost: 0,
+      wins: 0,
+      losses: 0,
+      totalPnl: 0,
+      roi: null,
+      winRate: null,
+      netCapture: null
+    });
+  }
+
+  return rows;
+}
+
+function buildQualityResearchBuckets(examples: Array<{ status: string; cost: number; pnl: number | null; roi: number | null; qualityScore: number | null }>) {
+  const bucketDefs = [
+    { key: "lt10", label: "<10", min: -Infinity, max: 10 },
+    { key: "10to20", label: "10-20", min: 10, max: 20 },
+    { key: "20to30", label: "20-30", min: 20, max: 30 },
+    { key: "30to40", label: "30-40", min: 30, max: 40 },
+    { key: "40to50", label: "40-50", min: 40, max: 50 },
+    { key: "50plus", label: "50+", min: 50, max: Infinity }
+  ];
+  const rows = bucketDefs.map((bucket) => ({
+    bucket: bucket.label,
+    trades: 0,
+    wins: 0,
+    losses: 0,
+    totalPnl: 0,
+    totalCost: 0,
+    roi: null as number | null,
+    winRate: null as number | null
+  }));
+
+  for (const example of examples) {
+    const score = example.qualityScore;
+    if (score === null || score === undefined) continue;
+    const bucketIndex = bucketDefs.findIndex((def) => score >= def.min && score < def.max);
+    if (bucketIndex < 0) continue;
+    const row = rows[bucketIndex];
+    if (!row) continue;
+    row.trades += 1;
+    row.totalCost += example.cost;
+    row.totalPnl += example.pnl ?? 0;
+    if (example.status === "won") row.wins += 1;
+    if (example.status === "lost") row.losses += 1;
+  }
+
+  return rows.map((row) => ({
+    ...row,
+    totalPnl: Number(row.totalPnl.toFixed(2)),
+    roi: row.totalCost > 0 ? Number((row.totalPnl / row.totalCost).toFixed(4)) : null,
+    winRate: row.trades > 0 ? Number((row.wins / row.trades).toFixed(4)) : null
+  }));
+}
+
+function buildVariableResearchRows(examples: Array<{ status: string; cost: number; pnl: number | null; variable: string | null }>) {
+  const grouped = groupBy(
+    examples.filter((example) => example.variable),
+    (example) => String(example.variable)
+  );
+
+  return [...grouped.entries()]
+    .map(([variable, variableExamples]) => {
+      const wins = variableExamples.filter((example) => example.status === "won").length;
+      const losses = variableExamples.filter((example) => example.status === "lost").length;
+      const totalCost = variableExamples.reduce((sum, example) => sum + example.cost, 0);
+      const totalPnl = variableExamples.reduce((sum, example) => sum + (example.pnl ?? 0), 0);
+      return {
+        variable,
+        trades: variableExamples.length,
+        wins,
+        losses,
+        totalPnl: Number(totalPnl.toFixed(2)),
+        roi: totalCost > 0 ? Number((totalPnl / totalCost).toFixed(4)) : null,
+        winRate: variableExamples.length > 0 ? Number((wins / variableExamples.length).toFixed(4)) : null
+      };
+    })
+    .sort((a, b) => b.trades - a.trades || b.totalPnl - a.totalPnl);
+}
+
+function chicagoDateKey(value: Date) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Chicago",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(value);
 }
 
 function optionalDate(value: string | undefined) {

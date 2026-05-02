@@ -47,6 +47,7 @@ export function buildServer() {
     return {
       ...summary,
       mode: env.APP_MODE,
+      paperLearningMode: env.APP_MODE === "paper" && env.PAPER_LEARNING_MODE,
       auditLogs: "auditLogs" in summary ? summary.auditLogs : audit.list(100),
       safety: {
         liveTradingEnabled: env.LIVE_TRADING_ENABLED,
@@ -64,6 +65,7 @@ export function buildServer() {
   app.get("/health", async () => ({
     ok: true,
     mode: env.APP_MODE,
+    paperLearningMode: env.APP_MODE === "paper" && env.PAPER_LEARNING_MODE,
     databaseConfigured: Boolean(process.env.DATABASE_URL),
     persistenceEnabled: Boolean(persistentStore),
     persistenceReason: pipeline.persistenceStatus().reason,
