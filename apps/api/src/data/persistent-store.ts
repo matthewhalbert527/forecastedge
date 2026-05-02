@@ -42,6 +42,11 @@ type CandidateDailyStatusRow = {
   count: number | bigint | string;
 };
 
+type TableCountEstimateRow = {
+  name: string;
+  estimate: number | bigint | string;
+};
+
 export class PersistentStore {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -278,26 +283,36 @@ export class PersistentStore {
   }
 
   async learningSummary() {
-    const quoteSnapshots = await this.prisma.marketQuoteSnapshot.count();
-    const candidateSnapshots = await this.prisma.candidateDecisionSnapshot.count();
-    const paperExamples = await this.prisma.paperTradeTrainingExample.count();
-    const settledPaperExamples = await this.prisma.paperTradeTrainingExample.count({ where: { status: { in: ["won", "lost"] } } });
-    const scanReports = await this.prisma.scanReport.count();
-    const fullScans = await this.prisma.scanReport.count({ where: { trigger: { not: "quote_refresh" } } });
-    const quoteRefreshScans = await this.prisma.scanReport.count({ where: { trigger: "quote_refresh" } });
-    const historicalMarkets = await this.prisma.historicalKalshiMarket.count();
-    const historicalCandlesticks = await this.prisma.kalshiMarketCandlestick.count();
-    const historicalTrades = await this.prisma.kalshiMarketTrade.count();
-    const latestQuote = await this.prisma.marketQuoteSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } });
-    const latestCandidate = await this.prisma.candidateDecisionSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } });
-    const latestFullScan = await this.prisma.scanReport.findFirst({ where: { trigger: { not: "quote_refresh" } }, orderBy: { startedAt: "desc" }, select: { startedAt: true } });
-    const latestQuoteRefresh = await this.prisma.scanReport.findFirst({ where: { trigger: "quote_refresh" }, orderBy: { startedAt: "desc" }, select: { startedAt: true } });
-    const recentExamples = await this.prisma.paperTradeTrainingExample.findMany({ orderBy: { openedAt: "desc" }, take: 20 });
-
-    const latestStoredBacktest = await this.prisma.strategyRun.findFirst({
-      orderBy: { startedAt: "desc" },
-      select: { summary: true }
-    });
+    const [
+      tableCounts,
+      scanTriggerCounts,
+      settledPaperExamples,
+      latestQuote,
+      latestCandidate,
+      latestFullScan,
+      latestQuoteRefresh,
+      recentExamples,
+      latestStoredBacktest
+    ] = await Promise.all([
+      this.dashboardCollectionCountEstimates(),
+      this.prisma.scanReport.groupBy({ by: ["trigger"], _count: { _all: true } }),
+      this.prisma.paperTradeTrainingExample.count({ where: { status: { in: ["won", "lost"] } } }),
+      this.prisma.marketQuoteSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
+      this.prisma.candidateDecisionSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
+      this.prisma.scanReport.findFirst({ where: { trigger: { not: "quote_refresh" } }, orderBy: { startedAt: "desc" }, select: { startedAt: true } }),
+      this.prisma.scanReport.findFirst({ where: { trigger: "quote_refresh" }, orderBy: { startedAt: "desc" }, select: { startedAt: true } }),
+      this.prisma.paperTradeTrainingExample.findMany({ orderBy: { openedAt: "desc" }, take: 20 }),
+      this.prisma.strategyRun.findFirst({ orderBy: { startedAt: "desc" }, select: { summary: true } })
+    ]);
+    const quoteSnapshots = tableCounts.MarketQuoteSnapshot ?? 0;
+    const candidateSnapshots = tableCounts.CandidateDecisionSnapshot ?? 0;
+    const paperExamples = tableCounts.PaperTradeTrainingExample ?? 0;
+    const historicalMarkets = tableCounts.HistoricalKalshiMarket ?? 0;
+    const historicalCandlesticks = tableCounts.KalshiMarketCandlestick ?? 0;
+    const historicalTrades = tableCounts.KalshiMarketTrade ?? 0;
+    const quoteRefreshScans = scanTriggerCounts.find((row) => row.trigger === "quote_refresh")?._count._all ?? 0;
+    const scanReports = scanTriggerCounts.reduce((sum, row) => sum + row._count._all, 0);
+    const fullScans = scanReports - quoteRefreshScans;
     const backtest = lightweightBacktestSummary(jsonRecord(latestStoredBacktest?.summary), candidateSnapshots);
     return {
       collection: {
@@ -333,6 +348,23 @@ export class PersistentStore {
         roi: example.roi
       }))
     };
+  }
+
+  private async dashboardCollectionCountEstimates() {
+    const rows = await this.prisma.$queryRaw<TableCountEstimateRow[]>`
+      SELECT relname AS name, n_live_tup::bigint AS estimate
+      FROM pg_stat_all_tables
+      WHERE schemaname = 'public'
+        AND relname IN (
+          'MarketQuoteSnapshot',
+          'CandidateDecisionSnapshot',
+          'PaperTradeTrainingExample',
+          'HistoricalKalshiMarket',
+          'KalshiMarketCandlestick',
+          'KalshiMarketTrade'
+        )
+    `;
+    return Object.fromEntries(rows.map((row) => [row.name, Math.max(0, Math.round(numericCount(row.estimate))) ])) as Partial<Record<string, number>>;
   }
 
   async learnedTrainingCandidateConfig(base: TrainingCandidateConfig): Promise<TrainingCandidateConfig> {
