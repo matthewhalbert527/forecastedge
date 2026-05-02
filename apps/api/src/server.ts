@@ -57,14 +57,8 @@ export function buildServer() {
     }
   });
 
-  async function buildDashboardResponse() {
-    let summary;
-    try {
-      summary = await pipeline.persistedSummary();
-    } catch (error) {
-      app.log.error({ err: error }, "Persisted dashboard summary failed; returning in-memory fallback");
-      summary = pipeline.summary();
-    }
+  type DashboardSummary = Awaited<ReturnType<ForecastEdgePipeline["persistedSummary"]>>;
+  function decorateDashboardSummary(summary: DashboardSummary) {
     return {
       ...summary,
       mode: env.APP_MODE,
@@ -83,15 +77,32 @@ export function buildServer() {
     };
   }
 
+  async function buildDashboardResponse() {
+    try {
+      return decorateDashboardSummary(await pipeline.persistedSummary());
+    } catch (error) {
+      app.log.error({ err: error }, "Persisted dashboard summary failed; returning in-memory fallback");
+      return buildFallbackDashboardResponse();
+    }
+  }
+
+  function buildFallbackDashboardResponse() {
+    return decorateDashboardSummary(pipeline.summary());
+  }
+
   type DashboardResponse = Awaited<ReturnType<typeof buildDashboardResponse>>;
-  const dashboardCacheTtlMs = 10_000;
+  const dashboardCacheTtlMs = 60_000;
+  const dashboardBuildTimeoutMs = 4_000;
   let dashboardCache: { expiresAt: number; value: DashboardResponse } | null = null;
   let dashboardInFlight: Promise<DashboardResponse> | null = null;
 
   async function dashboardResponse(options: { force?: boolean } = {}) {
     const now = Date.now();
     if (!options.force && dashboardCache && dashboardCache.expiresAt > now) return dashboardCache.value;
-    if (dashboardInFlight) return dashboardInFlight;
+    if (dashboardInFlight) {
+      if (!options.force && dashboardCache) return dashboardCache.value;
+      return withTimeout(dashboardInFlight, buildFallbackDashboardResponse(), dashboardBuildTimeoutMs);
+    }
 
     dashboardInFlight = buildDashboardResponse()
       .then((value) => {
@@ -101,7 +112,8 @@ export function buildServer() {
       .finally(() => {
         dashboardInFlight = null;
       });
-    return dashboardInFlight;
+    if (!options.force && dashboardCache) return dashboardCache.value;
+    return options.force ? dashboardInFlight : withTimeout(dashboardInFlight, buildFallbackDashboardResponse(), dashboardBuildTimeoutMs);
   }
 
   app.get("/health", async () => ({
@@ -263,6 +275,9 @@ export function buildServer() {
       }
     }
     worker.start();
+    void dashboardResponse({ force: true })
+      .then(() => app.log.info("Prewarmed ForecastEdge dashboard cache"))
+      .catch((error) => app.log.error({ err: error }, "ForecastEdge dashboard cache prewarm failed"));
   });
 
   app.addHook("onClose", async () => {
@@ -316,6 +331,22 @@ function requestToken(headers: Record<string, unknown>) {
   if (typeof direct === "string") return direct;
   if (Array.isArray(direct)) return direct[0] ?? "";
   return bearerToken(headers.authorization) ?? "";
+}
+
+function withTimeout<T>(promise: Promise<T>, fallback: T, timeoutMs: number) {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => resolve(fallback), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(error);
+      }
+    );
+  });
 }
 
 function periodParam(value: unknown): 1 | 60 | 1440 {
