@@ -58,7 +58,13 @@ export function buildServer() {
   });
 
   async function buildDashboardResponse() {
-    const summary = await pipeline.persistedSummary();
+    let summary;
+    try {
+      summary = await pipeline.persistedSummary();
+    } catch (error) {
+      app.log.error({ err: error }, "Persisted dashboard summary failed; returning in-memory fallback");
+      summary = pipeline.summary();
+    }
     return {
       ...summary,
       mode: env.APP_MODE,

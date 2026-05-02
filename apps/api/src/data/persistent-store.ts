@@ -34,6 +34,14 @@ import type { KalshiCandlestick, KalshiHistoricalMarket, KalshiTradePrint } from
 
 type PrismaJson = Prisma.InputJsonValue;
 
+const RESEARCH_PAPER_EXAMPLE_LIMIT = 5000;
+
+type CandidateDailyStatusRow = {
+  date: string;
+  status: string;
+  count: number | bigint | string;
+};
+
 export class PersistentStore {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -129,7 +137,7 @@ export class PersistentStore {
     const signals = await this.prisma.signal.findMany({ orderBy: { createdAt: "desc" }, take: 100 });
     const paperOrders = await this.prisma.paperOrder.findMany({ orderBy: { timestamp: "desc" }, take: 100 });
     const positions = await this.prisma.paperPosition.findMany({ orderBy: { openedAt: "desc" }, take: 100 });
-    const performancePositions = await this.prisma.paperPosition.findMany({ where: { closedAt: { gte: performanceWindowSince } }, orderBy: { closedAt: "desc" }, take: 2000 });
+    const performancePositions = await this.prisma.paperPosition.findMany({ where: { closedAt: { gte: performanceWindowSince } }, orderBy: { closedAt: "desc" }, take: 500 });
     const settlements = await this.prisma.settlement.findMany({ orderBy: { createdAt: "desc" }, take: 100 });
     const auditLogs = await this.prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 100 });
     const modelForecasts = await this.prisma.modelForecast.findMany({ orderBy: { createdAt: "desc" }, take: 100 });
@@ -269,7 +277,11 @@ export class PersistentStore {
     const latestQuoteRefresh = await this.prisma.scanReport.findFirst({ where: { trigger: "quote_refresh" }, orderBy: { startedAt: "desc" }, select: { startedAt: true } });
     const recentExamples = await this.prisma.paperTradeTrainingExample.findMany({ orderBy: { openedAt: "desc" }, take: 20 });
 
-    const backtest = await this.backtestStoredWouldBuys();
+    const latestStoredBacktest = await this.prisma.strategyRun.findFirst({
+      orderBy: { startedAt: "desc" },
+      select: { summary: true }
+    });
+    const backtest = lightweightBacktestSummary(jsonRecord(latestStoredBacktest?.summary), candidateSnapshots);
     return {
       collection: {
         quoteSnapshots,
@@ -390,14 +402,20 @@ export class PersistentStore {
   async researchDashboard(days = 30) {
     const lookbackDays = Math.max(7, Math.min(90, Math.floor(days)));
     const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
-    const candidateSnapshots = await this.prisma.candidateDecisionSnapshot.findMany({
-      where: { observedAt: { gte: since } },
-      orderBy: { observedAt: "asc" },
-      select: { observedAt: true, status: true }
-    });
+    const candidateDailyRows = await this.prisma.$queryRaw<CandidateDailyStatusRow[]>`
+      SELECT
+        to_char("observedAt" AT TIME ZONE 'America/Chicago', 'YYYY-MM-DD') AS date,
+        status,
+        COUNT(*)::int AS count
+      FROM "CandidateDecisionSnapshot"
+      WHERE "observedAt" >= ${since}
+      GROUP BY 1, 2
+      ORDER BY 1 ASC
+    `;
     const paperExamples = await this.prisma.paperTradeTrainingExample.findMany({
       where: { OR: [{ openedAt: { gte: since } }, { settledAt: { gte: since } }] },
-      orderBy: { openedAt: "asc" },
+      orderBy: { openedAt: "desc" },
+      take: RESEARCH_PAPER_EXAMPLE_LIMIT,
       select: {
         openedAt: true,
         settledAt: true,
@@ -413,18 +431,20 @@ export class PersistentStore {
     const daily = buildResearchDailyRows(lookbackDays);
     const dailyByDate = new Map(daily.map((row) => [row.date, row]));
 
-    for (const snapshot of candidateSnapshots) {
-      const row = dailyByDate.get(chicagoDateKey(snapshot.observedAt));
+    for (const snapshot of candidateDailyRows) {
+      const row = dailyByDate.get(snapshot.date);
       if (!row) continue;
-      row.candidateSnapshots += 1;
-      if (snapshot.status === "WOULD_BUY") row.wouldBuy += 1;
-      else if (snapshot.status === "WATCH") row.watch += 1;
-      else row.blocked += 1;
+      const count = numericCount(snapshot.count);
+      row.candidateSnapshots += count;
+      if (snapshot.status === "WOULD_BUY") row.wouldBuy += count;
+      else if (snapshot.status === "WATCH") row.watch += count;
+      else row.blocked += count;
     }
 
-    const settledExamples = paperExamples.filter((example) => example.status === "won" || example.status === "lost");
+    const chronologicalPaperExamples = [...paperExamples].reverse();
+    const settledExamples = chronologicalPaperExamples.filter((example) => example.status === "won" || example.status === "lost");
 
-    for (const example of paperExamples) {
+    for (const example of chronologicalPaperExamples) {
       const openedRow = dailyByDate.get(chicagoDateKey(example.openedAt));
       if (openedRow) {
         openedRow.paperTrades += 1;
@@ -459,8 +479,8 @@ export class PersistentStore {
     return {
       days: lookbackDays,
       totals: {
-        candidateSnapshots: candidateSnapshots.length,
-        paperTrades: paperExamples.length,
+        candidateSnapshots: candidateDailyRows.reduce((sum, row) => sum + numericCount(row.count), 0),
+        paperTrades: chronologicalPaperExamples.length,
         settledTrades: settledExamples.length,
         wins,
         losses,
@@ -2832,6 +2852,56 @@ function jsonArray(value: unknown): unknown[] {
 function numberField(record: Record<string, unknown> | null, key: string) {
   const value = record?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function numericCount(value: number | bigint | string) {
+  const parsed = typeof value === "bigint" ? Number(value) : typeof value === "string" ? Number(value) : value;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function lightweightBacktestSummary(summary: Record<string, unknown> | null, candidateSnapshots: number) {
+  const parameters = jsonRecord(summary?.parameters);
+  const expectancy = jsonRecord(summary?.expectancy);
+  const dataQuality = jsonRecord(summary?.dataQuality);
+  const overfitting = jsonRecord(summary?.overfitting);
+  const paperValidation = jsonRecord(summary?.paperValidation);
+  const approval = jsonRecord(summary?.approval);
+  const method = typeof summary?.method === "string"
+    ? `${summary.method} (stored dashboard summary)`
+    : "dashboard summary only; run /api/backtests/run for a full historical replay";
+  const evaluatedMarkets = numberField(summary, "evaluatedMarkets") ?? 0;
+  const wins = numberField(summary, "wins") ?? 0;
+  const losses = numberField(summary, "losses") ?? 0;
+  const totalCost = numberField(summary, "totalCost") ?? 0;
+  const totalPayout = numberField(summary, "totalPayout") ?? 0;
+  const totalPnl = numberField(summary, "totalPnl") ?? 0;
+  const roi = numberField(summary, "roi") ?? 0;
+
+  return serializeJsonSafe({
+    method,
+    parameters: parameters ?? undefined,
+    candidateSnapshots: numberField(summary, "candidateSnapshots") ?? candidateSnapshots,
+    eligibleSnapshots: numberField(summary, "eligibleSnapshots") ?? 0,
+    evaluatedMarkets,
+    wins,
+    losses,
+    winRate: numberField(summary, "winRate") ?? (evaluatedMarkets > 0 ? Number((wins / evaluatedMarkets).toFixed(4)) : 0),
+    totalCost,
+    totalPayout,
+    totalPnl,
+    roi,
+    averageEntryPrice: numberField(summary, "averageEntryPrice"),
+    averageEdge: numberField(summary, "averageEdge"),
+    averageLiquidityScore: numberField(summary, "averageLiquidityScore"),
+    profitFactor: numberField(summary, "profitFactor"),
+    maxDrawdown: numberField(summary, "maxDrawdown") ?? 0,
+    longestLosingStreak: numberField(summary, "longestLosingStreak") ?? 0,
+    expectancy: expectancy ?? undefined,
+    dataQuality: dataQuality ?? undefined,
+    overfitting: overfitting ?? undefined,
+    paperValidation: paperValidation ?? undefined,
+    approval: approval ?? undefined
+  });
 }
 
 function marketWrite(market: KalshiMarketCandidate) {
