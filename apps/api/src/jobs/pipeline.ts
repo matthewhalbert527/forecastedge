@@ -549,7 +549,8 @@ export class ForecastEdgePipeline {
   async refreshQuoteCandidates(trigger: "manual" | "quote_refresh" = "manual") {
     const report = this.store.startScan(trigger);
     const candidateConfig = await this.trainingCandidateConfig();
-    const existingCandidates = this.store.trainingCandidates.length > 0
+    const candidateSource = this.store.trainingCandidates.length > 0 ? "stored_candidates" : "derived_candidates";
+    const existingCandidates = candidateSource === "stored_candidates"
       ? this.store.trainingCandidates
       : buildTrainingCandidates({
         scanId: report.id,
@@ -571,7 +572,18 @@ export class ForecastEdgePipeline {
       report.counts.trainingCandidates = existingCandidates.length;
       this.finishReport(report);
       await this.persist(report);
-      return { refreshedMarkets: 0, wouldBuy: 0, paperOrders: 0, summary: this.summary() };
+      return {
+        trigger,
+        candidateSource,
+        tickersConsidered: 0,
+        tickersRefreshed: 0,
+        refreshedMarkets: 0,
+        wouldBuy: 0,
+        watch: 0,
+        paperOrders: 0,
+        errors: 0,
+        summary: this.summary()
+      };
     }
 
     const refreshedMarkets: KalshiMarketCandidate[] = [];
@@ -607,6 +619,7 @@ export class ForecastEdgePipeline {
 
     const refreshedTickerSet = new Set(tickers);
     const wouldBuy = this.store.trainingCandidates.filter((candidate) => refreshedTickerSet.has(candidate.marketTicker) && candidate.status === "WOULD_BUY");
+    const watch = this.store.trainingCandidates.filter((candidate) => refreshedTickerSet.has(candidate.marketTicker) && candidate.status === "WATCH");
     for (const candidate of wouldBuy.slice(0, 30)) {
       report.decisions.push({
         stage: "training_candidate",
@@ -623,10 +636,17 @@ export class ForecastEdgePipeline {
 
     this.finishReport(report);
     await this.persist(report);
+    const errors = report.providerResults.filter((result) => result.provider === "kalshi_quotes" && result.status === "error").length;
     return {
+      trigger,
+      candidateSource,
+      tickersConsidered: tickers.length,
+      tickersRefreshed: refreshedMarkets.length,
       refreshedMarkets: refreshedMarkets.length,
       wouldBuy: wouldBuy.length,
+      watch: watch.length,
       paperOrders: report.counts.paperOrders,
+      errors,
       summary: this.summary()
     };
   }

@@ -32,9 +32,17 @@ services:
       - key: QUOTE_REFRESH_INTERVAL_MINUTES
         value: "5"
       - key: QUOTE_REFRESH_MAX_TICKERS
-        value: "25"
+        value: "40"
       - key: QUOTE_REFRESH_MAX_PAPER_ORDERS
-        value: "3"
+        value: "10"
+      - key: RUN_LEARNING_CYCLE_WORKER
+        value: "true"
+      - key: LEARNING_CYCLE_INTERVAL_MINUTES
+        value: "360"
+      - key: LEARNING_CYCLE_MIN_SETTLED_EXAMPLES
+        value: "10"
+      - key: LEARNING_CYCLE_BACKTEST_LOOKBACK_DAYS
+        value: "30"
       - key: FORECASTEDGE_API_TOKEN
         sync: false
       - key: CORS_ALLOWED_ORIGINS
@@ -43,6 +51,8 @@ services:
         sync: false
       - key: STRATEGY_OPTIMIZER_SELECTION_GRID
         value: first_signal,best_quality,best_edge
+      - key: STRATEGY_OPTIMIZER_MAX_RUNS
+        value: "8"
       - key: RESEND_API_KEY
         sync: false
       - key: DAILY_REPORT_EMAIL_TO

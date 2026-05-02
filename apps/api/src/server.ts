@@ -35,6 +35,10 @@ export function buildServer() {
     maxRssMb: env.BACKGROUND_WORKER_MAX_RSS_MB,
     quoteRefreshEnabled: env.RUN_QUOTE_REFRESH_WORKER,
     quoteRefreshIntervalMinutes: env.QUOTE_REFRESH_INTERVAL_MINUTES,
+    learningCycleEnabled: env.RUN_LEARNING_CYCLE_WORKER,
+    learningCycleIntervalMinutes: env.LEARNING_CYCLE_INTERVAL_MINUTES,
+    learningCycleMinSettledExamples: env.LEARNING_CYCLE_MIN_SETTLED_EXAMPLES,
+    learningCycleBacktestLookbackDays: env.LEARNING_CYCLE_BACKTEST_LOOKBACK_DAYS,
     logger: app.log
   });
   const scheduledJobs = createScheduledJobRegistry({ pipeline, persistentStore: () => persistentStore });
