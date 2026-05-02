@@ -73,7 +73,10 @@ export function buildServer() {
         killSwitchEnabled: env.KILL_SWITCH_ENABLED,
         requireManualConfirmation: env.REQUIRE_MANUAL_CONFIRMATION,
         demoConfigured: demoBroker.isConfigured(),
-        prodCredentialConfigured: Boolean(env.KALSHI_PROD_ACCESS_KEY)
+        prodCredentialConfigured: Boolean(env.KALSHI_PROD_ACCESS_KEY),
+        gptAnalysisEnabled: env.GPT_ANALYSIS_ENABLED,
+        gptAnalysisConfigured: Boolean(env.OPENAI_API_KEY),
+        gptAutoApplyPatches: env.GPT_AUTO_APPLY_PATCHES
       },
       riskLimits: activeRiskLimits,
       backgroundWorker: worker.status(),
@@ -128,6 +131,9 @@ export function buildServer() {
     persistenceEnabled: Boolean(persistentStore),
     persistenceReason: pipeline.persistenceStatus().reason,
     dailyEmailConfigured: Boolean(env.RESEND_API_KEY && env.DAILY_REPORT_EMAIL_TO && env.DAILY_REPORT_EMAIL_FROM),
+    gptAnalysisEnabled: env.GPT_ANALYSIS_ENABLED,
+    gptAnalysisConfigured: Boolean(env.OPENAI_API_KEY),
+    gptAutoApplyPatches: env.GPT_AUTO_APPLY_PATCHES,
     liveTradingEnabled: env.LIVE_TRADING_ENABLED,
     killSwitchEnabled: env.KILL_SWITCH_ENABLED,
     backgroundWorker: worker.status(),

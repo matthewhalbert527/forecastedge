@@ -599,6 +599,46 @@ model StrategyOptimizationRun {
   @@index([status, startedAt])
 }
 
+model GptDecisionReview {
+  id             String    @id @default(cuid())
+  layer          String
+  status         String
+  model          String?
+  promptVersion  String
+  windowStart    DateTime
+  windowEnd      DateTime
+  inputSummary   Json
+  output         Json?
+  recommendation String?
+  safeToApply    Boolean   @default(false)
+  confidence     String?
+  emailSent      Boolean   @default(false)
+  emailMetadata  Json?
+  appliedPatchId String?
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([layer, createdAt])
+  @@index([status, createdAt])
+}
+
+model StrategyConfigPatch {
+  id             String    @id @default(cuid())
+  source         String
+  reviewId       String?
+  status         String
+  reason         String
+  previousConfig Json
+  patch          Json
+  appliedConfig  Json
+  safety         Json
+  appliedAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([status, appliedAt])
+  @@index([reviewId])
+}
+
 model AuditLog {
   id        String   @id @default(cuid())
   actor     String

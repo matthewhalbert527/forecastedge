@@ -47,6 +47,19 @@ type TableCountEstimateRow = {
   estimate: number | bigint | string;
 };
 
+export interface StrategyConfigPatchPayload {
+  minEdgeAdjustment?: number;
+  minNetEdgeAdjustment?: number;
+  maxSpread?: number;
+  minLiquidityScore?: number;
+  maxEntryPrice?: number | null;
+  variableEdgeAdjustments?: Array<{
+    variable: string;
+    minEdgeAdjustment: number;
+    reason: string;
+  }>;
+}
+
 export class PersistentStore {
   constructor(private readonly prisma: PrismaClient) {}
 
@@ -381,7 +394,117 @@ export class PersistentStore {
         cost: true
       }
     });
-    return adaptiveTrainingCandidateConfig(base, examples);
+    const adaptive = adaptiveTrainingCandidateConfig(base, examples);
+    const activePatch = await this.latestAppliedStrategyConfigPatch();
+    return activePatch ? applyStrategyConfigPatch(adaptive, jsonRecord(activePatch.patch) as StrategyConfigPatchPayload | null) : adaptive;
+  }
+
+  async trainingCandidateConfigSnapshot(base: TrainingCandidateConfig) {
+    return this.learnedTrainingCandidateConfig(base);
+  }
+
+  async activeTrainingCandidateConfigForReview() {
+    return this.learnedTrainingCandidateConfig(baseTrainingCandidateConfig());
+  }
+
+  async latestAppliedStrategyConfigPatch() {
+    return this.prisma.strategyConfigPatch.findFirst({
+      where: { status: "applied", appliedAt: { not: null } },
+      orderBy: { appliedAt: "desc" }
+    });
+  }
+
+  async persistGptDecisionReview(input: {
+    layer: string;
+    status: string;
+    model?: string | null;
+    promptVersion: string;
+    windowStart: Date;
+    windowEnd: Date;
+    inputSummary: unknown;
+    output?: unknown;
+    recommendation?: string | null;
+    safeToApply?: boolean;
+    confidence?: string | null;
+    emailSent?: boolean;
+    emailMetadata?: unknown;
+    appliedPatchId?: string | null;
+    completedAt?: Date | null;
+  }) {
+    return this.prisma.gptDecisionReview.create({
+      data: {
+        layer: input.layer,
+        status: input.status,
+        model: input.model ?? null,
+        promptVersion: input.promptVersion,
+        windowStart: input.windowStart,
+        windowEnd: input.windowEnd,
+        inputSummary: toJson(input.inputSummary),
+        ...(input.output === undefined ? {} : { output: toJson(input.output) }),
+        recommendation: input.recommendation ?? null,
+        safeToApply: input.safeToApply ?? false,
+        confidence: input.confidence ?? null,
+        emailSent: input.emailSent ?? false,
+        ...(input.emailMetadata === undefined ? {} : { emailMetadata: toJson(input.emailMetadata) }),
+        appliedPatchId: input.appliedPatchId ?? null,
+        completedAt: input.completedAt ?? null
+      }
+    });
+  }
+
+  async updateGptDecisionReview(id: string, input: {
+    status?: string;
+    inputSummary?: unknown;
+    output?: unknown;
+    recommendation?: string | null;
+    safeToApply?: boolean;
+    confidence?: string | null;
+    emailSent?: boolean;
+    emailMetadata?: unknown;
+    appliedPatchId?: string | null;
+    completedAt?: Date | null;
+  }) {
+    return this.prisma.gptDecisionReview.update({
+      where: { id },
+      data: {
+        ...(input.status ? { status: input.status } : {}),
+        ...(input.inputSummary === undefined ? {} : { inputSummary: toJson(input.inputSummary) }),
+        ...(input.output === undefined ? {} : { output: toJson(input.output) }),
+        ...(input.recommendation === undefined ? {} : { recommendation: input.recommendation }),
+        ...(input.safeToApply === undefined ? {} : { safeToApply: input.safeToApply }),
+        ...(input.confidence === undefined ? {} : { confidence: input.confidence }),
+        ...(input.emailSent === undefined ? {} : { emailSent: input.emailSent }),
+        ...(input.emailMetadata === undefined ? {} : { emailMetadata: toJson(input.emailMetadata) }),
+        ...(input.appliedPatchId === undefined ? {} : { appliedPatchId: input.appliedPatchId }),
+        ...(input.completedAt === undefined ? {} : { completedAt: input.completedAt })
+      }
+    });
+  }
+
+  async persistStrategyConfigPatch(input: {
+    source: string;
+    reviewId?: string | null;
+    status: string;
+    reason: string;
+    previousConfig: unknown;
+    patch: StrategyConfigPatchPayload;
+    appliedConfig: unknown;
+    safety: unknown;
+    appliedAt?: Date | null;
+  }) {
+    return this.prisma.strategyConfigPatch.create({
+      data: {
+        source: input.source,
+        reviewId: input.reviewId ?? null,
+        status: input.status,
+        reason: input.reason,
+        previousConfig: toJson(input.previousConfig),
+        patch: toJson(input.patch),
+        appliedConfig: toJson(input.appliedConfig),
+        safety: toJson(input.safety),
+        appliedAt: input.appliedAt ?? null
+      }
+    });
   }
 
   async strategyDecisionDashboard() {
@@ -2542,6 +2665,45 @@ function adaptiveTrainingCandidateConfig(
     maxEntryPrice,
     learnedEdgeAdjustments: learnedEdgeAdjustments.slice(0, 4)
   };
+}
+
+function applyStrategyConfigPatch(base: TrainingCandidateConfig, patch: StrategyConfigPatchPayload | null): TrainingCandidateConfig {
+  if (!patch) return base;
+  const variableAdjustments = Array.isArray(patch.variableEdgeAdjustments)
+    ? patch.variableEdgeAdjustments
+        .filter((item) => typeof item.variable === "string" && item.variable.length > 0 && Number.isFinite(item.minEdgeAdjustment))
+        .slice(0, 6)
+        .map((item) => ({
+          id: `gpt_${item.variable}`,
+          label: `GPT ${item.variable.replaceAll("_", " ")}`,
+          variable: item.variable,
+          minEdgeAdjustment: clampMetric(item.minEdgeAdjustment, 0, 0.04),
+          reason: item.reason || "GPT review recommended a stricter edge threshold for this variable"
+        }))
+    : [];
+
+  return {
+    ...base,
+    minEdge: roundMetric(clampMetric(base.minEdge + numericPatch(patch.minEdgeAdjustment, 0), 0, 0.25)) ?? base.minEdge,
+    minNetEdge: roundMetric(clampMetric(base.minNetEdge + numericPatch(patch.minNetEdgeAdjustment, 0), 0, 0.2)) ?? base.minNetEdge,
+    maxSpread: Number.isFinite(patch.maxSpread) ? roundMetric(clampMetric(Number(patch.maxSpread), 0.02, base.maxSpread)) ?? base.maxSpread : base.maxSpread,
+    minLiquidityScore: Number.isFinite(patch.minLiquidityScore) ? roundMetric(clampMetric(Number(patch.minLiquidityScore), base.minLiquidityScore, 1)) ?? base.minLiquidityScore : base.minLiquidityScore,
+    maxEntryPrice: Number.isFinite(patch.maxEntryPrice)
+      ? roundMetric(clampMetric(Number(patch.maxEntryPrice), 0.4, Math.min(base.maxEntryPrice ?? 0.9, 0.9)))
+      : base.maxEntryPrice ?? null,
+    learnedEdgeAdjustments: [
+      ...(base.learnedEdgeAdjustments ?? []),
+      ...variableAdjustments
+    ].slice(0, 8)
+  };
+}
+
+function numericPatch(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function clampMetric(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function formatSignedMoney(value: number) {

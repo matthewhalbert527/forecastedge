@@ -1,4 +1,5 @@
 import { env } from "../config/env.js";
+import { runGptDecisionReview, type GptDecisionReviewLayer } from "../ai/gpt-decision-review.js";
 import type { PersistentStore } from "../data/persistent-store.js";
 import {
   getHistoricalMarketCandlesticks,
@@ -15,7 +16,10 @@ export type ScheduledJobId =
   | "optimize_strategy_candidates"
   | "run_nightly_backtests"
   | "update_paper_strategy_performance"
-  | "generate_strategy_health_report";
+  | "generate_strategy_health_report"
+  | "run_gpt_intraday_review"
+  | "run_gpt_deep_review"
+  | "run_gpt_daily_review";
 
 export interface ScheduledJobRun {
   jobId: ScheduledJobId;
@@ -167,9 +171,40 @@ export function createScheduledJobRegistry(deps: {
           warnings: dashboard.warningsRequiringReview.length
         });
       }
+    },
+    {
+      id: "run_gpt_intraday_review",
+      label: "Run GPT intraday decision review",
+      description: "Hourly behavior review of recent buys, watches, blockers, and suspicious choices. Never auto-applies patches.",
+      run: async () => gptReviewJob("run_gpt_intraday_review", "intraday", deps)
+    },
+    {
+      id: "run_gpt_deep_review",
+      label: "Run GPT deep decision review",
+      description: "Six-hour GPT review with deterministic counterfactuals when enough settled data exists.",
+      run: async () => gptReviewJob("run_gpt_deep_review", "deep", deps)
+    },
+    {
+      id: "run_gpt_daily_review",
+      label: "Run GPT daily decision review",
+      description: "Daily GPT recap email and bounded autonomous strategy-config patch when gates pass.",
+      run: async () => gptReviewJob("run_gpt_daily_review", "daily", deps)
     }
   ];
   return new ScheduledJobRegistry(definitions);
+}
+
+async function gptReviewJob(
+  jobId: ScheduledJobId,
+  layer: GptDecisionReviewLayer,
+  deps: { pipeline: ForecastEdgePipeline; persistentStore: () => PersistentStore | null }
+) {
+  const result = await runGptDecisionReview({
+    layer,
+    pipeline: deps.pipeline,
+    persistentStore: deps.persistentStore()
+  });
+  return jobRun(jobId, result.status, result.message, result.metadata);
 }
 
 async function refreshHistoricalMarketData(persistentStore: PersistentStore | null) {
