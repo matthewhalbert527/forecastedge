@@ -62,7 +62,7 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: GPT_ANALYSIS_ENABLED
-        value: "true"
+        value: "false"
       - key: GPT_ANALYSIS_MODEL
         value: gpt-5.4-mini
       - key: GPT_REVIEW_EMAIL_LAYERS
@@ -70,7 +70,7 @@ services:
       - key: GPT_REVIEW_MAX_INPUT_CHARS
         value: "60000"
       - key: GPT_AUTO_APPLY_PATCHES
-        value: "true"
+        value: "false"
       - key: GPT_AUTO_APPLY_MIN_SETTLED_EXAMPLES
         value: "10"
       - key: FORECAST_CACHE_MINUTES
