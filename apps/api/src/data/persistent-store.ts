@@ -120,23 +120,21 @@ export class PersistentStore {
 
   async dashboardSummary(fallback: MemoryStore) {
     const performanceWindowSince = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
-    const [scanReports, snapshots, stationObservations, deltas, markets, mappings, signals, paperOrders, positions, performancePositions, settlements, auditLogs, modelForecasts, ensembles, candidateConfig] = await Promise.all([
-      this.prisma.scanReport.findMany({ orderBy: { startedAt: "desc" }, take: 20 }),
-      this.prisma.forecastSnapshot.findMany({ include: { location: true }, orderBy: { createdAt: "desc" }, take: 10 }),
-      this.prisma.stationObservation.findMany({ orderBy: { observedAt: "desc" }, take: 20 }),
-      this.prisma.forecastDelta.findMany({ orderBy: { createdAt: "desc" }, take: 50 }),
-      this.prisma.kalshiMarket.findMany({ orderBy: { updatedAt: "desc" }, take: 250 }),
-      this.prisma.marketMapping.findMany({ orderBy: { createdAt: "desc" }, take: 250 }),
-      this.prisma.signal.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
-      this.prisma.paperOrder.findMany({ orderBy: { timestamp: "desc" }, take: 100 }),
-      this.prisma.paperPosition.findMany({ orderBy: { openedAt: "desc" }, take: 100 }),
-      this.prisma.paperPosition.findMany({ where: { closedAt: { gte: performanceWindowSince } }, orderBy: { closedAt: "desc" }, take: 2000 }),
-      this.prisma.settlement.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
-      this.prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
-      this.prisma.modelForecast.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
-      this.prisma.ensembleForecast.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
-      this.learnedTrainingCandidateConfig(baseTrainingCandidateConfig())
-    ]);
+    const scanReports = await this.prisma.scanReport.findMany({ orderBy: { startedAt: "desc" }, take: 20 });
+    const snapshots = await this.prisma.forecastSnapshot.findMany({ include: { location: true }, orderBy: { createdAt: "desc" }, take: 10 });
+    const stationObservations = await this.prisma.stationObservation.findMany({ orderBy: { observedAt: "desc" }, take: 20 });
+    const deltas = await this.prisma.forecastDelta.findMany({ orderBy: { createdAt: "desc" }, take: 50 });
+    const markets = await this.prisma.kalshiMarket.findMany({ orderBy: { updatedAt: "desc" }, take: 250 });
+    const mappings = await this.prisma.marketMapping.findMany({ orderBy: { createdAt: "desc" }, take: 250 });
+    const signals = await this.prisma.signal.findMany({ orderBy: { createdAt: "desc" }, take: 100 });
+    const paperOrders = await this.prisma.paperOrder.findMany({ orderBy: { timestamp: "desc" }, take: 100 });
+    const positions = await this.prisma.paperPosition.findMany({ orderBy: { openedAt: "desc" }, take: 100 });
+    const performancePositions = await this.prisma.paperPosition.findMany({ where: { closedAt: { gte: performanceWindowSince } }, orderBy: { closedAt: "desc" }, take: 2000 });
+    const settlements = await this.prisma.settlement.findMany({ orderBy: { createdAt: "desc" }, take: 100 });
+    const auditLogs = await this.prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 100 });
+    const modelForecasts = await this.prisma.modelForecast.findMany({ orderBy: { createdAt: "desc" }, take: 100 });
+    const ensembles = await this.prisma.ensembleForecast.findMany({ orderBy: { createdAt: "desc" }, take: 100 });
+    const candidateConfig = await this.learnedTrainingCandidateConfig(baseTrainingCandidateConfig());
 
     const heldMarketTickers = [...new Set([...paperOrders.map((order) => order.marketTicker), ...positions.map((position) => position.marketTicker)])];
     const heldMarkets = heldMarketTickers.length > 0 ? await this.prisma.kalshiMarket.findMany({ where: { ticker: { in: heldMarketTickers } } }) : [];
@@ -180,11 +178,9 @@ export class PersistentStore {
       config: candidateConfig
     });
 
-    const [learning, strategyDecisionEngine, research] = await Promise.all([
-      this.learningSummary(),
-      this.strategyDecisionDashboard(),
-      this.researchDashboard()
-    ]);
+    const learning = await this.learningSummary();
+    const strategyDecisionEngine = await this.strategyDecisionDashboard();
+    const research = await this.researchDashboard();
 
     return {
       locations: fallback.locations,
@@ -257,23 +253,21 @@ export class PersistentStore {
   }
 
   async learningSummary() {
-    const [quoteSnapshots, candidateSnapshots, paperExamples, settledPaperExamples, scanReports, fullScans, quoteRefreshScans, historicalMarkets, historicalCandlesticks, historicalTrades, latestQuote, latestCandidate, latestFullScan, latestQuoteRefresh, recentExamples] = await Promise.all([
-      this.prisma.marketQuoteSnapshot.count(),
-      this.prisma.candidateDecisionSnapshot.count(),
-      this.prisma.paperTradeTrainingExample.count(),
-      this.prisma.paperTradeTrainingExample.count({ where: { status: { in: ["won", "lost"] } } }),
-      this.prisma.scanReport.count(),
-      this.prisma.scanReport.count({ where: { trigger: { not: "quote_refresh" } } }),
-      this.prisma.scanReport.count({ where: { trigger: "quote_refresh" } }),
-      this.prisma.historicalKalshiMarket.count(),
-      this.prisma.kalshiMarketCandlestick.count(),
-      this.prisma.kalshiMarketTrade.count(),
-      this.prisma.marketQuoteSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
-      this.prisma.candidateDecisionSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
-      this.prisma.scanReport.findFirst({ where: { trigger: { not: "quote_refresh" } }, orderBy: { startedAt: "desc" }, select: { startedAt: true } }),
-      this.prisma.scanReport.findFirst({ where: { trigger: "quote_refresh" }, orderBy: { startedAt: "desc" }, select: { startedAt: true } }),
-      this.prisma.paperTradeTrainingExample.findMany({ orderBy: { openedAt: "desc" }, take: 20 })
-    ]);
+    const quoteSnapshots = await this.prisma.marketQuoteSnapshot.count();
+    const candidateSnapshots = await this.prisma.candidateDecisionSnapshot.count();
+    const paperExamples = await this.prisma.paperTradeTrainingExample.count();
+    const settledPaperExamples = await this.prisma.paperTradeTrainingExample.count({ where: { status: { in: ["won", "lost"] } } });
+    const scanReports = await this.prisma.scanReport.count();
+    const fullScans = await this.prisma.scanReport.count({ where: { trigger: { not: "quote_refresh" } } });
+    const quoteRefreshScans = await this.prisma.scanReport.count({ where: { trigger: "quote_refresh" } });
+    const historicalMarkets = await this.prisma.historicalKalshiMarket.count();
+    const historicalCandlesticks = await this.prisma.kalshiMarketCandlestick.count();
+    const historicalTrades = await this.prisma.kalshiMarketTrade.count();
+    const latestQuote = await this.prisma.marketQuoteSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } });
+    const latestCandidate = await this.prisma.candidateDecisionSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } });
+    const latestFullScan = await this.prisma.scanReport.findFirst({ where: { trigger: { not: "quote_refresh" } }, orderBy: { startedAt: "desc" }, select: { startedAt: true } });
+    const latestQuoteRefresh = await this.prisma.scanReport.findFirst({ where: { trigger: "quote_refresh" }, orderBy: { startedAt: "desc" }, select: { startedAt: true } });
+    const recentExamples = await this.prisma.paperTradeTrainingExample.findMany({ orderBy: { openedAt: "desc" }, take: 20 });
 
     const backtest = await this.backtestStoredWouldBuys();
     return {
@@ -330,20 +324,18 @@ export class PersistentStore {
   }
 
   async strategyDecisionDashboard() {
-    const [versions, runs, latestOptimizer, latestQuote, latestCandidate, latestForecast, latestHistoricalCandle, latestHistoricalTrade] = await Promise.all([
-      this.prisma.strategyVersion.findMany({
-        orderBy: { createdAt: "desc" },
-        take: 100,
-        include: { runs: { orderBy: { startedAt: "desc" }, take: 1 } }
-      }),
-      this.prisma.strategyRun.findMany({ orderBy: { startedAt: "desc" }, take: 25 }),
-      this.prisma.strategyOptimizationRun.findFirst({ orderBy: { startedAt: "desc" } }),
-      this.prisma.marketQuoteSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
-      this.prisma.candidateDecisionSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } }),
-      this.prisma.forecastSnapshot.findFirst({ orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
-      this.prisma.kalshiMarketCandlestick.findFirst({ orderBy: { endPeriodAt: "desc" }, select: { endPeriodAt: true } }),
-      this.prisma.kalshiMarketTrade.findFirst({ orderBy: { createdTime: "desc" }, select: { createdTime: true } })
-    ]);
+    const versions = await this.prisma.strategyVersion.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      include: { runs: { orderBy: { startedAt: "desc" }, take: 1 } }
+    });
+    const runs = await this.prisma.strategyRun.findMany({ orderBy: { startedAt: "desc" }, take: 25 });
+    const latestOptimizer = await this.prisma.strategyOptimizationRun.findFirst({ orderBy: { startedAt: "desc" } });
+    const latestQuote = await this.prisma.marketQuoteSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } });
+    const latestCandidate = await this.prisma.candidateDecisionSnapshot.findFirst({ orderBy: { observedAt: "desc" }, select: { observedAt: true } });
+    const latestForecast = await this.prisma.forecastSnapshot.findFirst({ orderBy: { createdAt: "desc" }, select: { createdAt: true } });
+    const latestHistoricalCandle = await this.prisma.kalshiMarketCandlestick.findFirst({ orderBy: { endPeriodAt: "desc" }, select: { endPeriodAt: true } });
+    const latestHistoricalTrade = await this.prisma.kalshiMarketTrade.findFirst({ orderBy: { createdTime: "desc" }, select: { createdTime: true } });
     const latestByStrategy = latestVersionsByStrategy(versions);
     const strategyRows = latestByStrategy.map((version) => strategyVersionDashboardRow(version));
     const latestRun = runs[0] ?? null;
@@ -398,27 +390,25 @@ export class PersistentStore {
   async researchDashboard(days = 30) {
     const lookbackDays = Math.max(7, Math.min(90, Math.floor(days)));
     const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
-    const [candidateSnapshots, paperExamples] = await Promise.all([
-      this.prisma.candidateDecisionSnapshot.findMany({
-        where: { observedAt: { gte: since } },
-        orderBy: { observedAt: "asc" },
-        select: { observedAt: true, status: true }
-      }),
-      this.prisma.paperTradeTrainingExample.findMany({
-        where: { OR: [{ openedAt: { gte: since } }, { settledAt: { gte: since } }] },
-        orderBy: { openedAt: "asc" },
-        select: {
-          openedAt: true,
-          settledAt: true,
-          status: true,
-          cost: true,
-          pnl: true,
-          roi: true,
-          qualityScore: true,
-          variable: true
-        }
-      })
-    ]);
+    const candidateSnapshots = await this.prisma.candidateDecisionSnapshot.findMany({
+      where: { observedAt: { gte: since } },
+      orderBy: { observedAt: "asc" },
+      select: { observedAt: true, status: true }
+    });
+    const paperExamples = await this.prisma.paperTradeTrainingExample.findMany({
+      where: { OR: [{ openedAt: { gte: since } }, { settledAt: { gte: since } }] },
+      orderBy: { openedAt: "asc" },
+      select: {
+        openedAt: true,
+        settledAt: true,
+        status: true,
+        cost: true,
+        pnl: true,
+        roi: true,
+        qualityScore: true,
+        variable: true
+      }
+    });
 
     const daily = buildResearchDailyRows(lookbackDays);
     const dailyByDate = new Map(daily.map((row) => [row.date, row]));
@@ -1566,7 +1556,10 @@ export class PersistentStore {
       const payout = settlement ? settlementPayout(order.side, settlement.result, order.filledContracts) : null;
       const pnl = payout === null ? null : Number((payout - cost).toFixed(4));
       const roi = pnl === null || cost === 0 ? null : Number((pnl / cost).toFixed(4));
-      const status = settlement ? (pnl !== null && pnl >= 0 ? "won" : "lost") : order.filledContracts > 0 ? "open" : "rejected";
+      const hypothetical = isHypotheticalPaperFill(order.reason);
+      const status = hypothetical
+        ? settlement ? "hypothetical_settled" : "hypothetical_open"
+        : settlement ? (pnl !== null && pnl >= 0 ? "won" : "lost") : order.filledContracts > 0 ? "open" : "rejected";
 
       await this.prisma.paperTradeTrainingExample.upsert({
         where: { orderId: order.id },
@@ -1627,7 +1620,8 @@ export class PersistentStore {
               explanation: order.signal.explanation,
               skipReason: order.signal.skipReason
             },
-            orderReason: order.reason
+            orderReason: order.reason,
+            hypotheticalFill: hypothetical
           })
         },
         update: {
@@ -1679,7 +1673,8 @@ export class PersistentStore {
               explanation: order.signal.explanation,
               skipReason: order.signal.skipReason
             },
-            orderReason: order.reason
+            orderReason: order.reason,
+            hypotheticalFill: hypothetical
           })
         }
       });
@@ -2275,6 +2270,13 @@ function paperValidationStatus(status: string): PaperValidationTrade["status"] {
   if (status === "rejected") return "rejected";
   if (status === "open") return "open";
   return "skipped";
+}
+
+function isHypotheticalPaperFill(reason: string) {
+  const text = reason.toLowerCase();
+  return text.includes("hypothetical") ||
+    text.includes("order book unavailable; holding") ||
+    text.includes("stale quote; holding");
 }
 
 function latestVersionsByStrategy<T extends { strategyKey: string; createdAt: Date }>(versions: T[]) {

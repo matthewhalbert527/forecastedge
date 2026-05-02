@@ -9,7 +9,7 @@ export interface PaperExecutionOptions {
 export const defaultPaperExecutionOptions: PaperExecutionOptions = {
   staleQuoteMs: 120_000,
   slippageCents: 1,
-  fillApprovedSignalsHypothetically: true
+  fillApprovedSignalsHypothetically: false
 };
 
 export function simulatePaperOrder(

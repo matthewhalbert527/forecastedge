@@ -14,7 +14,7 @@ import {
   ShieldCheck,
   ThermometerSun
 } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 type DashboardData = {
   mode: "watch" | "paper" | "demo" | "live";
@@ -235,7 +235,8 @@ type ResearchData = {
 type View = "overview" | "decisions" | "learning" | "research" | "ledger";
 type BusyAction = "scan" | "settle" | null;
 
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? process.env.WEB_PUBLIC_API_URL ?? "http://localhost:4000";
+const apiUrl = "/api/forecastedge";
+const dashboardRefreshIntervalMs = 60_000;
 
 const emptyPerformance: DashboardData["performance"] = {
   totalTrades: 0,
@@ -275,11 +276,24 @@ export default function Page() {
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const refreshInFlight = useRef<Promise<void> | null>(null);
 
-  async function refresh() {
-    const response = await fetch(`${apiUrl}/api/dashboard`, { cache: "no-store" });
-    if (!response.ok) throw new Error(`Dashboard API returned ${response.status}`);
-    setData(await response.json());
+  async function refresh(options: { force?: boolean } = {}) {
+    if (refreshInFlight.current) {
+      if (!options.force) return refreshInFlight.current;
+      await refreshInFlight.current.catch(() => undefined);
+    }
+
+    const request = (async () => {
+      const response = await fetch(`${apiUrl}/dashboard`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`Dashboard API returned ${response.status}`);
+      setData(await response.json());
+      setError(null);
+    })().finally(() => {
+      refreshInFlight.current = null;
+    });
+    refreshInFlight.current = request;
+    return request;
   }
 
   async function runAction(action: BusyAction, endpoint: string) {
@@ -290,7 +304,7 @@ export default function Page() {
       const response = await fetch(`${apiUrl}${endpoint}`, { method: "POST" });
       if (!response.ok) throw new Error(`Request failed with ${response.status}`);
       await response.json().catch(() => null);
-      await refresh();
+      await refresh({ force: true });
       if (action === "settle") setView("ledger");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown request error");
@@ -301,7 +315,7 @@ export default function Page() {
 
   useEffect(() => {
     refresh().catch((err: unknown) => setError(err instanceof Error ? err.message : "Unable to load dashboard"));
-    const timer = window.setInterval(() => refresh().catch(() => undefined), 15000);
+    const timer = window.setInterval(() => refresh().catch(() => undefined), dashboardRefreshIntervalMs);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -344,11 +358,11 @@ export default function Page() {
             <h2>{viewTitle(view)}</h2>
           </div>
           <div className="topbar-actions">
-            <button className="ghost-button" onClick={() => runAction("scan", "/api/run-once")} disabled={busyAction !== null}>
+            <button className="ghost-button" onClick={() => runAction("scan", "/run-once")} disabled={busyAction !== null}>
               <RefreshCw size={16} />
               {busyAction === "scan" ? "Scanning" : "Full scan"}
             </button>
-            <button className="ghost-button" onClick={() => runAction("settle", "/api/settlements/run-once")} disabled={busyAction !== null}>
+            <button className="ghost-button" onClick={() => runAction("settle", "/settlements/run-once")} disabled={busyAction !== null}>
               <Clock3 size={16} />
               {busyAction === "settle" ? "Checking" : "Check results"}
             </button>
@@ -383,7 +397,7 @@ export default function Page() {
             {view === "decisions" ? <DecisionsView model={model} /> : null}
             {view === "learning" ? <LearningView strategy={strategy} jobs={data.scheduledJobs ?? []} latest={latestLearning} learning={data.learning ?? null} /> : null}
             {view === "research" ? <ResearchView data={data} /> : null}
-            {view === "ledger" ? <LedgerView data={data} model={model} performance={performance} settleAction={() => runAction("settle", "/api/settlements/run-once")} busy={busyAction === "settle"} /> : null}
+            {view === "ledger" ? <LedgerView data={data} model={model} performance={performance} settleAction={() => runAction("settle", "/settlements/run-once")} busy={busyAction === "settle"} /> : null}
           </>
         ) : null}
       </section>
@@ -719,7 +733,7 @@ function LedgerView({ data, model, performance, settleAction, busy }: { data: Da
             <Clock3 size={16} />
             {busy ? "Checking" : "Check results"}
           </button>
-          <a className="ghost-button" href={`${apiUrl}/api/dataset/export`}>
+          <a className="ghost-button" href={`${apiUrl}/dataset/export`}>
             <Download size={16} />
             Dataset
           </a>

@@ -7,7 +7,7 @@ import { LiveBrokerSafetyShell } from "./brokers/live-broker.js";
 import { activeRiskLimits, env, listenPort } from "./config/env.js";
 import { MemoryStore } from "./data/store.js";
 import { PersistentStore } from "./data/persistent-store.js";
-import { ensureDatabaseSchema, getPrisma } from "./db/prisma.js";
+import { getPrisma } from "./db/prisma.js";
 import { BackgroundWorker } from "./jobs/background-worker.js";
 import { ForecastEdgePipeline } from "./jobs/pipeline.js";
 import { createScheduledJobRegistry } from "./jobs/scheduled-jobs.js";
@@ -32,6 +32,7 @@ export function buildServer() {
     enabled: env.RUN_BACKGROUND_WORKER,
     runOnStartup: env.RUN_ON_STARTUP,
     intervalMinutes: env.BACKGROUND_POLL_INTERVAL_MINUTES,
+    maxRssMb: env.BACKGROUND_WORKER_MAX_RSS_MB,
     quoteRefreshEnabled: env.RUN_QUOTE_REFRESH_WORKER,
     quoteRefreshIntervalMinutes: env.QUOTE_REFRESH_INTERVAL_MINUTES,
     logger: app.log
@@ -40,9 +41,23 @@ export function buildServer() {
   const demoBroker = new KalshiDemoBroker();
   const liveBroker = new LiveBrokerSafetyShell();
 
-  app.register(cors, { origin: true });
+  app.register(cors, { origin: async (origin: string | undefined) => corsOriginAllowed(origin) });
 
-  async function dashboardResponse() {
+  app.addHook("preHandler", async (request, reply) => {
+    if (!requiresPrivilegedAuth(request.method, request.url)) return;
+    const allowedTokens = privilegedTokens();
+    if (allowedTokens.length === 0) {
+      if (env.NODE_ENV === "production") {
+        return reply.code(503).send({ error: "Privileged ForecastEdge API routes require FORECASTEDGE_API_TOKEN or SCHEDULED_JOB_TOKEN" });
+      }
+      return;
+    }
+    if (!allowedTokens.includes(requestToken(request.headers))) {
+      return reply.code(401).send({ error: "Unauthorized ForecastEdge API request" });
+    }
+  });
+
+  async function buildDashboardResponse() {
     const summary = await pipeline.persistedSummary();
     return {
       ...summary,
@@ -60,6 +75,27 @@ export function buildServer() {
       backgroundWorker: worker.status(),
       scheduledJobs: scheduledJobs.list()
     };
+  }
+
+  type DashboardResponse = Awaited<ReturnType<typeof buildDashboardResponse>>;
+  const dashboardCacheTtlMs = 10_000;
+  let dashboardCache: { expiresAt: number; value: DashboardResponse } | null = null;
+  let dashboardInFlight: Promise<DashboardResponse> | null = null;
+
+  async function dashboardResponse(options: { force?: boolean } = {}) {
+    const now = Date.now();
+    if (!options.force && dashboardCache && dashboardCache.expiresAt > now) return dashboardCache.value;
+    if (dashboardInFlight) return dashboardInFlight;
+
+    dashboardInFlight = buildDashboardResponse()
+      .then((value) => {
+        dashboardCache = { value, expiresAt: Date.now() + dashboardCacheTtlMs };
+        return value;
+      })
+      .finally(() => {
+        dashboardInFlight = null;
+      });
+    return dashboardInFlight;
   }
 
   app.get("/health", async () => ({
@@ -81,20 +117,11 @@ export function buildServer() {
   app.get("/api/learning/summary", async () => pipeline.learningSummary());
   app.get("/api/strategy/decision-dashboard", async () => pipeline.strategyDecisionDashboard());
   app.get("/api/research/nightly-export", async (request, reply) => {
-    if (env.SCHEDULED_JOB_TOKEN) {
-      const token = request.headers["x-job-token"] ?? bearerToken(request.headers.authorization);
-      const queryToken = typeof (request.query as Record<string, unknown> | undefined)?.token === "string" ? (request.query as { token: string }).token : undefined;
-      if (token !== env.SCHEDULED_JOB_TOKEN && queryToken !== env.SCHEDULED_JOB_TOKEN) return reply.code(401).send({ error: "Unauthorized research export request" });
-    }
     const query = request.query && typeof request.query === "object" ? request.query as Record<string, unknown> : {};
     return pipeline.nightlyResearchExport(integerParam(query.lookbackHours) ?? 24);
   });
   app.get("/api/jobs", async () => scheduledJobs.list());
   app.post("/api/jobs/:jobId/run", async (request, reply) => {
-    if (env.SCHEDULED_JOB_TOKEN) {
-      const token = request.headers["x-job-token"];
-      if (token !== env.SCHEDULED_JOB_TOKEN) return reply.code(401).send({ error: "Unauthorized scheduled job request" });
-    }
     const params = request.params as { jobId?: string };
     const result = await scheduledJobs.run(params.jobId ?? "");
     if (!result) return reply.code(404).send({ error: "Unknown scheduled job" });
@@ -184,11 +211,11 @@ export function buildServer() {
 
   app.post("/api/run-once", async () => {
     await pipeline.runOnce("manual");
-    return dashboardResponse();
+    return dashboardResponse({ force: true });
   });
   app.post("/api/quotes/refresh-once", async () => {
     const result = await pipeline.refreshQuoteCandidates("quote_refresh");
-    return { ...result, summary: await dashboardResponse() };
+    return { ...result, summary: await dashboardResponse({ force: true }) };
   });
   app.post("/api/quotes/buy-one", async (request, reply) => {
     const body = request.body as { marketTicker?: unknown } | undefined;
@@ -196,11 +223,11 @@ export function buildServer() {
       return reply.code(400).send({ error: "marketTicker is required" });
     }
     const result = await pipeline.buyPaperCandidate(body.marketTicker);
-    return { ...result, summary: await dashboardResponse() };
+    return { ...result, summary: await dashboardResponse({ force: true }) };
   });
   app.post("/api/settlements/run-once", async () => {
     const result = await pipeline.runSettlementsOnly();
-    return { ...result, summary: await dashboardResponse() };
+    return { ...result, summary: await dashboardResponse({ force: true }) };
   });
   app.post("/api/demo/dry-run-order", async (request) => demoBroker.dryRunOrder(request.body));
   app.post("/api/live/dry-run-order", async (request) => {
@@ -213,7 +240,6 @@ export function buildServer() {
   app.addHook("onReady", async () => {
     if (persistentStore) {
       try {
-        await ensureDatabaseSchema();
         await persistentStore.hydrateMemory(store);
         app.log.info("Hydrated ForecastEdge memory from Postgres");
       } catch (error) {
@@ -256,6 +282,34 @@ function bearerToken(value: unknown) {
   if (typeof value !== "string") return undefined;
   const match = value.match(/^Bearer\s+(.+)$/i);
   return match?.[1];
+}
+
+function corsOriginAllowed(origin: string | undefined) {
+  if (!origin) return true;
+  const allowed = env.CORS_ALLOWED_ORIGINS.split(",").map((item) => item.trim()).filter(Boolean);
+  if (env.NODE_ENV !== "production" && allowed.length === 0) return true;
+  return allowed.includes(origin);
+}
+
+function requiresPrivilegedAuth(method: string, url: string) {
+  const path = url.split("?")[0] ?? url;
+  if (method === "OPTIONS" || !path.startsWith("/api/")) return false;
+  return !isPublicApiRoute(method, path);
+}
+
+function isPublicApiRoute(method: string, path: string) {
+  return method === "GET" && (path === "/api/settlement-stations" || path === "/api/data-sources");
+}
+
+function privilegedTokens() {
+  return [env.FORECASTEDGE_API_TOKEN, env.SCHEDULED_JOB_TOKEN].filter((token): token is string => Boolean(token));
+}
+
+function requestToken(headers: Record<string, unknown>) {
+  const direct = headers["x-forecastedge-token"] ?? headers["x-job-token"];
+  if (typeof direct === "string") return direct;
+  if (Array.isArray(direct)) return direct[0] ?? "";
+  return bearerToken(headers.authorization) ?? "";
 }
 
 function periodParam(value: unknown): 1 | 60 | 1440 {

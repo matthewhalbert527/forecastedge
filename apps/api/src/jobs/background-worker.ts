@@ -4,6 +4,7 @@ export interface BackgroundWorkerOptions {
   enabled: boolean;
   runOnStartup: boolean;
   intervalMinutes: number;
+  maxRssMb: number;
   quoteRefreshEnabled: boolean;
   quoteRefreshIntervalMinutes: number;
   logger: {
@@ -74,12 +75,22 @@ export class BackgroundWorker {
         lastRunAt: this.lastQuoteRefreshAt,
         lastError: this.lastQuoteRefreshError,
         runs: this.quoteRefreshes
+      },
+      memory: {
+        rssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+        maxRssMb: this.options.maxRssMb || null
       }
     };
   }
 
   private async run(trigger: "startup" | "scheduled") {
     if (this.running) return;
+    const memorySkip = this.memorySkipReason("scan");
+    if (memorySkip) {
+      this.lastError = memorySkip;
+      this.options.logger.info({ trigger, memory: this.memoryStatus() }, memorySkip);
+      return;
+    }
     this.running = true;
     try {
       await this.pipeline.runOnce(trigger);
@@ -97,6 +108,12 @@ export class BackgroundWorker {
 
   private async runQuoteRefresh() {
     if (this.running || this.quoteRefreshRunning) return;
+    const memorySkip = this.memorySkipReason("quote refresh");
+    if (memorySkip) {
+      this.lastQuoteRefreshError = memorySkip;
+      this.options.logger.info({ memory: this.memoryStatus() }, memorySkip);
+      return;
+    }
     this.quoteRefreshRunning = true;
     try {
       const result = await this.pipeline.refreshQuoteCandidates("quote_refresh");
@@ -110,5 +127,20 @@ export class BackgroundWorker {
     } finally {
       this.quoteRefreshRunning = false;
     }
+  }
+
+  private memorySkipReason(operation: string) {
+    const maxRssMb = this.options.maxRssMb;
+    if (maxRssMb <= 0) return null;
+    const rssMb = this.memoryStatus().rssMb;
+    if (rssMb < maxRssMb) return null;
+    return `Skipping ForecastEdge ${operation}; RSS ${rssMb} MB is at or above BACKGROUND_WORKER_MAX_RSS_MB=${maxRssMb}`;
+  }
+
+  private memoryStatus() {
+    return {
+      rssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      maxRssMb: this.options.maxRssMb || null
+    };
   }
 }

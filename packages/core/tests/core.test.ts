@@ -273,7 +273,7 @@ describe("paper broker", () => {
     expect(order.unfilledContracts).toBeGreaterThan(0);
   });
 
-  it("holds the full approved paper signal when displayed liquidity is thin", () => {
+  it("does not fabricate full fills when displayed liquidity is thin by default", () => {
     const [delta] = detectForecastDeltas(snapshot("old", 82), snapshot("new", 88));
     const mapping = parseKalshiWeatherMarket(market);
     const estimate = estimateMarketProbability(mapping, delta!, market);
@@ -285,23 +285,24 @@ describe("paper broker", () => {
       noBids: [{ price: 0.9, contracts: 2 }],
       observedAt: "2026-05-01T12:01:00Z"
     };
-    const order = simulatePaperOrder(signal, orderBook, undefined, new Date("2026-05-01T12:01:01Z"));
-    expect(order.status).toBe("FILLED");
-    expect(order.filledContracts).toBe(signal.contracts);
-    expect(order.unfilledContracts).toBe(0);
-    expect(order.reason).toContain("shortfall held hypothetically");
+    const largerSignal = { ...signal, contracts: Math.max(3, signal.contracts), maxCost: Number((Math.max(3, signal.contracts) * signal.limitPrice).toFixed(2)) };
+    const order = simulatePaperOrder(largerSignal, orderBook, undefined, new Date("2026-05-01T12:01:01Z"));
+    expect(order.status).toBe("PARTIAL");
+    expect(order.filledContracts).toBeGreaterThan(0);
+    expect(order.filledContracts).toBeLessThan(largerSignal.contracts);
+    expect(order.unfilledContracts).toBeGreaterThan(0);
   });
 
-  it("holds the approved paper signal at limit when the order book is unavailable", () => {
+  it("rejects the approved paper signal when the order book is unavailable by default", () => {
     const [delta] = detectForecastDeltas(snapshot("old", 82), snapshot("new", 88));
     const mapping = parseKalshiWeatherMarket(market);
     const estimate = estimateMarketProbability(mapping, delta!, market);
     const risk = { allowed: true, reasons: [] };
     const signal = generateSignal(delta!, market, mapping, estimate, risk, undefined, new Date("2026-05-01T12:01:00Z"));
     const order = simulatePaperOrder(signal, null, undefined, new Date("2026-05-01T12:01:01Z"));
-    expect(order.status).toBe("FILLED");
-    expect(order.filledContracts).toBe(signal.contracts);
-    expect(order.simulatedAvgFillPrice).toBe(signal.limitPrice);
+    expect(order.status).toBe("REJECTED");
+    expect(order.filledContracts).toBe(0);
+    expect(order.simulatedAvgFillPrice).toBeNull();
     expect(order.reason).toContain("order book unavailable");
   });
 });
@@ -427,7 +428,7 @@ describe("model ensemble", () => {
     const ensembles = buildEnsembles([
       { ...common, id: "hrrr", model: "hrrr", highTempF: 90 },
       { ...common, id: "ecmwf", model: "ecmwf_ifs", highTempF: 84 }
-    ]);
+    ], now);
     const high = ensembles.find((ensemble) => ensemble.variable === "high_temp");
     expect(high?.prediction).toBeGreaterThan(87);
     expect(high?.contributingModels).toEqual(expect.arrayContaining(["hrrr", "ecmwf_ifs"]));

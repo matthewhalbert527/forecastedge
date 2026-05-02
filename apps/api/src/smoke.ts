@@ -1,5 +1,9 @@
-import { buildServer } from "./server.js";
+process.env.RUN_BACKGROUND_WORKER ??= "false";
+process.env.RUN_ON_STARTUP ??= "false";
+process.env.RUN_QUOTE_REFRESH_WORKER ??= "false";
+if (process.env.SMOKE_USE_DATABASE !== "true") process.env.DATABASE_URL = "";
 
+const { buildServer } = await import("./server.js");
 const app = buildServer();
 const health = await app.inject({ method: "GET", url: "/health" });
 if (health.statusCode !== 200) {

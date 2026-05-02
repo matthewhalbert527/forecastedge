@@ -119,4 +119,22 @@ export class MemoryStore {
     this.scanReports = this.scanReports.slice(0, 50);
     return report;
   }
+
+  pruneHistory() {
+    this.forecastSnapshots = this.forecastSnapshots.slice(0, 500);
+    this.forecastDeltas = this.forecastDeltas.slice(0, 1_000);
+    this.markets = this.markets.slice(0, 2_000);
+    this.mappings = this.mappings.slice(0, 2_000);
+    this.signals = this.signals.slice(0, 1_000);
+    this.paperOrders = this.paperOrders.slice(0, 1_000);
+    this.trainingCandidates = this.trainingCandidates.slice(0, 1_000);
+    this.modelForecasts = this.modelForecasts.slice(0, 3_000);
+    this.ensembles = this.ensembles.slice(0, 1_000);
+    this.stationObservations = this.stationObservations.slice(0, 500);
+    this.scanReports = this.scanReports.slice(0, 50).map((report) => ({
+      ...report,
+      providerResults: report.providerResults.slice(0, 200),
+      decisions: report.decisions.slice(0, 500)
+    }));
+  }
 }

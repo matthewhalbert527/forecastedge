@@ -46,7 +46,14 @@ Important defaults:
 - `REQUIRE_MANUAL_CONFIRMATION=true`
 - `KILL_SWITCH_ENABLED=true`
 - `RUN_BACKGROUND_WORKER=false` locally, `true` on Render
+- `FORECASTEDGE_API_TOKEN` protects production API routes except `/health` and public reference metadata
 - `BACKGROUND_POLL_INTERVAL_MINUTES=15`
+- `BACKGROUND_WORKER_MAX_RSS_MB=0` locally, `420` on Render
+- `QUOTE_REFRESH_INTERVAL_MINUTES=5`
+- `QUOTE_REFRESH_MAX_TICKERS=25`
+- `QUOTE_REFRESH_MAX_PAPER_ORDERS=3`
+- `KALSHI_MARKET_DISCOVERY_LIMIT=100`
+- `KALSHI_MARKET_DISCOVERY_MAX_PAGES=1`
 - `ENABLE_MODEL_STACK=true`
 - `OPEN_METEO_GFS_BASE_URL=https://api.open-meteo.com/v1/gfs`
 - `OPEN_METEO_ECMWF_MODEL=ecmwf_ifs025`
@@ -74,7 +81,8 @@ To run scans continuously in a server process:
 RUN_BACKGROUND_WORKER=true npm run dev:api
 ```
 
-On Render this is enabled by `render.yaml`; the API runs one scan on startup and then repeats every 15 minutes.
+On Render this is enabled by `render.yaml`; the API uses a `standard` service instance, skips startup scans, runs the full background scan every 30 minutes, refreshes a bounded set of quote candidates every 5 minutes, and skips new background work when process RSS is at or above 1600 MB. The Render workspace/account plan is separate from each service's instance type; keep `forecastedge-api` above `starter` to avoid the 512 MB cap.
+Set the same `FORECASTEDGE_API_TOKEN` on `forecastedge-api` and `forecastedge-web` so the dashboard can call protected API routes through its same-origin proxy. In production, `/health`, `/api/settlement-stations`, and `/api/data-sources` remain public; operational dashboard, audit, learning, export, job, and mutation routes require a token.
 
 ## Render Deployment
 
@@ -84,7 +92,7 @@ This repo includes `render.yaml` for a Blueprint deployment with:
 - `forecastedge-web`
 - `forecastedge-db`
 
-Push the repo to GitHub/GitLab/Bitbucket, create a Render Blueprint from the repo, then set `NEXT_PUBLIC_API_URL` on `forecastedge-web` to the deployed API URL. Keep `LIVE_TRADING_ENABLED=false` and `KILL_SWITCH_ENABLED=true`.
+Push the repo to GitHub/GitLab/Bitbucket, create a Render Blueprint from the repo, then set matching `FORECASTEDGE_API_TOKEN` values on `forecastedge-api` and `forecastedge-web`. Keep `LIVE_TRADING_ENABLED=false` and `KILL_SWITCH_ENABLED=true`.
 
 ## Tests
 
@@ -284,7 +292,7 @@ Vercel is a good fit for the `apps/web` Next.js dashboard and preview deployment
 Recommended split:
 
 - Render: `forecastedge-api`, background polling, Postgres, historical sync/backtest data persistence.
-- Vercel: `apps/web`, with `NEXT_PUBLIC_API_URL=https://forecastedge-api.onrender.com`.
+- Vercel: `apps/web`, with `FORECASTEDGE_API_URL=https://forecastedge-api.onrender.com` and the same `FORECASTEDGE_API_TOKEN` used by the API.
 
 Do not move only one app's base URL or routing without verifying the shared production domain still serves the other app paths.
 

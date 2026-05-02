@@ -2,7 +2,7 @@ services:
   - type: web
     name: forecastedge-api
     runtime: node
-    plan: starter
+    plan: standard
     buildCommand: npm install --include=dev && npm run db:generate && npm run build:api
     preDeployCommand: npm run db:push:render
     startCommand: npm run start:api
@@ -22,15 +22,23 @@ services:
       - key: RUN_BACKGROUND_WORKER
         value: "true"
       - key: RUN_ON_STARTUP
-        value: "true"
+        value: "false"
       - key: BACKGROUND_POLL_INTERVAL_MINUTES
-        value: "15"
+        value: "30"
+      - key: BACKGROUND_WORKER_MAX_RSS_MB
+        value: "1600"
       - key: RUN_QUOTE_REFRESH_WORKER
         value: "true"
       - key: QUOTE_REFRESH_INTERVAL_MINUTES
-        value: "1"
+        value: "5"
+      - key: QUOTE_REFRESH_MAX_TICKERS
+        value: "25"
       - key: QUOTE_REFRESH_MAX_PAPER_ORDERS
-        value: "1000"
+        value: "3"
+      - key: FORECASTEDGE_API_TOKEN
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
       - key: SCHEDULED_JOB_TOKEN
         sync: false
       - key: STRATEGY_OPTIMIZER_SELECTION_GRID
@@ -61,6 +69,10 @@ services:
         value: https://demo-api.kalshi.co/trade-api/v2
       - key: KALSHI_WEATHER_SERIES_TICKERS
         value: KXHIGHNY,KXHIGHMIA,KXHIGHCHI,KXHIGHAUS,KXHIGHLAX,KXHIGHOKC,KXHIGHBOS,KXHIGHPHIL,KXHIGHDEN,KXHIGHPHX,KXHIGHLAS,KXHIGHSEA,KXHIGHATL,KXHIGHDC,KXHIGHDAL,KXHIGHHOU
+      - key: KALSHI_MARKET_DISCOVERY_LIMIT
+        value: "100"
+      - key: KALSHI_MARKET_DISCOVERY_MAX_PAGES
+        value: "1"
 
   - type: cron
     name: forecastedge-nightly-optimizer
@@ -101,9 +113,11 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: NEXT_PUBLIC_API_URL
+      - key: FORECASTEDGE_API_URL
+        value: https://forecastedge-api.onrender.com
+      - key: FORECASTEDGE_API_TOKEN
         sync: false
 
 databases:
   - name: forecastedge-db
-    plan: free
+    plan: basic-256mb

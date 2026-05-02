@@ -102,9 +102,9 @@ export async function discoverWeatherMarkets(): Promise<KalshiMarketCandidate[]>
 async function fetchMarkets(filters: { seriesTicker?: string; search?: string }) {
   const markets: Array<Record<string, unknown>> = [];
   let cursor: string | null = null;
-  for (let page = 0; page < 5; page += 1) {
+  for (let page = 0; page < env.KALSHI_MARKET_DISCOVERY_MAX_PAGES; page += 1) {
     const url = new URL(`${env.KALSHI_PROD_BASE_URL}/markets`);
-    url.searchParams.set("limit", "200");
+    url.searchParams.set("limit", String(env.KALSHI_MARKET_DISCOVERY_LIMIT));
     url.searchParams.set("status", "open");
     if (filters.seriesTicker) url.searchParams.set("series_ticker", filters.seriesTicker);
     if (filters.search) url.searchParams.set("search", filters.search);

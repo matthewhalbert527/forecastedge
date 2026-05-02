@@ -9,19 +9,28 @@ const booleanFromEnv = z.preprocess((value) => {
   return value;
 }, z.boolean());
 
+const optionalSecret = z.preprocess((value) => {
+  if (typeof value === "string" && value.trim().length === 0) return undefined;
+  return value;
+}, z.string().optional());
+
 const schema = z.object({
   NODE_ENV: z.string().default("development"),
   APP_MODE: z.enum(["watch", "paper", "demo", "live"]).default("paper"),
   API_PORT: z.coerce.number().default(4000),
   PAPER_LEARNING_MODE: booleanFromEnv.default(false),
-  RUN_BACKGROUND_WORKER: booleanFromEnv.default(true),
-  RUN_ON_STARTUP: booleanFromEnv.default(true),
-  BACKGROUND_POLL_INTERVAL_MINUTES: z.coerce.number().default(15).transform((minutes) => Math.min(minutes, 15)),
-  RUN_QUOTE_REFRESH_WORKER: booleanFromEnv.default(true),
-  QUOTE_REFRESH_INTERVAL_MINUTES: z.coerce.number().default(1).transform((minutes) => Math.max(1, minutes)),
-  QUOTE_REFRESH_MAX_PAPER_ORDERS: z.coerce.number().default(3),
-  SCHEDULED_JOB_TOKEN: z.string().optional(),
-  RESEND_API_KEY: z.string().optional(),
+  RUN_BACKGROUND_WORKER: booleanFromEnv.default(false),
+  RUN_ON_STARTUP: booleanFromEnv.default(false),
+  BACKGROUND_POLL_INTERVAL_MINUTES: z.coerce.number().default(15).transform((minutes) => clampInteger(minutes, 5, 120)),
+  BACKGROUND_WORKER_MAX_RSS_MB: z.coerce.number().default(0).transform((mb) => clampInteger(mb, 0, 8192)),
+  RUN_QUOTE_REFRESH_WORKER: booleanFromEnv.default(false),
+  QUOTE_REFRESH_INTERVAL_MINUTES: z.coerce.number().default(5).transform((minutes) => clampInteger(minutes, 1, 60)),
+  QUOTE_REFRESH_MAX_TICKERS: z.coerce.number().default(25).transform((count) => clampInteger(count, 1, 100)),
+  QUOTE_REFRESH_MAX_PAPER_ORDERS: z.coerce.number().default(3).transform((count) => clampInteger(count, 1, 50)),
+  FORECASTEDGE_API_TOKEN: optionalSecret,
+  CORS_ALLOWED_ORIGINS: z.string().default(""),
+  SCHEDULED_JOB_TOKEN: optionalSecret,
+  RESEND_API_KEY: optionalSecret,
   DAILY_REPORT_EMAIL_TO: z.string().optional(),
   DAILY_REPORT_EMAIL_FROM: z.string().optional(),
   SCHEDULED_HISTORICAL_SERIES_TICKERS: z.string().default(""),
@@ -45,13 +54,15 @@ const schema = z.object({
   KALSHI_PROD_BASE_URL: z.string().url().default("https://api.elections.kalshi.com/trade-api/v2"),
   KALSHI_DEMO_BASE_URL: z.string().url().default("https://demo-api.kalshi.co/trade-api/v2"),
   KALSHI_WEATHER_SERIES_TICKERS: z.string().default("KXHIGHNY,KXHIGHMIA,KXHIGHCHI,KXHIGHAUS,KXHIGHLAX,KXHIGHOKC,KXHIGHBOS,KXHIGHPHIL,KXHIGHDEN,KXHIGHPHX,KXHIGHLAS,KXHIGHSEA,KXHIGHATL,KXHIGHDC,KXHIGHDAL,KXHIGHHOU"),
+  KALSHI_MARKET_DISCOVERY_LIMIT: z.coerce.number().default(100).transform((limit) => clampInteger(limit, 25, 200)),
+  KALSHI_MARKET_DISCOVERY_MAX_PAGES: z.coerce.number().default(1).transform((pages) => clampInteger(pages, 1, 5)),
   ACCUWEATHER_BASE_URL: z.string().url().default("https://dataservice.accuweather.com"),
-  ACCUWEATHER_API_KEY: z.string().optional(),
-  NOAA_CDO_TOKEN: z.string().optional(),
-  KALSHI_DEMO_ACCESS_KEY: z.string().optional(),
-  KALSHI_DEMO_PRIVATE_KEY_PEM: z.string().optional(),
-  KALSHI_PROD_ACCESS_KEY: z.string().optional(),
-  KALSHI_PROD_PRIVATE_KEY_PEM: z.string().optional(),
+  ACCUWEATHER_API_KEY: optionalSecret,
+  NOAA_CDO_TOKEN: optionalSecret,
+  KALSHI_DEMO_ACCESS_KEY: optionalSecret,
+  KALSHI_DEMO_PRIVATE_KEY_PEM: optionalSecret,
+  KALSHI_PROD_ACCESS_KEY: optionalSecret,
+  KALSHI_PROD_PRIVATE_KEY_PEM: optionalSecret,
   LIVE_TRADING_ENABLED: booleanFromEnv.default(false),
   REQUIRE_MANUAL_CONFIRMATION: booleanFromEnv.default(true),
   KILL_SWITCH_ENABLED: booleanFromEnv.default(true),
@@ -88,3 +99,8 @@ export const activeRiskLimits = {
   staleMarketDataSeconds: env.STALE_MARKET_DATA_SECONDS,
   staleForecastDataMinutes: env.STALE_FORECAST_DATA_MINUTES
 };
+
+function clampInteger(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}

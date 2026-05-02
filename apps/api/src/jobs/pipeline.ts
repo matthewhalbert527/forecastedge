@@ -815,11 +815,20 @@ export class ForecastEdgePipeline {
   private finishReport(report: ReturnType<MemoryStore["startScan"]>) {
     report.completedAt = new Date().toISOString();
     report.status = report.decisions.some((decision) => decision.status === "error") ? "completed_with_errors" : "completed";
+    report.providerResults = report.providerResults.slice(0, 200);
+    report.decisions = report.decisions.slice(0, 500);
+    this.store.pruneHistory();
     this.audit.record({
       actor: "system",
       type: "scan_completed",
       message: `Scan ${report.id} completed: ${report.counts.marketsDiscovered} markets, ${report.counts.mappingsAccepted} accepted mappings, ${report.counts.signalsFired} fired signals`,
-      metadata: report
+      metadata: {
+        reportId: report.id,
+        trigger: report.trigger,
+        status: report.status,
+        counts: report.counts,
+        completedAt: report.completedAt
+      }
     });
   }
 
@@ -856,11 +865,11 @@ function baseTrainingCandidateConfig(): TrainingCandidateConfig {
 }
 
 function paperOrderLimit() {
-  return env.APP_MODE === "paper" && env.PAPER_LEARNING_MODE ? Number.MAX_SAFE_INTEGER : env.QUOTE_REFRESH_MAX_PAPER_ORDERS;
+  return env.QUOTE_REFRESH_MAX_PAPER_ORDERS;
 }
 
 function quoteRefreshTickerLimit() {
-  return env.APP_MODE === "paper" && env.PAPER_LEARNING_MODE ? Number.MAX_SAFE_INTEGER : 50;
+  return env.QUOTE_REFRESH_MAX_TICKERS;
 }
 
 function rankPurchaseCandidates(candidates: TrainingCandidate[]) {
