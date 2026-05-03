@@ -278,6 +278,7 @@ export default function Page() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [view, setView] = useState<View>("overview");
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const [isRetrying, setIsRetrying] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const refreshInFlight = useRef<Promise<void> | null>(null);
@@ -318,6 +319,18 @@ export default function Page() {
     }
   }
 
+  async function retryDashboardLoad() {
+    setIsRetrying(true);
+    setError(null);
+    try {
+      await refresh({ force: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load dashboard");
+    } finally {
+      setIsRetrying(false);
+    }
+  }
+
   useEffect(() => {
     refresh().catch((err: unknown) => setError(err instanceof Error ? err.message : "Unable to load dashboard"));
     const timer = window.setInterval(() => refresh().catch(() => undefined), dashboardRefreshIntervalMs);
@@ -331,9 +344,10 @@ export default function Page() {
   const worker = data?.backgroundWorker;
   const strategy = data?.strategyDecisionEngine ?? null;
   const latestLearning = data?.learning?.backtest ?? null;
+  const showInitialLoading = !data && !error;
 
   return (
-    <main className="app-shell" aria-busy={!data}>
+    <main className="app-shell" aria-busy={showInitialLoading || isRetrying || busyAction !== null}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><ThermometerSun size={20} /></div>
@@ -374,9 +388,18 @@ export default function Page() {
           </div>
         </header>
 
-        {error ? <div className="alert" role="alert"><AlertTriangle size={18} /> {error}</div> : null}
+        {error ? (
+          <div className="alert" role="alert">
+            <AlertTriangle size={18} />
+            <span className="alert-message">{error}</span>
+            <button type="button" className="alert-action" onClick={retryDashboardLoad} disabled={isRetrying}>
+              <RefreshCw size={14} />
+              {isRetrying ? "Retrying" : "Retry"}
+            </button>
+          </div>
+        ) : null}
         {notice ? <div className="notice" role="status" aria-live="polite">{notice}</div> : null}
-        {!data ? <div className="loading" role="status" aria-live="polite">Loading ForecastEdge from {apiUrl}</div> : null}
+        {showInitialLoading ? <div className="loading" role="status" aria-live="polite">Loading ForecastEdge from {apiUrl}</div> : null}
 
         {data ? (
           <>

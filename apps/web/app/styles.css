@@ -301,6 +301,32 @@ a.ghost-button:focus-visible,
   color: var(--good);
 }
 
+.alert-message {
+  min-width: 0;
+  flex: 1;
+}
+
+.alert-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  border: 1px solid color-mix(in srgb, var(--watch) 30%, white);
+  border-radius: 999px;
+  padding: 0 10px;
+  background: rgba(255, 254, 248, 0.74);
+  color: var(--watch);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.alert-action:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
 .health-strip {
   display: flex;
   flex-wrap: wrap;
@@ -1267,8 +1293,18 @@ a.ghost-button:focus-visible,
 
   .topbar-actions button,
   .hero-panel button,
-  .section-head button {
+  .section-head button,
+  .alert-action {
     width: 100%;
+  }
+
+  .alert {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .alert-action {
+    grid-column: 1 / -1;
   }
 
   .nav {
