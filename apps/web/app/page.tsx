@@ -862,15 +862,17 @@ function LedgerView({ data, model, performance, settleAction, busy }: { data: Da
 function ImprovementSnapshot({ strategy, latest, learning }: { strategy: StrategyDecisionData | null; latest: BacktestSummary | null; learning: DashboardData["learning"] | null }) {
   const optimizer = strategy?.latestOptimizerReport;
   const paper = strategy?.latestPaperTradingHealth;
+  const settledExamples = learning?.collection.settledPaperTradeExamples ?? 0;
+  const evidenceGateActive = optimizer?.status === "completed_no_settled_markets" || settledExamples === 0;
   return (
     <div className="improvement-copy">
-      <StatusPill tone={paper?.liveEdgeDegraded ? "watch" : optimizer?.status === "completed" ? "good" : "neutral"}>
-        {paper?.liveEdgeDegraded ? "Tightening" : optimizer?.status ?? "Learning"}
+      <StatusPill tone={evidenceGateActive || paper?.liveEdgeDegraded ? "watch" : optimizer?.status === "completed" ? "good" : "neutral"}>
+        {evidenceGateActive ? "Evidence gate" : paper?.liveEdgeDegraded ? "Review" : optimizer?.status ?? "Learning"}
       </StatusPill>
-      <p>{optimizer?.recommendation ?? "Waiting for enough settled paper outcomes before changing thresholds."}</p>
+      <p>{evidenceGateActive ? evidenceGateMessage(settledExamples, optimizer?.recommendation) : optimizer?.recommendation ?? "Waiting for enough settled paper outcomes before changing thresholds."}</p>
       <div className="mini-facts">
         <span>{learning?.collection.candidateSnapshots ?? 0} decisions</span>
-        <span>{learning?.collection.settledPaperTradeExamples ?? 0} settled examples</span>
+        <span>{settledExamples} settled examples</span>
         <span>{latestBacktestStatus(strategy?.latestBacktestHealth ?? latest)}</span>
       </div>
     </div>
@@ -922,6 +924,24 @@ function primaryAction(data: DashboardData, model: DashboardModel, strategy: Str
     };
   }
 
+  if (settledExamples < minSettledExamples || optimizerStatus === "completed_no_settled_markets" || backtestStatus === "Rejected") {
+    let gateReason = `${settledExamples} settled training examples are available, and ${minSettledExamples} are required before threshold changes are trustworthy.`;
+    if (optimizerStatus === "completed_no_settled_markets") {
+      gateReason = "No settled candidate markets are available yet, so optimizer changes stay blocked.";
+    } else if (backtestStatus === "Rejected") {
+      gateReason = "The latest replay is rejected, so threshold changes stay blocked until validation improves.";
+    }
+    const reviewDetail = paper?.liveEdgeDegraded || warningRecords > 0
+      ? ` ${reviewBlockers} review blocker${reviewBlockers === 1 ? "" : "s"} should still be checked before promotion.`
+      : "";
+    return {
+      tone: "watch",
+      label: optimizerStatus === "completed_no_settled_markets" ? "Evidence gate" : "Collecting",
+      title: "Keep collecting before changing the algorithm",
+      detail: `${gateReason} The system can still paper-buy candidates that pass current gates.${reviewDetail}`
+    };
+  }
+
   if (paper?.liveEdgeDegraded || warningRecords > 0) {
     return {
       tone: "watch",
@@ -930,15 +950,6 @@ function primaryAction(data: DashboardData, model: DashboardModel, strategy: Str
       detail: paper?.liveEdgeDegraded
         ? "Observed paper performance is trailing the expected edge, so the next improvement should come from reviewing fills, liquidity, and filters."
         : `${reviewBlockers} review blocker${reviewBlockers === 1 ? "" : "s"} still need attention before promoting a change.`
-    };
-  }
-
-  if (settledExamples < minSettledExamples || optimizerStatus === "completed_no_settled_markets" || backtestStatus === "Rejected") {
-    return {
-      tone: "watch",
-      label: "Collecting",
-      title: "Keep collecting before changing the algorithm",
-      detail: `${settledExamples} settled training examples are available, and ${minSettledExamples} are required before threshold changes are trustworthy. The system can still paper-buy candidates, but algorithm edits should wait.`
     };
   }
 
@@ -981,6 +992,11 @@ function learningNarrative(strategy: StrategyDecisionData | null, latest: Backte
   if (settled < 10) return `Collecting settled paper outcomes before tightening selectivity. ${settled} settled examples are available.`;
   const status = latestBacktestStatus(strategy?.latestBacktestHealth ?? latest);
   return `Latest automatic strategy status: ${status}.`;
+}
+
+function evidenceGateMessage(settledExamples: number, recommendation?: string) {
+  if (recommendation) return `${recommendation} ForecastEdge can keep paper trading with current gates, but threshold changes should wait.`;
+  return `${settledExamples} settled examples are available. ForecastEdge can keep paper trading with current gates, but threshold changes should wait.`;
 }
 
 function recentAuditIssues(data: DashboardData | null) {
