@@ -1065,6 +1065,10 @@ a.ghost-button:focus-visible,
   background: var(--danger);
 }
 
+.result-bar-track i.neutral {
+  background: var(--soft);
+}
+
 .empty-state {
   display: grid;
   place-items: center;

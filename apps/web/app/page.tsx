@@ -1177,25 +1177,28 @@ function ResultList({ results, expanded = false }: { results: ResultView[]; expa
   if (results.length === 0) return <EmptyState>No settled paper results yet</EmptyState>;
   return (
     <div className="result-list">
-      {results.map((result) => (
-        <article className="result-row" key={result.id}>
-          <div>
-            <div className="row-title">
-              <strong>{result.displayName}</strong>
-              <StatusPill tone={result.net >= 0 ? "good" : "danger"}>{result.net >= 0 ? "Won" : "Lost"}</StatusPill>
+      {results.map((result) => {
+        const outcome = resultOutcome(result.net);
+        return (
+          <article className="result-row" key={result.id}>
+            <div>
+              <div className="row-title">
+                <strong>{result.displayName}</strong>
+                <StatusPill tone={outcome.tone}>{outcome.label}</StatusPill>
+              </div>
+              <span className="row-subtitle">{result.marketTicker}</span>
             </div>
-            <span className="row-subtitle">{result.marketTicker}</span>
-          </div>
-          <div className="result-facts">
-            <Fact label="Final temp" value={result.finalTemperature} />
-            <Fact label="Outcome" value={result.result} />
-            <Fact label="Net" value={money(result.net)} good={result.net >= 0} danger={result.net < 0} />
-            {expanded ? <Fact label="Cost" value={money(result.cost)} /> : null}
-            {expanded ? <Fact label="Payout" value={money(result.payout)} /> : null}
-            {expanded ? <Fact label="Closed" value={dateTime(result.closedAt)} /> : null}
-          </div>
-        </article>
-      ))}
+            <div className="result-facts">
+              <Fact label="Final temp" value={result.finalTemperature} />
+              <Fact label="Outcome" value={result.result} />
+              <Fact label="Net" value={money(result.net)} good={result.net > 0} danger={result.net < 0} />
+              {expanded ? <Fact label="Cost" value={money(result.cost)} /> : null}
+              {expanded ? <Fact label="Payout" value={money(result.payout)} /> : null}
+              {expanded ? <Fact label="Closed" value={dateTime(result.closedAt)} /> : null}
+            </div>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -1203,13 +1206,14 @@ function ResultList({ results, expanded = false }: { results: ResultView[]; expa
 type ResultStats = {
   wins: number;
   losses: number;
+  flats: number;
   grossProfit: number;
   grossLoss: number;
 };
 
 function ResultStatsPanel({ title, stats, empty }: { title: string; stats: ResultStats; empty: string }) {
-  const settledCount = stats.wins + stats.losses;
-  const maxCount = Math.max(1, stats.wins, stats.losses);
+  const settledCount = stats.wins + stats.losses + stats.flats;
+  const maxCount = Math.max(1, stats.wins, stats.losses, stats.flats);
   const maxMoney = Math.max(1, stats.grossProfit, stats.grossLoss);
   return (
     <section className="result-chart-panel">
@@ -1221,6 +1225,7 @@ function ResultStatsPanel({ title, stats, empty }: { title: string; stats: Resul
         <div className="result-bars">
           <ResultBar label="Wins" value={stats.wins} display={String(stats.wins)} max={maxCount} tone="good" />
           <ResultBar label="Losses" value={stats.losses} display={String(stats.losses)} max={maxCount} tone="danger" />
+          <ResultBar label="Flat" value={stats.flats} display={String(stats.flats)} max={maxCount} tone="neutral" />
           <ResultBar label="Profit" value={stats.grossProfit} display={money(stats.grossProfit)} max={maxMoney} tone="good" />
           <ResultBar label="Amount lost" value={stats.grossLoss} display={money(stats.grossLoss)} max={maxMoney} tone="danger" />
         </div>
@@ -1229,7 +1234,7 @@ function ResultStatsPanel({ title, stats, empty }: { title: string; stats: Resul
   );
 }
 
-function ResultBar({ label, value, display, max, tone }: { label: string; value: number; display: string; max: number; tone: "good" | "danger" }) {
+function ResultBar({ label, value, display, max, tone }: { label: string; value: number; display: string; max: number; tone: "good" | "danger" | "neutral" }) {
   const width = `${Math.max(value > 0 ? 6 : 0, Math.min(100, (value / Math.max(max, 1)) * 100))}%`;
   return (
     <div className="result-bar-row">
@@ -1237,7 +1242,7 @@ function ResultBar({ label, value, display, max, tone }: { label: string; value:
       <div className="result-bar-track" aria-hidden="true">
         <i className={tone} style={{ width }} />
       </div>
-      <b className={tone === "good" ? "good-text" : "danger-text"}>{display}</b>
+      <b className={tone === "good" ? "good-text" : tone === "danger" ? "danger-text" : ""}>{display}</b>
     </div>
   );
 }
@@ -1524,15 +1529,23 @@ function resultAnalytics(results: ResultView[]) {
 
 function summarizeResultWindow(results: ResultView[]): ResultStats {
   return results.reduce<ResultStats>((stats, result) => {
-    if (result.net >= 0) {
+    if (result.net > 0) {
       stats.wins += 1;
       stats.grossProfit += result.net;
-    } else {
+    } else if (result.net < 0) {
       stats.losses += 1;
       stats.grossLoss += Math.abs(result.net);
+    } else {
+      stats.flats += 1;
     }
     return stats;
-  }, { wins: 0, losses: 0, grossProfit: 0, grossLoss: 0 });
+  }, { wins: 0, losses: 0, flats: 0, grossProfit: 0, grossLoss: 0 });
+}
+
+function resultOutcome(net: number): { label: string; tone: Tone } {
+  if (net > 0) return { label: "Won", tone: "good" };
+  if (net < 0) return { label: "Lost", tone: "danger" };
+  return { label: "Flat", tone: "neutral" };
 }
 
 function addDays(date: Date, days: number) {
