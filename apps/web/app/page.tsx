@@ -719,11 +719,12 @@ function recentScheduleEvents(data: DashboardData, strategy: StrategyDecisionDat
   }
 
   if (optimizer?.completedAt) {
+    const optimizerDisplay = optimizerStatusDisplay(optimizer);
     events.push({
       title: "Strategy optimizer",
       time: dateTime(optimizer.completedAt),
-      outcome: optimizerOutcomeLabel(optimizer),
-      tone: optimizer.status.toLowerCase().includes("fail") ? "danger" : "good",
+      outcome: optimizerOutcomeLabel(optimizer, optimizerDisplay),
+      tone: optimizerDisplay.tone,
       sortMs: dateMs(optimizer.completedAt)
     });
   }
@@ -818,9 +819,10 @@ function scheduledJobTone(job: NonNullable<DashboardData["scheduledJobs"]>[numbe
   return "neutral";
 }
 
-function optimizerOutcomeLabel(optimizer: NonNullable<StrategyDecisionData["latestOptimizerReport"]>) {
+function optimizerOutcomeLabel(optimizer: NonNullable<StrategyDecisionData["latestOptimizerReport"]>, display = optimizerStatusDisplay(optimizer)) {
+  if (display.label !== optimizerStatusLabel(optimizer.status)) return display.label;
   if (optimizer.recommendation && optimizer.recommendation.length <= 64) return optimizer.recommendation;
-  return optimizerStatusLabel(optimizer.status);
+  return display.label;
 }
 
 function PerformanceScorePanel({ windows }: { windows: PerformanceWindow[] }) {
