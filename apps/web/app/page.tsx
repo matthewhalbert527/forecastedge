@@ -563,6 +563,7 @@ function LearningView({ data, strategy, jobs, latest, learning }: { data: Dashbo
   const settledExamples = learning?.collection.settledPaperTradeExamples ?? 0;
   const minSettledExamples = data.backgroundWorker?.learningCycle?.minSettledExamples ?? 10;
   const auditIssues = recentAuditIssues(data);
+  const reviewBlockers = strategyReviewBlockers(strategy);
   return (
     <section className="stack details-stack">
       <section className="focus-panel neutral">
@@ -579,7 +580,7 @@ function LearningView({ data, strategy, jobs, latest, learning }: { data: Dashbo
         <Metric label="Settled examples" value={`${settledExamples}/${minSettledExamples}`} detail="minimum before changing thresholds" />
         <Metric label="Paper testing" value={(statuses?.paperTesting ?? 0) + (statuses?.walkForwardPassed ?? 0)} detail="strategy versions under validation" />
         <Metric label="Latest replay" value={latestBacktestStatus(strategy?.latestBacktestHealth ?? latest)} detail={`${latestBacktestRoi(strategy?.latestBacktestHealth ?? latest) === null ? "n/a" : formatPct(latestBacktestRoi(strategy?.latestBacktestHealth ?? latest))} ROI`} />
-        <Metric label="Warnings" value={strategy?.warningsRequiringReview.length ?? 0} detail="gates requiring review" />
+        <Metric label="Review blockers" value={reviewBlockers.length} detail={`${strategy?.warningsRequiringReview.length ?? 0} total warning records`} />
       </section>
       <section className="learning-flow">
         <FlowStep title="Collect" value={learning?.collection.quoteSnapshots ?? 0} detail="quote snapshots" />
@@ -663,14 +664,15 @@ function LearningView({ data, strategy, jobs, latest, learning }: { data: Dashbo
           </section>
         </Disclosure>
       ) : null}
-      <Disclosure title="Warnings requiring review">
+      <Disclosure title={`Review blockers (${reviewBlockers.length})`}>
         <SimpleTable
-          columns={["Time", "Status", "Severity", "Code", "Message"]}
-          rows={(strategy?.warningsRequiringReview ?? []).map((warning) => [
+          columns={["Latest", "Status", "Severity", "Code", "Seen", "Message"]}
+          rows={reviewBlockers.map((warning) => [
             dateTime(warning.startedAt),
             warning.approvalStatus,
             warning.severity,
             warning.code,
+            String(warning.count),
             warning.message
           ])}
           empty="No warnings requiring review"
@@ -897,7 +899,8 @@ function primaryAction(data: DashboardData, model: DashboardModel, strategy: Str
   const settledExamples = data.learning?.collection.settledPaperTradeExamples ?? 0;
   const minSettledExamples = data.backgroundWorker?.learningCycle?.minSettledExamples ?? 10;
   const optimizerStatus = strategy?.latestOptimizerReport?.status ?? "";
-  const warnings = strategy?.warningsRequiringReview.length ?? 0;
+  const warningRecords = strategy?.warningsRequiringReview.length ?? 0;
+  const reviewBlockers = uniqueReviewBlockerCount(strategy);
   const backtestStatus = latestBacktestStatus(strategy?.latestBacktestHealth ?? latest);
   const paper = strategy?.latestPaperTradingHealth;
 
@@ -919,14 +922,14 @@ function primaryAction(data: DashboardData, model: DashboardModel, strategy: Str
     };
   }
 
-  if (paper?.liveEdgeDegraded || warnings > 0) {
+  if (paper?.liveEdgeDegraded || warningRecords > 0) {
     return {
       tone: "watch",
       label: "Review",
       title: "Paper results need review",
       detail: paper?.liveEdgeDegraded
         ? "Observed paper performance is trailing the expected edge, so the next improvement should come from reviewing fills, liquidity, and filters."
-        : `${warnings} strategy warning${warnings === 1 ? "" : "s"} still need review before promoting a change.`
+        : `${reviewBlockers} review blocker${reviewBlockers === 1 ? "" : "s"} still need attention before promoting a change.`
     };
   }
 
@@ -982,6 +985,38 @@ function learningNarrative(strategy: StrategyDecisionData | null, latest: Backte
 
 function recentAuditIssues(data: DashboardData | null) {
   return (data?.auditLogs ?? []).filter((log) => log.type === "error" || log.type === "live_order_blocked");
+}
+
+function strategyReviewBlockers(strategy: StrategyDecisionData | null) {
+  const grouped = new Map<string, StrategyDecisionData["warningsRequiringReview"][number] & { count: number }>();
+  for (const warning of strategy?.warningsRequiringReview ?? []) {
+    const key = `${warning.severity}:${warning.code}:${warning.message}`;
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, { ...warning, count: 1 });
+      continue;
+    }
+    existing.count += 1;
+    if (new Date(warning.startedAt).getTime() > new Date(existing.startedAt).getTime()) {
+      existing.startedAt = warning.startedAt;
+      existing.approvalStatus = warning.approvalStatus;
+    }
+  }
+  return [...grouped.values()].sort((a, b) => {
+    const severityDelta = severityRank(b.severity) - severityRank(a.severity);
+    if (severityDelta !== 0) return severityDelta;
+    return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime();
+  });
+}
+
+function uniqueReviewBlockerCount(strategy: StrategyDecisionData | null) {
+  return strategyReviewBlockers(strategy).length;
+}
+
+function severityRank(severity: string) {
+  if (severity === "critical") return 3;
+  if (severity === "warning") return 2;
+  return 1;
 }
 
 function auditIssueLabel(issues: ReturnType<typeof recentAuditIssues>) {
