@@ -434,9 +434,19 @@ export default function Page() {
             <section className="health-strip" role="status" aria-live="polite">
               <StatusDot tone={scanVerdict.tone} label={scanVerdict.label} />
               <span>{latestScan ? `${labelForTrigger(latestScan.trigger)} at ${time(latestScan.startedAt)}` : "No scan yet"}</span>
-              <span>{model.strong.length} buys ready</span>
-              <span>{model.openPositions.length} open positions</span>
-              <span>{auditIssueLabel(auditIssues)}</span>
+              {view === "overview" ? (
+                <>
+                  <span>Optimizer {optimizerStatusLabel(strategy?.latestOptimizerReport?.status)}</span>
+                  <span>{latestBacktestStatus(strategy?.latestBacktestHealth ?? latestLearning)} replay</span>
+                  <span>{data.learning?.collection.settledPaperTradeExamples ?? 0}/{worker?.learningCycle?.minSettledExamples ?? 10} settled examples</span>
+                </>
+              ) : (
+                <>
+                  <span>{model.strong.length} buys ready</span>
+                  <span>{model.openPositions.length} open positions</span>
+                  <span>{auditIssueLabel(auditIssues)}</span>
+                </>
+              )}
               <StatusDot tone={freshnessVerdict.tone} label={freshnessVerdict.label} />
               <span>{worker?.memory ? memoryLabel(worker.memory) : data.paperLearningMode ? "learning mode" : "risk capped"}</span>
             </section>
@@ -466,14 +476,19 @@ function OverviewView({ data, model, performance, performanceWindows, strategy, 
   const latestScan = data.scanReports[0] ?? null;
   const action = primaryAction(data, model, strategy, latest);
   const bestWindow = bestPerformanceWindow(performanceWindows);
-  const latestResults = model.results.slice(0, 3);
+  const latestBacktest = strategy?.latestBacktestHealth ?? latest;
+  const latestReplayStatus = latestBacktestStatus(latestBacktest);
+  const latestReplayRoi = latestBacktestRoi(latestBacktest);
+  const dataQualityScore = latestBacktestDataQualityScore(latestBacktest);
+  const dataQuality = latestBacktestDataQuality(latestBacktest);
+  const optimizerStatus = optimizerStatusLabel(strategy?.latestOptimizerReport?.status);
+  const optimizerCompletedAt = strategy?.latestOptimizerReport?.completedAt;
+  const analytics = resultAnalytics(model.results);
+  const allTimeSettled = analytics.allTime.wins + analytics.allTime.losses + analytics.allTime.flats;
+  const allTimeWinRate = allTimeSettled > 0 ? analytics.allTime.wins / allTimeSettled : null;
+  const reviewBlockers = uniqueReviewBlockerCount(strategy);
   const settledExamples = data.learning?.collection.settledPaperTradeExamples ?? 0;
   const minSettledExamples = data.backgroundWorker?.learningCycle?.minSettledExamples ?? 10;
-  const memory = data.backgroundWorker?.memory;
-  const openPositionPreviewCount = Math.min(model.openPositions.length, 3);
-  const openPositionPreviewLabel = model.openPositions.length > openPositionPreviewCount
-    ? `showing ${openPositionPreviewCount} of ${model.openPositions.length}`
-    : `${model.openPositions.length} held`;
   return (
     <section className="overview-stack">
       <section className={`focus-panel ${action.tone}`}>
@@ -484,35 +499,49 @@ function OverviewView({ data, model, performance, performanceWindows, strategy, 
         </div>
         <div className="focus-facts">
           <Fact label="Last scan" value={latestScan ? dateTime(latestScan.startedAt) : "pending"} />
-          <Fact label="Quote loop" value={data.backgroundWorker?.quoteRefresh?.enabled ? `${data.backgroundWorker.quoteRefresh.intervalMinutes} min` : "paused"} good={Boolean(data.backgroundWorker?.quoteRefresh?.enabled)} />
-          <Fact label="Learning" value={`${settledExamples}/${minSettledExamples} settled`} danger={settledExamples < minSettledExamples} />
-          <Fact label="Memory" value={memory ? memoryLabel(memory) : "n/a"} danger={memoryNearLimit(memory)} />
+          <Fact label="Optimizer" value={optimizerStatus} good={optimizerStatus === "Completed"} danger={optimizerStatus === "Failed"} />
+          <Fact label="Latest replay" value={latestReplayStatus} danger={latestReplayStatus === "Rejected"} />
+          <Fact label="Data quality" value={dataQuality} good={dataQualityScore !== null && dataQualityScore >= 80} danger={dataQualityScore !== null && dataQualityScore < 60} />
         </div>
       </section>
       <section className="page-grid primary-grid">
-        <Metric label="Ready to buy" value={model.strong.length} detail={`${model.watch.length} watched, ${model.riskBlockedStrong.length} risk blocked`} />
-        <Metric label="Open exposure" value={money(model.openCost)} detail={`${model.openPositions.length} positions, ${model.openContracts} contracts`} />
+        <Metric label="Optimizer" value={optimizerStatus} detail={optimizerCompletedAt ? `last adjusted ${dateTime(optimizerCompletedAt)}` : "latest automatic adjustment state"} />
+        <Metric label="Latest replay" value={latestReplayStatus} detail={`${latestReplayRoi === null ? "n/a" : formatPct(latestReplayRoi)} ROI`} />
+        <Metric label="Best score" value={bestWindow ? scoreLabel(bestWindow.score) : "n/a"} detail={bestWindow ? `${bestWindow.label}, ${bestWindow.settledTrades} settled` : "waiting for settled outcomes"} />
         <Metric label="Settled evidence" value={`${settledExamples}/${minSettledExamples}`} detail={`${data.learning?.collection.paperTradeExamples ?? 0} paper examples stored`} />
-        <Metric label="Paper P/L" value={money(performance.realizedPnl)} detail={`${performance.settledTrades || model.results.length} settled outcomes`} />
       </section>
       <section className="overview-columns simple-columns">
-        <Panel title="Buy candidates" action={<span className="panel-note">{model.strong.length > 3 ? `${model.strong.length - 3} more` : "top signals"}</span>}>
-          <CandidateList candidates={model.strong.slice(0, 3)} empty="No model-approved buys right now" />
+        <Panel title="Algorithm adjustments" action={<span className="panel-note">{reviewBlockers} blockers</span>}>
+          <ImprovementSnapshot strategy={strategy} latest={latest} learning={data.learning ?? null} />
         </Panel>
-        <Panel title="Open positions preview" action={<span className="panel-note">{openPositionPreviewLabel}</span>}>
-          <HoldingList positions={model.openPositions.slice(0, 3)} />
+        <Panel title="Success data" action={<span className="panel-note">{allTimeSettled} settled</span>}>
+          <SimpleTable
+            columns={["Metric", "Value"]}
+            rows={[
+              ["Win rate", formatPct(allTimeWinRate)],
+              ["Wins / losses", `${analytics.allTime.wins} / ${analytics.allTime.losses}`],
+              ["Paper P/L", money(performance.realizedPnl)],
+              ["Best score", bestWindow ? `${scoreLabel(bestWindow.score)} over ${bestWindow.label}` : "waiting"],
+              ["Replay ROI", latestReplayRoi === null ? "n/a" : formatPct(latestReplayRoi)],
+              ["Data quality", dataQuality]
+            ]}
+            empty="No success data yet"
+          />
         </Panel>
       </section>
       <Disclosure title="Learning and performance details">
-        <div className="detail-summary-grid">
-          <Panel title="Improvement loop">
-            <ImprovementSnapshot strategy={strategy} latest={latest} learning={data.learning ?? null} />
-          </Panel>
-          <Panel title="Recent outcomes">
-            {latestResults.length > 0 ? <ResultList results={latestResults} /> : <EmptyState>No settled wins or losses yet</EmptyState>}
-          </Panel>
-        </div>
         <PerformanceScorePanel windows={performanceWindows} />
+        <SimpleTable
+          columns={["Metric", "Value"]}
+          rows={[
+            ["Quote snapshots", String(data.learning?.collection.quoteSnapshots ?? 0)],
+            ["Candidate decisions", String(data.learning?.collection.candidateSnapshots ?? 0)],
+            ["Paper examples", String(data.learning?.collection.paperTradeExamples ?? 0)],
+            ["Settled examples", `${settledExamples}/${minSettledExamples}`],
+            ["Review blockers", String(reviewBlockers)]
+          ]}
+          empty="No learning detail yet"
+        />
         <div className="quiet-summary">
           <span>Best score: {bestWindow ? `${scoreLabel(bestWindow.score)} over ${bestWindow.label}` : "waiting for settled trades"}</span>
           <span>Mode: {data.mode}</span>
@@ -964,7 +993,7 @@ function primaryAction(data: DashboardData, model: DashboardModel, strategy: Str
       tone: "good",
       label: "Scanning",
       title: "Reevaluating markets now",
-      detail: "ForecastEdge is refreshing quotes, reranking candidates, and simulating only the paper buys that pass model and risk checks."
+      detail: "ForecastEdge is refreshing quotes, reranking candidates, and collecting paper outcomes under the current model gates."
     };
   }
 
@@ -984,7 +1013,7 @@ function primaryAction(data: DashboardData, model: DashboardModel, strategy: Str
       tone: "watch",
       label: optimizerStatus.startsWith("completed_no_") ? "Evidence gate" : "Collecting",
       title: "Keep collecting before changing the algorithm",
-      detail: `${gateReason} The system can still paper-buy candidates that pass current gates.${reviewDetail}`
+      detail: `${gateReason} The system can keep collecting outcomes under the current gates.${reviewDetail}`
     };
   }
 
@@ -1002,17 +1031,17 @@ function primaryAction(data: DashboardData, model: DashboardModel, strategy: Str
   if (model.strong.length > 0) {
     return {
       tone: "good",
-      label: "Buying",
-      title: `${model.strong.length} paper buy candidate${model.strong.length === 1 ? "" : "s"} ready`,
-      detail: `The quote loop is checking every ${quote.intervalMinutes} minute${quote.intervalMinutes === 1 ? "" : "s"} and will paper-buy candidates that clear the current gates.`
+      label: "Active",
+      title: "Current gates are producing approved decisions",
+      detail: `The quote loop is checking every ${quote.intervalMinutes} minute${quote.intervalMinutes === 1 ? "" : "s"} while the learning loop measures whether the current algorithm keeps improving.`
     };
   }
 
   return {
     tone: "neutral",
     label: "Watching",
-    title: "No paper buy is ready right now",
-    detail: `ForecastEdge is still checking every ${quote.intervalMinutes} minute${quote.intervalMinutes === 1 ? "" : "s"} and will surface a buy when edge, liquidity, and risk controls line up.`
+    title: "Monitoring the current algorithm",
+    detail: `ForecastEdge is still checking every ${quote.intervalMinutes} minute${quote.intervalMinutes === 1 ? "" : "s"} and collecting decisions for the next optimizer review.`
   };
 }
 
