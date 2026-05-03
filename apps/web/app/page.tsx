@@ -1085,26 +1085,32 @@ function CandidateList({ candidates, empty, expanded = false, compact = false }:
   if (candidates.length === 0) return <EmptyState>{empty}</EmptyState>;
   return (
     <div className={compact ? "candidate-list compact" : "candidate-list"}>
-      {candidates.map((candidate) => (
-        <article className="bet-row" key={candidate.marketTicker}>
-          <div className="bet-main">
-            <strong>{candidate.displayName}</strong>
-            <span>{candidate.marketTicker}</span>
-          </div>
-          <div className="bet-facts">
-            <Fact label="Forecast" value={candidate.forecast} help="The model forecast compared with the market line." />
-            <Fact label="Ask" value={price(candidate.entryPrice)} help="The current YES ask used as the simulated entry price." />
-            <Fact label="Edge" value={formatPct(candidate.edge)} good={candidate.status === "WOULD_BUY"} help="Model probability minus market-implied probability." />
-            {expanded ? <Fact label="Model" value={formatPct(candidate.yesProbability)} help="The model's estimated chance that YES wins." /> : null}
-            {expanded ? <Fact label="Target" value={candidate.target} help="The temperature line this market resolves against." /> : null}
-            {expanded ? <Fact label="Expires" value={candidate.expiresAt} help="Last trading time for this Kalshi market when available." /> : null}
-            {expanded ? <Fact label="Left" value={candidate.timeToExpiration} help="Approximate time until market close." /> : null}
-          </div>
-          <div className="bet-action">
-            <StatusPill tone={candidate.status === "WOULD_BUY" ? "good" : candidate.status === "WATCH" ? "watch" : "neutral"}>{candidate.status === "WOULD_BUY" ? "Strong" : candidate.status === "WATCH" ? "Watch" : "Blocked"}</StatusPill>
-          </div>
-        </article>
-      ))}
+      {candidates.map((candidate) => {
+        const isRiskBlocked = candidate.riskBlockers.length > 0;
+        const pillTone = isRiskBlocked ? "watch" : candidate.status === "WOULD_BUY" ? "good" : candidate.status === "WATCH" ? "watch" : "neutral";
+        const pillLabel = isRiskBlocked ? "Risk blocked" : candidate.status === "WOULD_BUY" ? "Strong" : candidate.status === "WATCH" ? "Watch" : "Blocked";
+        return (
+          <article className="bet-row" key={candidate.marketTicker}>
+            <div className="bet-main">
+              <strong>{candidate.displayName}</strong>
+              <span>{candidate.marketTicker}</span>
+            </div>
+            <div className="bet-facts">
+              <Fact label="Forecast" value={candidate.forecast} help="The model forecast compared with the market line." />
+              <Fact label="Ask" value={price(candidate.entryPrice)} help="The current YES ask used as the simulated entry price." />
+              <Fact label="Edge" value={formatPct(candidate.edge)} good={candidate.status === "WOULD_BUY" && !isRiskBlocked} help="Model probability minus market-implied probability." />
+              {expanded ? <Fact label="Model" value={formatPct(candidate.yesProbability)} help="The model's estimated chance that YES wins." /> : null}
+              {expanded ? <Fact label="Target" value={candidate.target} help="The temperature line this market resolves against." /> : null}
+              {expanded ? <Fact label="Expires" value={candidate.expiresAt} help="Last trading time for this Kalshi market when available." /> : null}
+              {expanded ? <Fact label="Left" value={candidate.timeToExpiration} help="Approximate time until market close." /> : null}
+            </div>
+            <div className="bet-action">
+              <StatusPill tone={pillTone}>{pillLabel}</StatusPill>
+              {isRiskBlocked ? <span className="risk-reason">{candidate.riskBlockers[0]}</span> : null}
+            </div>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -1343,7 +1349,10 @@ function buildDashboardModel(data: DashboardData | null) {
   const riskState = buildRiskState(data, positions);
   const strong = strongCandidates.filter((candidate) => !openPositionTickers.has(candidate.marketTicker) && candidateRiskBlockers(candidate, riskState).length === 0).map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker), markets.get(candidate.marketTicker)));
   const heldStrong = strongCandidates.filter((candidate) => openPositionTickers.has(candidate.marketTicker)).map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker), markets.get(candidate.marketTicker)));
-  const riskBlockedStrong = strongCandidates.filter((candidate) => !openPositionTickers.has(candidate.marketTicker) && candidateRiskBlockers(candidate, riskState).length > 0).map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker), markets.get(candidate.marketTicker)));
+  const riskBlockedStrong = strongCandidates
+    .map((candidate) => ({ candidate, riskBlockers: candidateRiskBlockers(candidate, riskState) }))
+    .filter(({ candidate, riskBlockers }) => !openPositionTickers.has(candidate.marketTicker) && riskBlockers.length > 0)
+    .map(({ candidate, riskBlockers }) => candidateView(candidate, mappings.get(candidate.marketTicker), markets.get(candidate.marketTicker), riskBlockers));
   const watch = candidates.filter((candidate) => candidate.status === "WATCH" && !openPositionTickers.has(candidate.marketTicker)).map((candidate) => candidateView(candidate, mappings.get(candidate.marketTicker), markets.get(candidate.marketTicker)));
   const openPositions = positions.filter((position) => !position.closedAt).map((position) => holdingView(position, mappings.get(position.marketTicker), markets.get(position.marketTicker)));
   const results = positions.filter((position) => position.closedAt).map((position) => resultView(position, mappings.get(position.marketTicker), settlements.get(position.marketTicker)));
@@ -1427,10 +1436,11 @@ function paperPositions(positions: DashboardData["paperPositions"], orders: Dash
   });
 }
 
-function candidateView(candidate: DashboardData["trainingCandidates"][number], mapping: DashboardData["mappings"][number] | undefined, market: MarketView | undefined) {
+function candidateView(candidate: DashboardData["trainingCandidates"][number], mapping: DashboardData["mappings"][number] | undefined, market: MarketView | undefined, riskBlockers: string[] = []) {
   const expiry = expiryView(market, mapping?.targetDate ?? candidate.targetDate);
   return {
     ...candidate,
+    riskBlockers,
     displayName: displayName(candidate.marketTicker, candidate.city, mapping?.location?.state, market?.title ?? mapping?.title),
     forecast: forecastText(candidate),
     target: mappingLine(mapping ?? candidate, market),
