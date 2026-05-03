@@ -1207,10 +1207,6 @@ function HoldingList({ positions }: { positions: HoldingView[]; expanded?: boole
             <span className="row-expand-label" aria-hidden="true"><ChevronDown size={16} /></span>
           </summary>
           <div className="expandable-body">
-            <div className="row-title">
-              <strong>{position.displayName}</strong>
-              <StatusPill tone="good">Held</StatusPill>
-            </div>
             <div className="fact-grid">
               <Fact label="Entry" value={price(position.avgEntryPrice)} help="Average simulated fill price per YES contract." />
               <Fact label="P/L" value={moneyOrPending(position.unrealizedPnl)} good={(position.unrealizedPnl ?? 0) > 0} danger={(position.unrealizedPnl ?? 0) < 0} help="Current value minus entry cost; unrealized until settlement." />
@@ -1253,11 +1249,6 @@ function ResultList({ results }: { results: ResultView[]; expanded?: boolean }) 
               <span className="row-expand-label" aria-hidden="true"><ChevronDown size={16} /></span>
             </summary>
             <div className="expandable-body">
-              <div className="row-title">
-                <strong>{result.displayName}</strong>
-                <StatusPill tone={outcome.tone}>{outcome.label}</StatusPill>
-              </div>
-              <span className="row-subtitle">{result.marketTicker}</span>
               <div className="result-facts">
                 <Fact label="Final temp" value={result.finalTemperature} />
                 <Fact label="Outcome" value={result.result} />
@@ -1401,6 +1392,27 @@ function Disclosure({ title, children }: { title: string; children: ReactNode })
 function SimpleTable({ columns, rows, empty }: { columns: string[]; rows: Array<Array<ReactNode>>; empty: string }) {
   if (rows.length === 0) return <EmptyState>{empty}</EmptyState>;
   const summaryColumns = Math.min(columns.length, 3);
+  const hasHiddenDetails = columns.length > summaryColumns;
+  if (!hasHiddenDetails) {
+    return (
+      <div className="simple-table" role="table" aria-colcount={columns.length} aria-rowcount={rows.length + 1} style={{ "--columns": columns.length } as CSSProperties}>
+        <div className="simple-row header" role="row">
+          {columns.map((column) => <span key={column} role="columnheader">{column}</span>)}
+        </div>
+        {rows.map((row, index) => (
+          <div className="simple-row readable-row" key={index} role="row">
+            {row.map((cell, cellIndex) => (
+              <span key={cellIndex} role="cell">
+                <small>{columns[cellIndex]}</small>
+                <b>{cell}</b>
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="simple-table collapsible-table" role="table" aria-colcount={columns.length} aria-rowcount={rows.length + 1} style={{ "--columns": columns.length, "--summary-columns": summaryColumns } as CSSProperties}>
       <div className="simple-row header" role="row">
@@ -1419,12 +1431,15 @@ function SimpleTable({ columns, rows, empty }: { columns: string[]; rows: Array<
             <span className="row-expand-label table-expand" aria-hidden="true"><ChevronDown size={16} /></span>
           </summary>
           <div className="simple-row-details" role="group">
-            {row.map((cell, cellIndex) => (
+            {row.slice(summaryColumns).map((cell, offset) => {
+              const cellIndex = summaryColumns + offset;
+              return (
               <span className="detail-pair" key={cellIndex}>
                 <small>{columns[cellIndex]}</small>
                 <b>{cell}</b>
               </span>
-            ))}
+              );
+            })}
           </div>
         </details>
       ))}
