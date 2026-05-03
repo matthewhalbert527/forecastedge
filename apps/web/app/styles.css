@@ -281,12 +281,12 @@ button {
   gap: 10px;
 }
 
-.command-panel {
+.focus-panel {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(340px, 0.8fr);
   gap: 14px;
   align-items: center;
-  min-height: 152px;
+  min-height: 150px;
   padding: 18px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -294,13 +294,25 @@ button {
   box-shadow: var(--shadow);
 }
 
-.command-panel h3 {
+.focus-panel.good {
+  border-color: #acd9bd;
+}
+
+.focus-panel.watch {
+  border-color: #e8c988;
+}
+
+.focus-panel.danger {
+  border-color: #efb3aa;
+}
+
+.focus-panel h3 {
   margin: 0 0 7px;
   font-size: 30px;
   line-height: 1.02;
 }
 
-.command-panel p,
+.focus-panel p,
 .improvement-copy p {
   margin: 0;
   color: var(--muted);
@@ -308,7 +320,11 @@ button {
   line-height: 1.5;
 }
 
-.loop-facts {
+.focus-panel .status-pill {
+  margin-bottom: 10px;
+}
+
+.focus-facts {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
@@ -322,6 +338,27 @@ button {
 
 .overview-columns .panel {
   grid-column: auto;
+}
+
+.single-column,
+.detail-summary-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.detail-summary-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 10px;
+}
+
+.single-column .panel,
+.detail-summary-grid .panel {
+  grid-column: auto;
+}
+
+.nested-stack {
+  gap: 10px;
 }
 
 .simple-head {
@@ -527,6 +564,12 @@ button {
   margin: 0;
   font-size: 18px;
   line-height: 1.18;
+}
+
+.panel-note {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
 }
 
 .section-head {
@@ -1005,9 +1048,10 @@ button {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .command-panel,
+  .focus-panel,
   .overview-columns,
-  .learning-flow {
+  .learning-flow,
+  .detail-summary-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1045,7 +1089,7 @@ button {
 
   .topbar,
   .hero-panel,
-  .command-panel,
+  .focus-panel,
   .section-head,
   .panel-head {
     display: grid;
@@ -1087,7 +1131,7 @@ button {
     grid-template-columns: 1fr;
   }
 
-  .loop-facts {
+  .focus-facts {
     grid-template-columns: 1fr;
   }
 
