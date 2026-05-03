@@ -570,15 +570,18 @@ function LearningView({ data, strategy, jobs, latest, learning }: { data: Dashbo
   const minSettledExamples = data.backgroundWorker?.learningCycle?.minSettledExamples ?? 10;
   const auditIssues = recentAuditIssues(data);
   const reviewBlockers = strategyReviewBlockers(strategy);
+  const latestReplayStatus = latestBacktestStatus(strategy?.latestBacktestHealth ?? latest);
+  const optimizerStatus = strategy?.latestOptimizerReport?.status ?? "";
+  const evidenceGateActive = settledExamples < minSettledExamples || latestReplayStatus === "Rejected" || optimizerStatus.startsWith("completed_no_");
+  const learningTone: Tone = paper?.liveEdgeDegraded || evidenceGateActive ? "watch" : settledExamples >= minSettledExamples ? "good" : "neutral";
+  const learningLabel = paper?.liveEdgeDegraded ? "Needs review" : evidenceGateActive ? "Evidence gate" : "Learning loop";
   return (
     <section className="stack details-stack">
       <section className="focus-panel neutral">
         <div>
-          <StatusPill tone={paper?.liveEdgeDegraded ? "watch" : settledExamples >= minSettledExamples ? "good" : "neutral"}>
-            {paper?.liveEdgeDegraded ? "Needs more evidence" : "Learning loop"}
-          </StatusPill>
+          <StatusPill tone={learningTone}>{learningLabel}</StatusPill>
           <h3>Automatic learning</h3>
-          <p>{learningNarrative(strategy, latest, learning)}</p>
+          <p>{learningNarrative(strategy, latest, learning, minSettledExamples)}</p>
         </div>
         <ShieldCheck size={24} />
       </section>
@@ -995,12 +998,17 @@ function scoreLabel(score: number | null) {
   return score === null ? "n/a" : String(score);
 }
 
-function learningNarrative(strategy: StrategyDecisionData | null, latest: BacktestSummary | null, learning: DashboardData["learning"] | null) {
+function learningNarrative(strategy: StrategyDecisionData | null, latest: BacktestSummary | null, learning: DashboardData["learning"] | null, minSettledExamples: number) {
   const optimizer = strategy?.latestOptimizerReport;
-  if (optimizer?.recommendation) return optimizer.recommendation;
   const settled = learning?.collection.settledPaperTradeExamples ?? 0;
-  if (settled < 10) return `Collecting settled paper outcomes before tightening selectivity. ${settled} settled examples are available.`;
   const status = latestBacktestStatus(strategy?.latestBacktestHealth ?? latest);
+  if (settled < minSettledExamples) {
+    const gate = `Collecting settled paper outcomes before tightening selectivity. ${settled}/${minSettledExamples} settled examples are available.`;
+    return optimizer?.recommendation ? `${gate} Latest optimizer: ${optimizer.recommendation}` : gate;
+  }
+  if (status === "Rejected") return "Latest replay is rejected, so strategy changes stay blocked until validation improves.";
+  if (optimizer?.status?.startsWith("completed_no_")) return optimizer.recommendation ?? "No optimizer challenger passed approval gates, so threshold changes stay blocked.";
+  if (optimizer?.recommendation) return optimizer.recommendation;
   return `Latest automatic strategy status: ${status}.`;
 }
 
