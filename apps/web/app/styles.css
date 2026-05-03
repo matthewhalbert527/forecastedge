@@ -48,6 +48,14 @@ button {
   font: inherit;
 }
 
+button:focus-visible,
+a.ghost-button:focus-visible,
+.disclosure summary:focus-visible,
+.help-tip:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--blue) 58%, white);
+  outline-offset: 3px;
+}
+
 .app-shell {
   position: relative;
   min-height: 100vh;
@@ -829,6 +837,7 @@ button {
 .help-tip {
   display: inline-grid;
   place-items: center;
+  border-radius: 999px;
   color: var(--soft);
   cursor: help;
 }
@@ -1131,6 +1140,17 @@ button {
 .panel,
 .disclosure {
   animation: page-rise 420ms ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 .recommendation-copy {

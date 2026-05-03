@@ -331,7 +331,7 @@ export default function Page() {
   const latestLearning = data?.learning?.backtest ?? null;
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" aria-busy={!data}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><ThermometerSun size={20} /></div>
@@ -342,7 +342,7 @@ export default function Page() {
         </div>
         <nav className="nav" aria-label="Primary">
           {navItems.map(({ key, label, icon: Icon }) => (
-            <button key={key} className={view === key ? "active" : ""} onClick={() => setView(key)}>
+            <button key={key} type="button" className={view === key ? "active" : ""} aria-pressed={view === key} onClick={() => setView(key)}>
               <Icon size={17} />
               <span>{label}</span>
             </button>
@@ -361,24 +361,24 @@ export default function Page() {
             <h2>{viewTitle(view)}</h2>
           </div>
           <div className="topbar-actions">
-            <button className="ghost-button" onClick={() => runAction("scan", "/run-once")} disabled={busyAction !== null}>
+            <button type="button" className="ghost-button" aria-busy={busyAction === "scan"} onClick={() => runAction("scan", "/run-once")} disabled={busyAction !== null}>
               <RefreshCw size={16} />
               {busyAction === "scan" ? "Scanning" : "Full scan"}
             </button>
-            <button className="ghost-button" onClick={() => runAction("settle", "/settlements/run-once")} disabled={busyAction !== null}>
+            <button type="button" className="ghost-button" aria-busy={busyAction === "settle"} onClick={() => runAction("settle", "/settlements/run-once")} disabled={busyAction !== null}>
               <Clock3 size={16} />
               {busyAction === "settle" ? "Checking" : "Check results"}
             </button>
           </div>
         </header>
 
-        {error ? <div className="alert"><AlertTriangle size={18} /> {error}</div> : null}
-        {notice ? <div className="notice">{notice}</div> : null}
-        {!data ? <div className="loading">Loading ForecastEdge from {apiUrl}</div> : null}
+        {error ? <div className="alert" role="alert"><AlertTriangle size={18} /> {error}</div> : null}
+        {notice ? <div className="notice" role="status" aria-live="polite">{notice}</div> : null}
+        {!data ? <div className="loading" role="status" aria-live="polite">Loading ForecastEdge from {apiUrl}</div> : null}
 
         {data ? (
           <>
-            <section className="health-strip">
+            <section className="health-strip" role="status" aria-live="polite">
               <StatusDot tone={scanVerdict.tone} label={scanVerdict.label} />
               <span>{latestScan ? `${labelForTrigger(latestScan.trigger)} at ${time(latestScan.startedAt)}` : "No scan yet"}</span>
               <span>{model.strong.length} buys ready</span>
@@ -749,7 +749,7 @@ function LedgerView({ data, model, performance, settleAction, busy }: { data: Da
           <p>{money(performance.realizedPnl)} settled P/L across {performance.settledTrades || model.results.length} settled outcomes. Detailed audit data is collapsed below.</p>
         </div>
         <div className="topbar-actions">
-          <button className="ghost-button" onClick={settleAction} disabled={busy}>
+          <button type="button" className="ghost-button" aria-busy={busy} onClick={settleAction} disabled={busy}>
             <Clock3 size={16} />
             {busy ? "Checking" : "Check results"}
           </button>
@@ -1122,7 +1122,7 @@ function Fact({ label, value, good = false, danger = false, help }: { label: str
 
 function HelpTip({ text }: { text: string }) {
   return (
-    <span className="help-tip" title={text} aria-label={text}>
+    <span className="help-tip" title={text} aria-label={text} tabIndex={0}>
       <CircleHelp size={12} />
     </span>
   );
