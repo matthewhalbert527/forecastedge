@@ -588,13 +588,13 @@ function LearningView({ data, strategy, jobs, latest, learning }: { data: Dashbo
         <FlowStep title="Collect" value={learning?.collection.quoteSnapshots ?? 0} detail="quote snapshots" />
         <FlowStep title="Decide" value={learning?.collection.candidateSnapshots ?? 0} detail="candidate decisions" />
         <FlowStep title="Paper trade" value={learning?.collection.paperTradeExamples ?? 0} detail="paper examples" />
-        <FlowStep title="Adjust" value={strategy?.latestOptimizerReport?.status ?? "pending"} detail={strategy?.latestOptimizerReport?.completedAt ? dateTime(strategy.latestOptimizerReport.completedAt) : "waiting for optimizer"} />
+        <FlowStep title="Adjust" value={optimizerStatusLabel(strategy?.latestOptimizerReport?.status)} detail={strategy?.latestOptimizerReport?.completedAt ? dateTime(strategy.latestOptimizerReport.completedAt) : "waiting for optimizer"} />
       </section>
       <Disclosure title="Optimizer details">
         <SimpleTable
           columns={["Signal", "Value"]}
           rows={[
-            ["Optimizer", strategy?.latestOptimizerReport?.status ?? "pending"],
+            ["Optimizer", optimizerStatusLabel(strategy?.latestOptimizerReport?.status)],
             ["Recommendation", strategy?.latestOptimizerReport?.recommendation ?? "No optimizer recommendation yet"],
             ["Best candidate", strategy?.latestOptimizerReport?.bestCandidate?.optimizerCandidateId ?? "none"],
             ["Hypothetical P/L", moneyOrPending(strategy?.latestOptimizerReport?.bestCandidate?.totalPnl ?? null)],
@@ -870,7 +870,7 @@ function ImprovementSnapshot({ strategy, latest, learning }: { strategy: Strateg
   return (
     <div className="improvement-copy">
       <StatusPill tone={evidenceGateActive || paper?.liveEdgeDegraded ? "watch" : optimizer?.status === "completed" ? "good" : "neutral"}>
-        {evidenceGateActive ? "Evidence gate" : paper?.liveEdgeDegraded ? "Review" : optimizer?.status ?? "Learning"}
+        {evidenceGateActive ? "Evidence gate" : paper?.liveEdgeDegraded ? "Review" : optimizer ? optimizerStatusLabel(optimizer.status) : "Learning"}
       </StatusPill>
       <p>{evidenceGateActive ? evidenceGateMessage(settledExamples, optimizer?.recommendation) : optimizer?.recommendation ?? "Waiting for enough settled paper outcomes before changing thresholds."}</p>
       <div className="mini-facts">
@@ -904,6 +904,7 @@ function primaryAction(data: DashboardData, model: DashboardModel, strategy: Str
   const settledExamples = data.learning?.collection.settledPaperTradeExamples ?? 0;
   const minSettledExamples = data.backgroundWorker?.learningCycle?.minSettledExamples ?? 10;
   const optimizerStatus = strategy?.latestOptimizerReport?.status ?? "";
+  const optimizerRecommendation = strategy?.latestOptimizerReport?.recommendation;
   const warningRecords = strategy?.warningsRequiringReview.length ?? 0;
   const reviewBlockers = uniqueReviewBlockerCount(strategy);
   const backtestStatus = latestBacktestStatus(strategy?.latestBacktestHealth ?? latest);
@@ -927,10 +928,12 @@ function primaryAction(data: DashboardData, model: DashboardModel, strategy: Str
     };
   }
 
-  if (settledExamples < minSettledExamples || optimizerStatus === "completed_no_settled_markets" || backtestStatus === "Rejected") {
+  if (settledExamples < minSettledExamples || optimizerStatus === "completed_no_settled_markets" || optimizerStatus === "completed_no_candidate" || backtestStatus === "Rejected") {
     let gateReason = `${settledExamples} settled training examples are available, and ${minSettledExamples} are required before threshold changes are trustworthy.`;
     if (optimizerStatus === "completed_no_settled_markets") {
       gateReason = "No settled candidate markets are available yet, so optimizer changes stay blocked.";
+    } else if (optimizerStatus === "completed_no_candidate") {
+      gateReason = optimizerRecommendation ?? "No challenger passed approval gates, so optimizer changes stay blocked.";
     } else if (backtestStatus === "Rejected") {
       gateReason = "The latest replay is rejected, so threshold changes stay blocked until validation improves.";
     }
@@ -939,7 +942,7 @@ function primaryAction(data: DashboardData, model: DashboardModel, strategy: Str
       : "";
     return {
       tone: "watch",
-      label: optimizerStatus === "completed_no_settled_markets" ? "Evidence gate" : "Collecting",
+      label: optimizerStatus.startsWith("completed_no_") ? "Evidence gate" : "Collecting",
       title: "Keep collecting before changing the algorithm",
       detail: `${gateReason} The system can still paper-buy candidates that pass current gates.${reviewDetail}`
     };
@@ -995,6 +998,18 @@ function learningNarrative(strategy: StrategyDecisionData | null, latest: Backte
   if (settled < 10) return `Collecting settled paper outcomes before tightening selectivity. ${settled} settled examples are available.`;
   const status = latestBacktestStatus(strategy?.latestBacktestHealth ?? latest);
   return `Latest automatic strategy status: ${status}.`;
+}
+
+function optimizerStatusLabel(status: string | null | undefined) {
+  if (!status) return "Pending";
+  const labels: Record<string, string> = {
+    completed: "Completed",
+    completed_no_candidate: "No candidate passed",
+    completed_no_settled_markets: "No settled markets",
+    failed: "Failed",
+    running: "Running"
+  };
+  return labels[status] ?? labelize(status);
 }
 
 function evidenceGateMessage(settledExamples: number, recommendation?: string) {
