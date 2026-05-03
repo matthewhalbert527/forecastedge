@@ -1158,7 +1158,7 @@ function CandidateList({ candidates, empty, compact = false }: { candidates: Can
               </div>
               <div className="bet-action">
                 <StatusPill tone={pillTone}>{pillLabel}</StatusPill>
-                <span className="row-expand-label">Open details <ChevronDown size={14} /></span>
+                <span className="row-expand-label" aria-hidden="true"><ChevronDown size={16} /></span>
               </div>
             </summary>
             <div className="expandable-body">
@@ -1204,7 +1204,7 @@ function HoldingList({ positions }: { positions: HoldingView[]; expanded?: boole
               <Fact label="P/L" value={moneyOrPending(position.unrealizedPnl)} good={(position.unrealizedPnl ?? 0) > 0} danger={(position.unrealizedPnl ?? 0) < 0} />
               <Fact label="Left" value={position.timeToExpiration} />
             </div>
-            <span className="row-expand-label">Open details <ChevronDown size={14} /></span>
+            <span className="row-expand-label" aria-hidden="true"><ChevronDown size={16} /></span>
           </summary>
           <div className="expandable-body">
             <div className="row-title">
@@ -1250,7 +1250,7 @@ function ResultList({ results }: { results: ResultView[]; expanded?: boolean }) 
                 <Fact label="Outcome" value={result.result} />
                 <Fact label="Net" value={money(result.net)} good={result.net > 0} danger={result.net < 0} />
               </div>
-              <span className="row-expand-label">Open details <ChevronDown size={14} /></span>
+              <span className="row-expand-label" aria-hidden="true"><ChevronDown size={16} /></span>
             </summary>
             <div className="expandable-body">
               <div className="row-title">
@@ -1405,7 +1405,7 @@ function SimpleTable({ columns, rows, empty }: { columns: string[]; rows: Array<
     <div className="simple-table collapsible-table" role="table" aria-colcount={columns.length} aria-rowcount={rows.length + 1} style={{ "--columns": columns.length, "--summary-columns": summaryColumns } as CSSProperties}>
       <div className="simple-row header" role="row">
         {columns.slice(0, summaryColumns).map((column) => <span key={column} role="columnheader">{column}</span>)}
-        <span role="columnheader">Open details</span>
+        <span role="columnheader" aria-label="Details" />
       </div>
       {rows.map((row, index) => (
         <details className="simple-row expandable-table-row" key={index} role="row">
@@ -1416,7 +1416,7 @@ function SimpleTable({ columns, rows, empty }: { columns: string[]; rows: Array<
                 <b>{cell}</b>
               </span>
             ))}
-            <span className="row-expand-label table-expand">Open details <ChevronDown size={14} /></span>
+            <span className="row-expand-label table-expand" aria-hidden="true"><ChevronDown size={16} /></span>
           </summary>
           <div className="simple-row-details" role="group">
             {row.map((cell, cellIndex) => (
