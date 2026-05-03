@@ -489,6 +489,7 @@ function OverviewView({ data, model, performance, performanceWindows, strategy, 
   const reviewBlockers = uniqueReviewBlockerCount(strategy);
   const settledExamples = data.learning?.collection.settledPaperTradeExamples ?? 0;
   const minSettledExamples = data.backgroundWorker?.learningCycle?.minSettledExamples ?? 10;
+  const scheduledEvents = upcomingEventRows(data, strategy);
   return (
     <section className="overview-stack">
       <section className={`focus-panel ${action.tone}`}>
@@ -529,6 +530,15 @@ function OverviewView({ data, model, performance, performanceWindows, strategy, 
           />
         </Panel>
       </section>
+      <section className="single-column">
+        <Panel title="Upcoming event schedule" action={<span className="panel-note">{scheduledEvents.length} events</span>}>
+          <SimpleTable
+            columns={["Event", "Next", "Last outcome"]}
+            rows={scheduledEvents}
+            empty="No scheduled events configured"
+          />
+        </Panel>
+      </section>
       <Disclosure title="Learning and performance details">
         <PerformanceScorePanel windows={performanceWindows} />
         <SimpleTable
@@ -550,6 +560,68 @@ function OverviewView({ data, model, performance, performanceWindows, strategy, 
       </Disclosure>
     </section>
   );
+}
+
+function upcomingEventRows(data: DashboardData, strategy: StrategyDecisionData | null): Array<Array<ReactNode>> {
+  const rows: Array<Array<ReactNode>> = [];
+  const quoteRefresh = data.backgroundWorker?.quoteRefresh;
+  const learningCycle = data.backgroundWorker?.learningCycle;
+
+  if (quoteRefresh) {
+    rows.push([
+      "Quote refresh",
+      quoteRefresh.running ? "running now" : quoteRefresh.enabled ? nextIntervalRun(quoteRefresh.lastRunAt, quoteRefresh.intervalMinutes) : "paused",
+      quoteRefresh.running ? "running now" : quoteRefresh.lastRunAt ? `Refreshed ${dateTime(quoteRefresh.lastRunAt)}` : "Not run yet"
+    ]);
+  }
+
+  if (learningCycle) {
+    rows.push([
+      "Learning cycle",
+      learningCycle.running ? "running now" : learningCycle.enabled ? nextIntervalRun(learningCycle.lastRunAt, learningCycle.intervalMinutes) : "paused",
+      learningCycle.running ? "running now" : learningCycle.lastError ? `Error: ${compactText(learningCycle.lastError)}` : learningCycle.lastRunAt ? `Completed ${dateTime(learningCycle.lastRunAt)}` : "Not run yet"
+    ]);
+  }
+
+  for (const job of data.scheduledJobs ?? []) {
+    rows.push([
+      job.label,
+      job.running ? "running now" : inferScheduledJobNextRun(job, strategy),
+      scheduledJobOutcome(job)
+    ]);
+  }
+
+  return rows.slice(0, 12);
+}
+
+function nextIntervalRun(lastRunAt: string | null, intervalMinutes: number) {
+  if (!lastRunAt) return intervalMinutes > 0 ? `within ${intervalMinutes} min` : "scheduled";
+  const next = addMinutes(new Date(lastRunAt), intervalMinutes);
+  if (!Number.isFinite(next.getTime())) return "scheduled";
+  return next.getTime() <= Date.now() ? "due now" : dateTime(next.toISOString());
+}
+
+function inferScheduledJobNextRun(job: NonNullable<DashboardData["scheduledJobs"]>[number], strategy: StrategyDecisionData | null) {
+  const label = `${job.id} ${job.label}`.toLowerCase();
+  if (job.lastRun?.status?.toLowerCase().includes("disabled")) return "paused";
+  if (label.includes("intraday")) return "intraday";
+  if (label.includes("daily")) return "daily review";
+  if (label.includes("nightly")) return "nightly";
+  if (label.includes("deep")) return "deep review window";
+  if (label.includes("replay") || label.includes("backtest") || label.includes("counterfactual")) return "scheduled replay";
+  if (label.includes("optimizer") || label.includes("strategy")) {
+    return strategy?.latestOptimizerReport?.completedAt ? `after ${dateTime(strategy.latestOptimizerReport.completedAt)}` : "after enough evidence";
+  }
+  if (label.includes("historical") || label.includes("archive")) return "background refresh";
+  return job.lastRun?.completedAt ? `after ${dateTime(job.lastRun.completedAt)}` : "scheduled";
+}
+
+function scheduledJobOutcome(job: NonNullable<DashboardData["scheduledJobs"]>[number]) {
+  if (job.running) return "running now";
+  if (!job.lastRun) return job.description || "Not run yet";
+  const status = sentenceCase(labelize(job.lastRun.status.toLowerCase()));
+  const message = compactText(job.lastRun.message);
+  return message ? `${status} ${dateTime(job.lastRun.completedAt)}: ${message}` : `${status} ${dateTime(job.lastRun.completedAt)}`;
 }
 
 function PerformanceScorePanel({ windows }: { windows: PerformanceWindow[] }) {
@@ -1708,6 +1780,12 @@ function addDays(date: Date, days: number) {
   return next;
 }
 
+function addMinutes(date: Date, minutes: number) {
+  const next = new Date(date);
+  next.setMinutes(next.getMinutes() + minutes);
+  return next;
+}
+
 function localDateKey(date: Date) {
   if (!Number.isFinite(date.getTime())) return "";
   const year = date.getFullYear();
@@ -1810,6 +1888,15 @@ function labelForTrigger(trigger: string) {
 
 function labelize(value: string) {
   return value.replace(/([A-Z])/g, " $1").replaceAll("_", " ").trim();
+}
+
+function sentenceCase(value: string) {
+  return value ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : value;
+}
+
+function compactText(value: string, maxLength = 120) {
+  const normalized = value.trim();
+  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength - 1).trim()}...`;
 }
 
 function valueForVariable(variable: string, value: number) {
