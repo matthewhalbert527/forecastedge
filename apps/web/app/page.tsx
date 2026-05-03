@@ -470,6 +470,10 @@ function OverviewView({ data, model, performance, performanceWindows, strategy, 
   const settledExamples = data.learning?.collection.settledPaperTradeExamples ?? 0;
   const minSettledExamples = data.backgroundWorker?.learningCycle?.minSettledExamples ?? 10;
   const memory = data.backgroundWorker?.memory;
+  const openPositionPreviewCount = Math.min(model.openPositions.length, 3);
+  const openPositionPreviewLabel = model.openPositions.length > openPositionPreviewCount
+    ? `showing ${openPositionPreviewCount} of ${model.openPositions.length}`
+    : `${model.openPositions.length} held`;
   return (
     <section className="overview-stack">
       <section className={`focus-panel ${action.tone}`}>
@@ -495,7 +499,7 @@ function OverviewView({ data, model, performance, performanceWindows, strategy, 
         <Panel title="Buy candidates" action={<span className="panel-note">{model.strong.length > 3 ? `${model.strong.length - 3} more` : "top signals"}</span>}>
           <CandidateList candidates={model.strong.slice(0, 3)} empty="No model-approved buys right now" />
         </Panel>
-        <Panel title="Open positions" action={<span className="panel-note">{model.openPositions.length} held</span>}>
+        <Panel title="Open positions preview" action={<span className="panel-note">{openPositionPreviewLabel}</span>}>
           <HoldingList positions={model.openPositions.slice(0, 3)} />
         </Panel>
       </section>
