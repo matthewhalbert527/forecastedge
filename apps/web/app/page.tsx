@@ -1313,13 +1313,13 @@ function Disclosure({ title, children }: { title: string; children: ReactNode })
 function SimpleTable({ columns, rows, empty }: { columns: string[]; rows: Array<Array<ReactNode>>; empty: string }) {
   if (rows.length === 0) return <EmptyState>{empty}</EmptyState>;
   return (
-    <div className="simple-table" style={{ "--columns": columns.length } as CSSProperties}>
-      <div className="simple-row header">
-        {columns.map((column) => <span key={column}>{column}</span>)}
+    <div className="simple-table" role="table" aria-colcount={columns.length} aria-rowcount={rows.length + 1} style={{ "--columns": columns.length } as CSSProperties}>
+      <div className="simple-row header" role="row">
+        {columns.map((column) => <span key={column} role="columnheader">{column}</span>)}
       </div>
       {rows.map((row, index) => (
-        <div className="simple-row" key={index}>
-          {row.map((cell, cellIndex) => <span key={cellIndex}>{cell}</span>)}
+        <div className="simple-row" key={index} role="row">
+          {row.map((cell, cellIndex) => <span key={cellIndex} role="cell">{cell}</span>)}
         </div>
       ))}
     </div>
