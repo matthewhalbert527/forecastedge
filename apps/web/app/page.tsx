@@ -380,6 +380,10 @@ export default function Page() {
             <h2>{viewTitle(view)}</h2>
           </div>
           <div className="topbar-actions">
+            <button type="button" className="ghost-button" aria-busy={isRetrying} onClick={retryDashboardLoad} disabled={isRetrying || busyAction !== null}>
+              <RefreshCw size={16} />
+              {isRetrying ? "Refreshing" : "Refresh view"}
+            </button>
             <button type="button" className="ghost-button" aria-busy={busyAction === "scan"} onClick={() => runAction("scan", "/run-once")} disabled={busyAction !== null}>
               <RefreshCw size={16} />
               {busyAction === "scan" ? "Scanning" : "Full scan"}
