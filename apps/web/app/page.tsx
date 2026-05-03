@@ -1130,7 +1130,7 @@ function compactAge(ms: number) {
   return `${Math.floor(hours / 24)}d`;
 }
 
-function CandidateList({ candidates, empty, expanded = false, compact = false }: { candidates: CandidateView[]; empty: string; expanded?: boolean; compact?: boolean }) {
+function CandidateList({ candidates, empty, compact = false }: { candidates: CandidateView[]; empty: string; expanded?: boolean; compact?: boolean }) {
   if (candidates.length === 0) return <EmptyState>{empty}</EmptyState>;
   return (
     <div className={compact ? "candidate-list compact" : "candidate-list"}>
@@ -1139,39 +1139,67 @@ function CandidateList({ candidates, empty, expanded = false, compact = false }:
         const pillTone = isRiskBlocked ? "watch" : candidate.status === "WOULD_BUY" ? "good" : candidate.status === "WATCH" ? "watch" : "neutral";
         const pillLabel = isRiskBlocked ? "Risk blocked" : candidate.status === "WOULD_BUY" ? "Strong" : candidate.status === "WATCH" ? "Watch" : "Blocked";
         return (
-          <article className="bet-row" key={candidate.marketTicker}>
-            <div className="bet-main">
-              <strong>{candidate.displayName}</strong>
-              <span>{candidate.marketTicker}</span>
+          <details className="bet-row expandable-card" key={candidate.marketTicker}>
+            <summary className="bet-summary">
+              <div className="bet-main">
+                <strong>{candidate.displayName}</strong>
+                <span>{candidate.marketTicker}</span>
+              </div>
+              <div className="bet-quick-facts">
+                <Fact label="Ask" value={price(candidate.entryPrice)} />
+                <Fact label="Edge" value={formatPct(candidate.edge)} good={candidate.status === "WOULD_BUY" && !isRiskBlocked} />
+              </div>
+              <div className="bet-action">
+                <StatusPill tone={pillTone}>{pillLabel}</StatusPill>
+                <span className="row-expand-label">Open details <ChevronDown size={14} /></span>
+              </div>
+            </summary>
+            <div className="expandable-body">
+              <div className="fact-grid">
+                <Fact label="Forecast" value={candidate.forecast} help="The model forecast compared with the market line." />
+                <Fact label="Model" value={formatPct(candidate.yesProbability)} help="The model's estimated chance that YES wins." />
+                <Fact label="Net edge" value={formatPct(candidate.netEdge ?? null)} help="Edge after estimated execution costs and penalties." />
+                <Fact label="Quality" value={candidate.qualityScore === null || candidate.qualityScore === undefined ? "n/a" : candidate.qualityScore.toFixed(2)} help="Composite score used to rank candidates." />
+                <Fact label="Spread" value={formatPct(candidate.spread)} help="YES ask minus YES bid." />
+                <Fact label="Liquidity" value={formatPct(candidate.liquidityScore)} help="Market liquidity score from the mapping layer." />
+                <Fact label="Target" value={candidate.target} help="The temperature line this market resolves against." />
+                <Fact label="Expires" value={candidate.expiresAt} help="Last trading time for this Kalshi market when available." />
+                <Fact label="Left" value={candidate.timeToExpiration} help="Approximate time until market close." />
+                <Fact label="Contracts" value={candidate.recommendedContracts ?? "n/a"} help="Recommended paper contract count before risk checks." />
+                <Fact label="Stake" value={moneyOrPending(candidate.recommendedStake ?? null)} help="Recommended paper stake before risk checks." />
+              </div>
+              {isRiskBlocked ? <p className="row-note warning">Risk blocker: {candidate.riskBlockers.join("; ")}</p> : null}
+              <p className="row-note">{candidate.reason}</p>
             </div>
-            <div className="bet-facts">
-              <Fact label="Forecast" value={candidate.forecast} help="The model forecast compared with the market line." />
-              <Fact label="Ask" value={price(candidate.entryPrice)} help="The current YES ask used as the simulated entry price." />
-              <Fact label="Edge" value={formatPct(candidate.edge)} good={candidate.status === "WOULD_BUY" && !isRiskBlocked} help="Model probability minus market-implied probability." />
-              {expanded ? <Fact label="Model" value={formatPct(candidate.yesProbability)} help="The model's estimated chance that YES wins." /> : null}
-              {expanded ? <Fact label="Target" value={candidate.target} help="The temperature line this market resolves against." /> : null}
-              {expanded ? <Fact label="Expires" value={candidate.expiresAt} help="Last trading time for this Kalshi market when available." /> : null}
-              {expanded ? <Fact label="Left" value={candidate.timeToExpiration} help="Approximate time until market close." /> : null}
-            </div>
-            <div className="bet-action">
-              <StatusPill tone={pillTone}>{pillLabel}</StatusPill>
-              {isRiskBlocked ? <span className="risk-reason">{candidate.riskBlockers[0]}</span> : null}
-            </div>
-          </article>
+          </details>
         );
       })}
     </div>
   );
 }
 
-function HoldingList({ positions, expanded = false }: { positions: HoldingView[]; expanded?: boolean }) {
+function HoldingList({ positions }: { positions: HoldingView[]; expanded?: boolean }) {
   if (positions.length === 0) return <EmptyState>No paper holdings yet</EmptyState>;
   return (
     <div className="timeline-list">
       {positions.map((position) => (
-        <article className="timeline-row" key={position.id}>
-          <div className="timeline-dot" />
-          <div className="timeline-content">
+        <details className="timeline-row expandable-card" key={position.id}>
+          <summary className="timeline-summary">
+            <div className="timeline-dot" />
+            <div className="timeline-content">
+              <div className="row-title">
+                <strong>{position.displayName}</strong>
+                <StatusPill tone="good">Held</StatusPill>
+              </div>
+              <span className="row-subtitle">{position.marketTicker}</span>
+            </div>
+            <div className="bet-quick-facts">
+              <Fact label="P/L" value={moneyOrPending(position.unrealizedPnl)} good={(position.unrealizedPnl ?? 0) > 0} danger={(position.unrealizedPnl ?? 0) < 0} />
+              <Fact label="Left" value={position.timeToExpiration} />
+            </div>
+            <span className="row-expand-label">Open details <ChevronDown size={14} /></span>
+          </summary>
+          <div className="expandable-body">
             <div className="row-title">
               <strong>{position.displayName}</strong>
               <StatusPill tone="good">Held</StatusPill>
@@ -1180,45 +1208,59 @@ function HoldingList({ positions, expanded = false }: { positions: HoldingView[]
               <Fact label="Entry" value={price(position.avgEntryPrice)} help="Average simulated fill price per YES contract." />
               <Fact label="P/L" value={moneyOrPending(position.unrealizedPnl)} good={(position.unrealizedPnl ?? 0) > 0} danger={(position.unrealizedPnl ?? 0) < 0} help="Current value minus entry cost; unrealized until settlement." />
               <Fact label="Left" value={position.timeToExpiration} help="Approximate time until market close." />
-              {expanded ? <Fact label="Current" value={moneyOrPending(position.currentValue)} help="Estimated exit value using the current YES bid when available." /> : null}
-              {expanded ? <Fact label="Expires" value={position.expiresAt} help="Last trading time for this market when available." /> : null}
-              {expanded ? <Fact label="Contracts" value={position.contracts} help="Number of paper YES contracts currently held." /> : null}
-              {expanded ? <Fact label="Cost" value={money(position.cost)} help="Entry price times filled contracts." /> : null}
-              {expanded ? <Fact label="Max payout" value={money(position.maxPayout)} help="Gross payout if every YES contract settles at $1." /> : null}
-              {expanded ? <Fact label="Target" value={position.target} help="The weather line this market resolves against." /> : null}
-              {expanded ? <Fact label="Opened" value={dateTime(position.openedAt)} help="When the paper order filled." /> : null}
+              <Fact label="Current" value={moneyOrPending(position.currentValue)} help="Estimated exit value using the current YES bid when available." />
+              <Fact label="Expires" value={position.expiresAt} help="Last trading time for this market when available." />
+              <Fact label="Contracts" value={position.contracts} help="Number of paper YES contracts currently held." />
+              <Fact label="Cost" value={money(position.cost)} help="Entry price times filled contracts." />
+              <Fact label="Max payout" value={money(position.maxPayout)} help="Gross payout if every YES contract settles at $1." />
+              <Fact label="Target" value={position.target} help="The weather line this market resolves against." />
+              <Fact label="Opened" value={dateTime(position.openedAt)} help="When the paper order filled." />
             </div>
           </div>
-        </article>
+        </details>
       ))}
     </div>
   );
 }
 
-function ResultList({ results, expanded = false }: { results: ResultView[]; expanded?: boolean }) {
+function ResultList({ results }: { results: ResultView[]; expanded?: boolean }) {
   if (results.length === 0) return <EmptyState>No settled paper results yet</EmptyState>;
   return (
     <div className="result-list">
       {results.map((result) => {
         const outcome = resultOutcome(result.net);
         return (
-          <article className="result-row" key={result.id}>
-            <div>
+          <details className="result-row expandable-card" key={result.id}>
+            <summary className="result-summary">
+              <div>
+                <div className="row-title">
+                  <strong>{result.displayName}</strong>
+                  <StatusPill tone={outcome.tone}>{outcome.label}</StatusPill>
+                </div>
+                <span className="row-subtitle">{result.marketTicker}</span>
+              </div>
+              <div className="bet-quick-facts">
+                <Fact label="Outcome" value={result.result} />
+                <Fact label="Net" value={money(result.net)} good={result.net > 0} danger={result.net < 0} />
+              </div>
+              <span className="row-expand-label">Open details <ChevronDown size={14} /></span>
+            </summary>
+            <div className="expandable-body">
               <div className="row-title">
                 <strong>{result.displayName}</strong>
                 <StatusPill tone={outcome.tone}>{outcome.label}</StatusPill>
               </div>
               <span className="row-subtitle">{result.marketTicker}</span>
+              <div className="result-facts">
+                <Fact label="Final temp" value={result.finalTemperature} />
+                <Fact label="Outcome" value={result.result} />
+                <Fact label="Net" value={money(result.net)} good={result.net > 0} danger={result.net < 0} />
+                <Fact label="Cost" value={money(result.cost)} />
+                <Fact label="Payout" value={money(result.payout)} />
+                <Fact label="Closed" value={dateTime(result.closedAt)} />
+              </div>
             </div>
-            <div className="result-facts">
-              <Fact label="Final temp" value={result.finalTemperature} />
-              <Fact label="Outcome" value={result.result} />
-              <Fact label="Net" value={money(result.net)} good={result.net > 0} danger={result.net < 0} />
-              {expanded ? <Fact label="Cost" value={money(result.cost)} /> : null}
-              {expanded ? <Fact label="Payout" value={money(result.payout)} /> : null}
-              {expanded ? <Fact label="Closed" value={dateTime(result.closedAt)} /> : null}
-            </div>
-          </article>
+          </details>
         );
       })}
     </div>
@@ -1351,15 +1393,33 @@ function Disclosure({ title, children }: { title: string; children: ReactNode })
 
 function SimpleTable({ columns, rows, empty }: { columns: string[]; rows: Array<Array<ReactNode>>; empty: string }) {
   if (rows.length === 0) return <EmptyState>{empty}</EmptyState>;
+  const summaryColumns = Math.min(columns.length, 3);
   return (
-    <div className="simple-table" role="table" aria-colcount={columns.length} aria-rowcount={rows.length + 1} style={{ "--columns": columns.length } as CSSProperties}>
+    <div className="simple-table collapsible-table" role="table" aria-colcount={columns.length} aria-rowcount={rows.length + 1} style={{ "--columns": columns.length, "--summary-columns": summaryColumns } as CSSProperties}>
       <div className="simple-row header" role="row">
-        {columns.map((column) => <span key={column} role="columnheader">{column}</span>)}
+        {columns.slice(0, summaryColumns).map((column) => <span key={column} role="columnheader">{column}</span>)}
+        <span role="columnheader">Open details</span>
       </div>
       {rows.map((row, index) => (
-        <div className="simple-row" key={index} role="row">
-          {row.map((cell, cellIndex) => <span key={cellIndex} role="cell">{cell}</span>)}
-        </div>
+        <details className="simple-row expandable-table-row" key={index} role="row">
+          <summary className="simple-row-summary">
+            {row.slice(0, summaryColumns).map((cell, cellIndex) => (
+              <span key={cellIndex} role="cell">
+                <small>{columns[cellIndex]}</small>
+                <b>{cell}</b>
+              </span>
+            ))}
+            <span className="row-expand-label table-expand">Open details <ChevronDown size={14} /></span>
+          </summary>
+          <div className="simple-row-details" role="group">
+            {row.map((cell, cellIndex) => (
+              <span className="detail-pair" key={cellIndex}>
+                <small>{columns[cellIndex]}</small>
+                <b>{cell}</b>
+              </span>
+            ))}
+          </div>
+        </details>
       ))}
     </div>
   );

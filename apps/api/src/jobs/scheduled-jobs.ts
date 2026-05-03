@@ -14,6 +14,7 @@ export type ScheduledJobId =
   | "refresh_historical_market_data"
   | "refresh_forecast_archive_data"
   | "optimize_strategy_candidates"
+  | "run_counterfactual_replay"
   | "run_nightly_backtests"
   | "update_paper_strategy_performance"
   | "generate_strategy_health_report"
@@ -110,6 +111,33 @@ export function createScheduledJobRegistry(deps: {
           optimizerRunId: report.id,
           champion: report.champion,
           bestCandidate: report.bestCandidate,
+          challengers: report.challengers.length
+        });
+      }
+    },
+    {
+      id: "run_counterfactual_replay",
+      label: "Run counterfactual replay",
+      description: "Replay stored WOULD_BUY, WATCH, and near-miss candidate snapshots against historical prices and settlements.",
+      run: async () => {
+        const window = centralDateWindow(30);
+        const report = await deps.pipeline.runCounterfactualReplay({
+          trigger: "scheduled_counterfactual_replay",
+          validationMode: "walk_forward",
+          slippageCents: 2,
+          startDate: window.startDate,
+          endDate: window.endDate,
+          lookbackDays: 30
+        });
+        const best = report.bestCandidate as { optimizerCandidateId?: string; evaluatedMarkets?: number; roi?: number; totalPnl?: number } | null;
+        const status = report.status === "failed" ? "failed" : report.status === "skipped" ? "skipped" : "completed";
+        return jobRun("run_counterfactual_replay", status, report.recommendation, {
+          replayRunId: report.id,
+          window,
+          bestCandidate: best?.optimizerCandidateId ?? null,
+          evaluatedMarkets: best?.evaluatedMarkets ?? null,
+          roi: best?.roi ?? null,
+          totalPnl: best?.totalPnl ?? null,
           challengers: report.challengers.length
         });
       }
@@ -267,4 +295,15 @@ function previousCentralDate(now = new Date()) {
   const [year = "1970", month = "01", day = "01"] = central.split("-");
   const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day) - 1));
   return date.toISOString().slice(0, 10);
+}
+
+function centralDateWindow(days: number, now = new Date()) {
+  const endDate = previousCentralDate(now);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - Math.max(0, days - 1));
+  return {
+    startDate: start.toISOString().slice(0, 10),
+    endDate
+  };
 }

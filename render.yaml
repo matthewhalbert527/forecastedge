@@ -97,6 +97,44 @@ services:
         value: "100"
       - key: KALSHI_MARKET_DISCOVERY_MAX_PAGES
         value: "1"
+      - key: SCHEDULED_HISTORICAL_SERIES_TICKERS
+        value: KXHIGHNY,KXHIGHMIA,KXHIGHCHI,KXHIGHAUS,KXHIGHLAX,KXHIGHOKC,KXHIGHBOS,KXHIGHPHIL,KXHIGHDEN,KXHIGHPHX,KXHIGHLAS,KXHIGHSEA,KXHIGHATL,KXHIGHDC,KXHIGHDAL,KXHIGHHOU
+      - key: SCHEDULED_HISTORICAL_LOOKBACK_DAYS
+        value: "7"
+      - key: SCHEDULED_HISTORICAL_MAX_SERIES
+        value: "3"
+      - key: SCHEDULED_HISTORICAL_MAX_MARKETS_PER_SERIES
+        value: "8"
+
+  - type: cron
+    name: forecastedge-historical-refresh
+    runtime: node
+    plan: starter
+    schedule: "30 7 * * *"
+    buildCommand: npm install --include=dev
+    startCommand: node scripts/run-scheduled-job.mjs refresh_historical_market_data
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FORECASTEDGE_API_URL
+        value: https://forecastedge-api.onrender.com
+      - key: SCHEDULED_JOB_TOKEN
+        sync: false
+
+  - type: cron
+    name: forecastedge-counterfactual-replay
+    runtime: node
+    plan: starter
+    schedule: "45 7 * * *"
+    buildCommand: npm install --include=dev
+    startCommand: node scripts/run-scheduled-job.mjs run_counterfactual_replay
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FORECASTEDGE_API_URL
+        value: https://forecastedge-api.onrender.com
+      - key: SCHEDULED_JOB_TOKEN
+        sync: false
 
   - type: cron
     name: forecastedge-nightly-optimizer

@@ -171,11 +171,20 @@ async function deterministicCounterfactuals(input: {
     startDate: window.startDate,
     endDate: window.endDate
   });
+  const counterfactualReplay = await input.pipeline.runCounterfactualReplay({
+    trigger: `gpt_${input.layer}_review`,
+    validationMode: "walk_forward",
+    slippageCents: 2,
+    startDate: window.startDate,
+    endDate: window.endDate,
+    lookbackDays: input.layer === "daily" ? 30 : 7
+  });
   return {
     skipped: false,
     window,
     alphaReport: compactOptimization(alphaReport),
-    optimizer: compactOptimization(optimizer)
+    optimizer: compactOptimization(optimizer),
+    counterfactualReplay: compactOptimization(counterfactualReplay)
   };
 }
 

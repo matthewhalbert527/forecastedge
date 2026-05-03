@@ -227,6 +227,7 @@ The API exposes deployment-safe job definitions without adding another infinite 
 - `refresh_historical_market_data`
 - `refresh_forecast_archive_data`
 - `optimize_strategy_candidates`
+- `run_counterfactual_replay`
 - `run_nightly_backtests`
 - `update_paper_strategy_performance`
 - `generate_strategy_health_report`
@@ -249,6 +250,12 @@ Run the bounded optimizer explicitly with:
 curl -X POST http://localhost:4000/api/jobs/optimize_strategy_candidates/run
 ```
 
+Run the counterfactual replay explicitly with:
+
+```bash
+curl -X POST http://localhost:4000/api/jobs/run_counterfactual_replay/run
+```
+
 Codex nightly research export:
 
 ```bash
@@ -257,9 +264,9 @@ npm run research:nightly-export -- --lookback-hours=24
 
 This calls `/api/research/nightly-export`, writes `tmp/nightly-research/latest.json`, and gives Codex a compact payload with strategy status, optimizer recommendations, data-quality warnings, paper-trading degradation, recent candidates, rejected strategy reasons, and required validation steps. The endpoint accepts `x-job-token` or `Authorization: Bearer ...` when `SCHEDULED_JOB_TOKEN` is configured.
 
-For production, set `SCHEDULED_JOB_TOKEN` on both `forecastedge-api` and `forecastedge-nightly-optimizer`. When set, scheduled job POSTs must include the matching `x-job-token` header.
+For production, set `SCHEDULED_JOB_TOKEN` on `forecastedge-api` and every ForecastEdge cron service. When set, scheduled job POSTs must include the matching `x-job-token` header.
 
-`render.yaml` includes a `forecastedge-nightly-optimizer` cron service scheduled as `0 8 * * *`. Render cron schedules are UTC, so this corresponds to 3am America/Chicago during daylight time. The cron job calls `https://forecastedge-api.onrender.com/api/jobs/optimize_strategy_candidates/run` once and exits.
+`render.yaml` includes a `forecastedge-historical-refresh` cron service scheduled as `30 7 * * *`, a `forecastedge-counterfactual-replay` cron service scheduled as `45 7 * * *`, and a `forecastedge-nightly-optimizer` cron service scheduled as `0 8 * * *`. Render cron schedules are UTC, so these correspond to 2:30am, 2:45am, and 3am America/Chicago during daylight time. The historical refresh pulls bounded Kalshi candles/trades before the counterfactual replay and optimizer replay strategy candidates; the optimizer calls `https://forecastedge-api.onrender.com/api/jobs/optimize_strategy_candidates/run` once and exits.
 
 The local Codex-side automation is installed with:
 
@@ -300,6 +307,8 @@ Historical refresh is opt-in and bounded by:
 - `STRATEGY_OPTIMIZER_MAX_SPREAD_GRID`
 - `STRATEGY_OPTIMIZER_SLIPPAGE_CENTS_GRID`
 - `STRATEGY_OPTIMIZER_SELECTION_GRID`
+
+The production default in `render.yaml` refreshes at most 3 weather series, 8 markets per series, and 7 days of historical candles/trades each day. Increase these limits gradually only after memory and database growth stay stable.
 
 The dataset export includes:
 

@@ -495,6 +495,23 @@ export class ForecastEdgePipeline {
     return this.persistentStore.runDailyAlphaReport(parameters);
   }
 
+  async runCounterfactualReplay(parameters: Record<string, unknown> = {}) {
+    if (!this.persistentStore) {
+      return {
+        id: "memory_counterfactual_replay",
+        status: "skipped",
+        recommendation: this.persistenceDisabledReason ?? "DATABASE_URL is required for counterfactual replay.",
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        searchSpace: {},
+        champion: null,
+        bestCandidate: null,
+        challengers: []
+      };
+    }
+    return this.persistentStore.runCounterfactualReplay(parameters);
+  }
+
   async exportLearningDataset() {
     if (!this.persistentStore) {
       return {

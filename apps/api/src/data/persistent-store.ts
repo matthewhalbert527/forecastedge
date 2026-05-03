@@ -1260,6 +1260,81 @@ export class PersistentStore {
     };
   }
 
+  async runCounterfactualReplay(parameters: Record<string, unknown> = {}) {
+    const startedAt = new Date();
+    const validationMode = optimizerValidationMode(parameters.validationMode);
+    const slippageCents = Math.round(numberParam(parameters.slippageCents, 0, 25) ?? 2);
+    const window = counterfactualReplayWindow(parameters);
+    const base = baseTrainingCandidateConfig();
+    const alphaConfig = await this.learnedTrainingCandidateConfig(base);
+    const plans = buildCounterfactualReplayPlans({
+      base,
+      alphaConfig,
+      validationMode,
+      slippageCents,
+      startDate: window.startDate,
+      endDate: window.endDate
+    });
+    const challengers = await Promise.all(plans.map(async (plan) => {
+      const summary = await this.backtestStoredWouldBuys(plan.options);
+      return {
+        ...alphaReportResult(plan.optimizerCandidateId, summary, plan.options),
+        hypothesis: plan.hypothesis
+      };
+    }));
+    const ranked = [...challengers].sort((a, b) => b.score - a.score);
+    const champion = challengers.find((candidate) => candidate.optimizerCandidateId === "current_would_buy") ?? null;
+    const bestCandidate = ranked[0] ?? null;
+    const recommendation = counterfactualReplayRecommendation(champion, bestCandidate);
+    const status = challengers.some((candidate) => candidate.evaluatedMarkets > 0) ? "completed" : "completed_no_settled_markets";
+    const completedAt = new Date();
+    const row = await this.prisma.strategyOptimizationRun.create({
+      data: {
+        status,
+        recommendation,
+        searchSpace: toJson({
+          trigger: stringParam(parameters.trigger) ?? "counterfactual_replay",
+          validationMode,
+          slippageCents,
+          startDate: window.startDate,
+          endDate: window.endDate,
+          lookbackDays: window.lookbackDays,
+          baseConfig: base,
+          learnedConfig: alphaConfig,
+          profiles: plans.map((plan) => ({
+            optimizerCandidateId: plan.optimizerCandidateId,
+            hypothesis: plan.hypothesis,
+            options: plan.options
+          }))
+        }),
+        champion: toJson(champion),
+        bestCandidate: toJson(bestCandidate),
+        challengers: toJson(ranked),
+        startedAt,
+        completedAt
+      }
+    });
+
+    return {
+      id: row.id,
+      status,
+      recommendation,
+      searchSpace: {
+        validationMode,
+        slippageCents,
+        startDate: window.startDate,
+        endDate: window.endDate,
+        lookbackDays: window.lookbackDays,
+        profiles: plans.map((plan) => ({ optimizerCandidateId: plan.optimizerCandidateId, hypothesis: plan.hypothesis }))
+      },
+      champion,
+      bestCandidate,
+      challengers: ranked,
+      startedAt: startedAt.toISOString(),
+      completedAt: completedAt.toISOString()
+    };
+  }
+
   private async *learningDatasetLines() {
     const counts = await this.datasetCounts();
     yield ndjsonLine({
@@ -2973,6 +3048,169 @@ function alphaRecommendation(
   const roiDelta = alpha.roi - baseline.roi;
   const direction = pnlDelta >= 0 ? "better" : "worse";
   return `Daily alpha replay: alpha would have made ${formatSignedMoney(alpha.totalPnl)} on ${alpha.evaluatedMarkets} settled trades (${(alpha.roi * 100).toFixed(1)}% ROI), versus baseline ${formatSignedMoney(baseline.totalPnl)} on ${baseline.evaluatedMarkets} trades (${(baseline.roi * 100).toFixed(1)}% ROI). Alpha was ${formatSignedMoney(pnlDelta)} ${direction} with a ${(roiDelta * 100).toFixed(1)} ROI-point difference.`;
+}
+
+function buildCounterfactualReplayPlans(input: {
+  base: TrainingCandidateConfig;
+  alphaConfig: TrainingCandidateConfig;
+  validationMode: StrategyValidationMode;
+  slippageCents: number;
+  startDate: string | null;
+  endDate: string | null;
+}) {
+  const common = {
+    validationMode: input.validationMode,
+    stakePerTrade: env.MAX_STAKE_PER_TRADE_PAPER,
+    maxContracts: activeRiskLimits.maxContractsPerTrade,
+    slippageCents: input.slippageCents,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    paperTradingStartDate: null
+  };
+  const baseFilters = {
+    minEdge: input.base.minEdge,
+    minLiquidityScore: input.base.minLiquidityScore,
+    maxSpread: input.base.maxSpread,
+    maxEntryPrice: null
+  };
+  const watchMinEdge = roundMetric(Math.max(0.01, input.base.minEdge - 0.03)) ?? 0.01;
+
+  return [
+    {
+      optimizerCandidateId: "current_would_buy",
+      hypothesis: "Current stored WOULD_BUY candidates bought with best-quality selection.",
+      options: {
+        ...common,
+        ...baseFilters,
+        strategyKey: "counterfactual_current_would_buy",
+        status: "WOULD_BUY",
+        selection: "best_quality" as const,
+        notes: "Counterfactual replay of current would-buy candidates"
+      }
+    },
+    {
+      optimizerCandidateId: "alpha_would_buy",
+      hypothesis: "Learned alpha thresholds applied to stored WOULD_BUY candidates.",
+      options: {
+        ...common,
+        strategyKey: "counterfactual_alpha_would_buy",
+        status: "WOULD_BUY",
+        selection: "best_quality" as const,
+        minEdge: input.alphaConfig.minEdge,
+        maxEntryPrice: input.alphaConfig.maxEntryPrice ?? null,
+        minLiquidityScore: input.alphaConfig.minLiquidityScore,
+        maxSpread: input.alphaConfig.maxSpread,
+        notes: "Counterfactual replay of learned alpha would-buy candidates"
+      }
+    },
+    {
+      optimizerCandidateId: "watch_near_miss",
+      hypothesis: "WATCH near-miss candidates bought when they were close to the base edge/liquidity/spread gates.",
+      options: {
+        ...common,
+        ...baseFilters,
+        minEdge: watchMinEdge,
+        strategyKey: "counterfactual_watch_near_miss",
+        status: "WATCH",
+        selection: "best_quality" as const,
+        notes: "Counterfactual replay of WATCH near-miss candidates"
+      }
+    },
+    {
+      optimizerCandidateId: "watch_each_signal",
+      hypothesis: "Every WATCH near-miss candidate bought to test whether selectivity is too strict.",
+      options: {
+        ...common,
+        ...baseFilters,
+        minEdge: watchMinEdge,
+        strategyKey: "counterfactual_watch_each_signal",
+        status: "WATCH",
+        selection: "each_signal" as const,
+        notes: "Counterfactual replay of every WATCH near-miss candidate"
+      }
+    },
+    {
+      optimizerCandidateId: "low_spread_watch",
+      hypothesis: "WATCH candidates bought only when spread was tighter than normal.",
+      options: {
+        ...common,
+        ...baseFilters,
+        minEdge: watchMinEdge,
+        maxSpread: Math.min(input.base.maxSpread, 0.06),
+        strategyKey: "counterfactual_low_spread_watch",
+        status: "WATCH",
+        selection: "best_quality" as const,
+        notes: "Counterfactual replay of tight-spread WATCH candidates"
+      }
+    },
+    {
+      optimizerCandidateId: "cheap_upside_watch",
+      hypothesis: "WATCH candidates bought only when entry price was capped to test cheaper asymmetric upside.",
+      options: {
+        ...common,
+        ...baseFilters,
+        minEdge: watchMinEdge,
+        maxEntryPrice: 0.4,
+        strategyKey: "counterfactual_cheap_upside_watch",
+        status: "WATCH",
+        selection: "best_edge" as const,
+        notes: "Counterfactual replay of cheap WATCH candidates"
+      }
+    },
+    {
+      optimizerCandidateId: "blocked_positive_edge",
+      hypothesis: "Positive-edge BLOCKED candidates bought to test whether hard blockers are hiding value.",
+      options: {
+        ...common,
+        ...baseFilters,
+        minEdge: 0.01,
+        strategyKey: "counterfactual_blocked_positive_edge",
+        status: "BLOCKED",
+        selection: "best_edge" as const,
+        notes: "Counterfactual replay of positive-edge blocked candidates"
+      }
+    }
+  ];
+}
+
+function counterfactualReplayWindow(parameters: Record<string, unknown>) {
+  const explicitStartDate = dateParam(parameters.startDate);
+  const explicitEndDate = dateParam(parameters.endDate);
+  const lookbackDays = Math.floor(numberParam(parameters.lookbackDays, 1, 180) ?? env.LEARNING_CYCLE_BACKTEST_LOOKBACK_DAYS);
+  if (explicitStartDate || explicitEndDate) {
+    return {
+      startDate: explicitStartDate,
+      endDate: explicitEndDate,
+      lookbackDays
+    };
+  }
+  const end = new Date();
+  end.setUTCDate(end.getUTCDate() - 1);
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - Math.max(0, lookbackDays - 1));
+  return {
+    startDate: start.toISOString().slice(0, 10),
+    endDate: end.toISOString().slice(0, 10),
+    lookbackDays
+  };
+}
+
+function counterfactualReplayRecommendation(
+  champion: ReturnType<typeof alphaReportResult> | null,
+  bestCandidate: ReturnType<typeof alphaReportResult> | null
+) {
+  if (!bestCandidate || bestCandidate.evaluatedMarkets === 0) {
+    return "No settled candidate snapshots are available for counterfactual replay yet.";
+  }
+  if (!champion || champion.evaluatedMarkets === 0) {
+    return `Counterfactual replay: ${bestCandidate.optimizerCandidateId} is best so far with ${formatSignedMoney(bestCandidate.totalPnl)} over ${bestCandidate.evaluatedMarkets} settled hypothetical trades.`;
+  }
+  const pnlDelta = bestCandidate.totalPnl - champion.totalPnl;
+  const roiDelta = bestCandidate.roi - champion.roi;
+  if (bestCandidate.optimizerCandidateId !== champion.optimizerCandidateId && pnlDelta > 0) {
+    return `Counterfactual replay: ${bestCandidate.optimizerCandidateId} would have made ${formatSignedMoney(bestCandidate.totalPnl)} over ${bestCandidate.evaluatedMarkets} settled hypothetical trades, beating current WOULD_BUY by ${formatSignedMoney(pnlDelta)} and ${(roiDelta * 100).toFixed(1)} ROI points. Review before changing buy rules.`;
+  }
+  return `Counterfactual replay: current WOULD_BUY remains best or tied among tested profiles with ${formatSignedMoney(champion.totalPnl)} over ${champion.evaluatedMarkets} settled hypothetical trades.`;
 }
 
 function optimizerScore(input: {
