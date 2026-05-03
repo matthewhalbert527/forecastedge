@@ -269,10 +269,19 @@ npm run codex:autonomy:install
 
 By default it installs a macOS LaunchAgent named `com.forecastedge.codex-autonomy` that runs daily at 9:30am local time. It pulls the production research export through the web proxy, runs `codex exec` with the local Codex config/model, decides whether a code/config improvement is justified, runs validation, pushes to `origin/main` if it changed anything, and verifies Render. The Render cron jobs score candidates inside the app; the local Codex automation is the code-changing layer.
 
+For continuous app-quality maintenance, install the same LaunchAgent in maintenance mode:
+
+```bash
+npm run codex:autonomy:install:maintenance
+```
+
+Maintenance mode runs every 30 minutes with a 25-minute timeout and a lock file to prevent overlapping runs. It can make one small UI, quality, documentation, test, or reliability improvement per run, but it still must validate, commit, push, and verify production before a change is considered complete.
+
 Useful local commands:
 
 ```bash
 npm run codex:autonomy -- --dry-run
+npm run codex:autonomy -- --mode=maintenance --dry-run
 npm run codex:autonomy
 npm run codex:autonomy:uninstall
 ```

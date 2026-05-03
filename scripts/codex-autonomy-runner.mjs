@@ -9,6 +9,7 @@ const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const args = parseArgs(process.argv.slice(2));
 const mode = args.get("mode") ?? process.env.CODEX_AUTONOMY_MODE ?? "daily";
 const lookbackHours = numberArg(args.get("lookback-hours") ?? process.env.CODEX_AUTONOMY_LOOKBACK_HOURS, mode === "deep" ? 6 : 24);
+const timeoutMinutes = numberArg(args.get("timeout-minutes") ?? process.env.CODEX_AUTONOMY_TIMEOUT_MINUTES, mode === "maintenance" ? 25 : 120);
 const dryRun = args.has("dry-run") || process.env.CODEX_AUTONOMY_DRY_RUN === "true";
 const outDir = join(repoRoot, "tmp", "codex-autonomy");
 const logDir = join(outDir, "logs");
@@ -46,6 +47,7 @@ try {
       dryRun: true,
       mode,
       lookbackHours,
+      timeoutMinutes,
       reportPath,
       promptPath,
       recommendedAction: report.codexBrief?.recommendedAction ?? null
@@ -62,6 +64,7 @@ try {
       exitCode: finalExitCode,
       mode,
       lookbackHours,
+      timeoutMinutes,
       reportPath,
       promptPath,
       resultPath,
@@ -130,16 +133,54 @@ async function fetchResearchExport(hours) {
 }
 
 function buildPrompt(input) {
-  return [
+  const shared = [
     "# ForecastEdge Autonomous Codex Improvement Run",
     "",
     `Mode: ${input.mode}`,
     `Lookback hours: ${input.lookbackHours}`,
     `Research report: ${input.reportPath}`,
     `Latest report alias: ${input.latestReportPath}`,
+    `Run timeout: ${timeoutMinutes} minutes`,
     "",
     "You are running locally through Codex CLI with the user's configured model and reasoning effort.",
     "",
+  ];
+
+  if (input.mode === "maintenance") {
+    return [
+      ...shared,
+      "Goal:",
+      "- Improve ForecastEdge app quality even when no new trading-learning data is available.",
+      "- Prefer visible UI/UX polish, accessibility, empty/loading/error states, clarity of copy, small reliability fixes, test coverage, documentation, and low-risk refactors.",
+      "- Apply at most one small, coherent patch per run. If no clearly useful improvement is found, write a no-change decision note.",
+      "",
+      "Hard safety rules:",
+      "- Do not enable live trading.",
+      "- Do not add, print, or modify API keys/secrets.",
+      "- Do not change Render base URLs, auth middleware, or routing for TimeTracker or Lee Workout.",
+      "- Do not make broad rewrites, dependency swaps, migrations, or architecture changes during maintenance runs.",
+      "- Do not churn cosmetic changes repeatedly; prefer improvements a user would actually notice or a maintainer would trust.",
+      "- Do not make a patch if the worktree has unrelated user changes you cannot safely preserve.",
+      "",
+      "Required workflow:",
+      "1. Run `git status --short` and inspect the research export plus current app code.",
+      "2. Pick one bounded improvement. Prioritize `apps/web` UI quality first, then small tests/docs/reliability fixes.",
+      "3. If changing code, run the narrow relevant validation plus at least `npm run lint --workspace @forecastedge/web` and `npm run build:web` for web changes. Run broader validation when touching shared/API code.",
+      "4. Commit with a concise message and push to `origin main` only after verification passes.",
+      "5. Verify production web/API health after deploy if a commit was pushed.",
+      "6. Write the final decision to `tmp/codex-autonomy/latest-decision.md`.",
+      "",
+      "Expected final answer:",
+      "- State whether a patch was applied.",
+      "- State the improvement made or why no change was made.",
+      "- State verification and deployment status.",
+      "",
+      "Begin now."
+    ].join("\n");
+  }
+
+  return [
+    ...shared,
     "Goal:",
     "- Review the ForecastEdge research export and decide whether a safe improvement is justified.",
     "- If justified, implement the smallest defensible code/config patch, validate it, commit it, push it to origin/main, and verify Render.",
@@ -201,6 +242,7 @@ async function runCodex(command, eventLogPath) {
   await assertExecutable(command.cmd);
   const prompt = await readFile(command.promptPath);
   return new Promise((resolve, reject) => {
+    let log = "";
     const child = spawn(command.cmd, command.args, {
       cwd: repoRoot,
       env: {
@@ -211,7 +253,14 @@ async function runCodex(command, eventLogPath) {
       },
       stdio: ["pipe", "pipe", "pipe"]
     });
-    let log = "";
+    const timeout = setTimeout(() => {
+      log += `\nCodex autonomy timed out after ${timeoutMinutes} minute(s); terminating child process.\n`;
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (child.exitCode === null) child.kill("SIGKILL");
+      }, 10_000).unref();
+    }, timeoutMinutes * 60_000);
+    timeout.unref();
     child.stdout.on("data", (chunk) => {
       log += chunk.toString();
     });
@@ -220,6 +269,7 @@ async function runCodex(command, eventLogPath) {
     });
     child.on("error", reject);
     child.on("close", async (code) => {
+      clearTimeout(timeout);
       await writeFile(eventLogPath, log);
       resolve(code ?? 1);
     });

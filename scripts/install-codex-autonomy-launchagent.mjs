@@ -22,10 +22,12 @@ if (args.has("uninstall")) {
 
 const hour = intArg(args.get("hour"), 9);
 const minute = intArg(args.get("minute"), 30);
+const intervalMinutes = optionalPositiveIntArg(args.get("interval-minutes"));
 const nodeBin = process.execPath;
 const codexBin = args.get("codex-bin") ?? process.env.CODEX_BIN ?? "/opt/homebrew/bin/codex";
 const mode = args.get("mode") ?? "daily";
 const lookbackHours = args.get("lookback-hours") ?? "24";
+const timeoutMinutes = args.get("timeout-minutes") ?? (mode === "maintenance" ? "25" : "120");
 
 await mkdir(dirname(plistPath), { recursive: true });
 await mkdir(logDir, { recursive: true });
@@ -35,8 +37,10 @@ await writeFile(plistPath, plist({
   codexBin,
   mode,
   lookbackHours,
+  timeoutMinutes,
   hour,
-  minute
+  minute,
+  intervalMinutes
 }));
 
 bootout();
@@ -54,7 +58,7 @@ console.log(JSON.stringify({
   installed: true,
   label,
   plistPath,
-  schedule: { hour, minute, mode, lookbackHours },
+  schedule: intervalMinutes ? { intervalMinutes, mode, lookbackHours, timeoutMinutes } : { hour, minute, mode, lookbackHours, timeoutMinutes },
   logs: {
     stdout: `${logDir}/codex-autonomy.out.log`,
     stderr: `${logDir}/codex-autonomy.err.log`
@@ -79,6 +83,11 @@ function intArg(value, fallback) {
   return Number.isInteger(parsed) ? parsed : fallback;
 }
 
+function optionalPositiveIntArg(value) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 function bootout() {
   spawnSync("launchctl", ["bootout", `gui/${uid}`, plistPath], { encoding: "utf8" });
 }
@@ -88,7 +97,8 @@ function plist(input) {
     input.nodeBin,
     `${repoRoot}/scripts/codex-autonomy-runner.mjs`,
     `--mode=${input.mode}`,
-    `--lookback-hours=${input.lookbackHours}`
+    `--lookback-hours=${input.lookbackHours}`,
+    `--timeout-minutes=${input.timeoutMinutes}`
   ];
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -114,13 +124,7 @@ ${programArguments.map((arg) => `    <string>${escapeXml(arg)}</string>`).join("
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
-  <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key>
-    <integer>${input.hour}</integer>
-    <key>Minute</key>
-    <integer>${input.minute}</integer>
-  </dict>
+${schedulePlist(input)}
   <key>StandardOutPath</key>
   <string>${escapeXml(`${logDir}/codex-autonomy.out.log`)}</string>
   <key>StandardErrorPath</key>
@@ -130,6 +134,20 @@ ${programArguments.map((arg) => `    <string>${escapeXml(arg)}</string>`).join("
 </dict>
 </plist>
 `;
+}
+
+function schedulePlist(input) {
+  if (input.intervalMinutes) {
+    return `  <key>StartInterval</key>
+  <integer>${input.intervalMinutes * 60}</integer>`;
+  }
+  return `  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>${input.hour}</integer>
+    <key>Minute</key>
+    <integer>${input.minute}</integer>
+  </dict>`;
 }
 
 function escapeXml(value) {

@@ -23,6 +23,7 @@
     "research:nightly-export": "node scripts/fetch-nightly-research.mjs",
     "codex:autonomy": "node scripts/codex-autonomy-runner.mjs",
     "codex:autonomy:install": "node scripts/install-codex-autonomy-launchagent.mjs",
+    "codex:autonomy:install:maintenance": "node scripts/install-codex-autonomy-launchagent.mjs --mode=maintenance --lookback-hours=24 --interval-minutes=30 --timeout-minutes=25",
     "codex:autonomy:uninstall": "node scripts/install-codex-autonomy-launchagent.mjs --uninstall",
     "db:generate": "prisma generate",
     "db:push": "node scripts/render-db-push.mjs",
