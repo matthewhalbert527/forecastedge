@@ -347,6 +347,7 @@ export default function Page() {
   const latestLearning = data?.learning?.backtest ?? null;
   const showInitialLoading = !data && !error;
   const auditIssues = recentAuditIssues(data);
+  const freshnessVerdict = dataFreshnessStatus(strategy?.dataFreshness);
 
   return (
     <main className="app-shell" aria-busy={showInitialLoading || isRetrying || busyAction !== null}>
@@ -411,6 +412,7 @@ export default function Page() {
               <span>{model.strong.length} buys ready</span>
               <span>{model.openPositions.length} open positions</span>
               <span>{auditIssueLabel(auditIssues)}</span>
+              <StatusDot tone={freshnessVerdict.tone} label={freshnessVerdict.label} />
               <span>{worker?.memory ? memoryLabel(worker.memory) : data.paperLearningMode ? "learning mode" : "risk capped"}</span>
             </section>
 
@@ -1038,6 +1040,44 @@ function severityRank(severity: string) {
 function auditIssueLabel(issues: ReturnType<typeof recentAuditIssues>) {
   if (issues.length === 0) return "No audit issues";
   return `${issues.length} audit issue${issues.length === 1 ? "" : "s"}`;
+}
+
+function dataFreshnessStatus(freshness: StrategyDecisionData["dataFreshness"] | null | undefined): { tone: Tone; label: string } {
+  if (!freshness) return { tone: "neutral", label: "Freshness pending" };
+
+  const quoteAge = ageMs(freshness.latestQuoteAt);
+  const candidateAge = ageMs(freshness.latestCandidateAt);
+  const liveStaleMs = 2 * 60 * 60 * 1000;
+
+  if (quoteAge === null && candidateAge === null) return { tone: "watch", label: "Live data pending" };
+  if (quoteAge !== null && quoteAge > liveStaleMs) return { tone: "watch", label: `Quotes ${compactAge(quoteAge)} old` };
+  if (candidateAge !== null && candidateAge > liveStaleMs) return { tone: "watch", label: `Candidates ${compactAge(candidateAge)} old` };
+
+  const historicalAges = [freshness.latestHistoricalCandleAt, freshness.latestHistoricalTradeAt]
+    .map(ageMs)
+    .filter((age): age is number => age !== null);
+  const historicalStaleMs = 14 * 24 * 60 * 60 * 1000;
+
+  if (historicalAges.length === 0) return { tone: "watch", label: "Historical data pending" };
+  const newestHistoricalAge = Math.min(...historicalAges);
+  if (newestHistoricalAge > historicalStaleMs) return { tone: "watch", label: `Historical ${compactAge(newestHistoricalAge)} old` };
+
+  return { tone: "good", label: "Data fresh" };
+}
+
+function ageMs(iso: string | null) {
+  if (!iso) return null;
+  const timestamp = new Date(iso).getTime();
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, Date.now() - timestamp);
+}
+
+function compactAge(ms: number) {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${Math.max(1, minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 function CandidateList({ candidates, empty, expanded = false, compact = false }: { candidates: CandidateView[]; empty: string; expanded?: boolean; compact?: boolean }) {
