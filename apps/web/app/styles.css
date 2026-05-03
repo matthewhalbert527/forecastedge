@@ -1080,6 +1080,72 @@ a.ghost-button:focus-visible,
   font-weight: 800;
 }
 
+.state-panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 15px;
+  min-height: 154px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: rgba(255, 254, 248, 0.84);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(18px);
+}
+
+.state-panel.watch {
+  border-color: rgba(181, 106, 20, 0.34);
+  background: linear-gradient(135deg, rgba(255, 254, 248, 0.92), rgba(255, 241, 212, 0.72));
+}
+
+.state-panel.danger {
+  border-color: rgba(189, 36, 24, 0.32);
+  background: linear-gradient(135deg, rgba(255, 254, 248, 0.92), rgba(254, 231, 225, 0.74));
+}
+
+.state-icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-solid);
+  color: var(--blue);
+}
+
+.state-panel.watch .state-icon {
+  color: var(--watch);
+}
+
+.state-panel.danger .state-icon {
+  color: var(--danger);
+}
+
+.state-copy {
+  min-width: 0;
+}
+
+.state-copy h3 {
+  margin: 10px 0 6px;
+  font-size: 24px;
+  line-height: 1.05;
+}
+
+.state-copy p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.state-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .disclosure {
   overflow: hidden;
 }
@@ -1290,6 +1356,7 @@ a.ghost-button:focus-visible,
   .topbar,
   .hero-panel,
   .focus-panel,
+  .state-panel,
   .section-head,
   .panel-head {
     display: grid;
@@ -1305,6 +1372,10 @@ a.ghost-button:focus-visible,
     min-width: 0;
   }
 
+  .state-panel {
+    grid-template-columns: 1fr;
+  }
+
   .topbar-actions {
     justify-content: stretch;
     width: 100%;
@@ -1312,6 +1383,7 @@ a.ghost-button:focus-visible,
 
   .topbar-actions button,
   .hero-panel button,
+  .state-actions .ghost-button,
   .section-head button,
   .alert-action {
     width: 100%;

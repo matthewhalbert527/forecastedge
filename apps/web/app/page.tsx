@@ -346,6 +346,7 @@ export default function Page() {
   const strategy = data?.strategyDecisionEngine ?? null;
   const latestLearning = data?.learning?.backtest ?? null;
   const showInitialLoading = !data && !error;
+  const showInitialError = Boolean(error && !data);
   const auditIssues = recentAuditIssues(data);
   const freshnessVerdict = dataFreshnessStatus(strategy?.dataFreshness);
 
@@ -395,7 +396,7 @@ export default function Page() {
           </div>
         </header>
 
-        {error ? (
+        {error && data ? (
           <div className="alert" role="alert">
             <AlertTriangle size={18} />
             <span className="alert-message">{error}</span>
@@ -406,7 +407,28 @@ export default function Page() {
           </div>
         ) : null}
         {notice ? <div className="notice" role="status" aria-live="polite">{notice}</div> : null}
-        {showInitialLoading ? <div className="loading" role="status" aria-live="polite">Loading ForecastEdge from {apiUrl}</div> : null}
+        {showInitialLoading ? (
+          <DashboardState
+            tone="neutral"
+            label="Loading"
+            title="Loading dashboard data"
+            detail="Fetching the latest ForecastEdge snapshot."
+          />
+        ) : null}
+        {showInitialError ? (
+          <DashboardState
+            tone="watch"
+            label="Needs attention"
+            title="Dashboard data is unavailable"
+            detail={error ?? "The dashboard request failed before any data loaded."}
+            action={
+              <button type="button" className="ghost-button" onClick={retryDashboardLoad} disabled={isRetrying}>
+                <RefreshCw size={16} />
+                {isRetrying ? "Retrying" : "Retry"}
+              </button>
+            }
+          />
+        ) : null}
 
         {data ? (
           <>
@@ -1345,6 +1367,23 @@ function SimpleTable({ columns, rows, empty }: { columns: string[]; rows: Array<
 
 function EmptyState({ children }: { children: ReactNode }) {
   return <div className="empty-state">{children}</div>;
+}
+
+function DashboardState({ tone, label, title, detail, action }: { tone: Tone; label: string; title: string; detail: string; action?: ReactNode }) {
+  const isAlert = tone === "watch" || tone === "danger";
+  return (
+    <section className={`state-panel ${tone}`} role={isAlert ? "alert" : "status"} aria-live={isAlert ? "assertive" : "polite"}>
+      <div className="state-icon" aria-hidden="true">
+        {isAlert ? <AlertTriangle size={22} /> : <RefreshCw size={22} />}
+      </div>
+      <div className="state-copy">
+        <StatusPill tone={tone}>{label}</StatusPill>
+        <h3>{title}</h3>
+        <p>{detail}</p>
+      </div>
+      {action ? <div className="state-actions">{action}</div> : null}
+    </section>
+  );
 }
 
 function StatusDot({ tone, label }: { tone: "good" | "watch" | "danger" | "neutral"; label: string }) {
