@@ -636,10 +636,11 @@ function LearningView({ data, strategy, jobs, latest, learning }: { data: Dashbo
           </Panel>
           <Panel title="Scheduled work">
             <SimpleTable
-              columns={["Job", "State", "Last message"]}
+              columns={["Job", "State", "Last run", "Last message"]}
               rows={jobs.map((job) => [
                 job.label,
                 job.running ? "running" : job.lastRun?.status ?? "ready",
+                dateTimeOrNever(job.lastRun?.completedAt ?? null),
                 job.lastRun?.message ?? job.description
               ])}
               empty="No job registry"
@@ -1652,6 +1653,10 @@ function dateTime(iso: string) {
 
 function dateTimeOrPending(iso: string | null) {
   return iso ? dateTime(iso) : "pending";
+}
+
+function dateTimeOrNever(iso: string | null) {
+  return iso ? dateTime(iso) : "never";
 }
 
 function latestBacktestStatus(value: StrategyDecisionData["latestBacktestHealth"] | BacktestSummary | null) {
