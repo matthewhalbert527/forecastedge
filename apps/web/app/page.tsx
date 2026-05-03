@@ -804,8 +804,8 @@ function LedgerView({ data, model, performance, settleAction, busy }: { data: Da
         </div>
       </section>
       <section className="result-graphs" aria-label="Settled paper result charts">
-        <ResultStatsPanel title="Last local day" stats={analytics.yesterday} />
-        <ResultStatsPanel title="All time" stats={analytics.allTime} />
+        <ResultStatsPanel title="Last local day" stats={analytics.yesterday} empty="No settled outcomes yesterday" />
+        <ResultStatsPanel title="All time" stats={analytics.allTime} empty="No settled paper outcomes yet" />
       </section>
       <section className="single-column">
         <Panel title="Recent settled results">
@@ -1173,21 +1173,24 @@ type ResultStats = {
   grossLoss: number;
 };
 
-function ResultStatsPanel({ title, stats }: { title: string; stats: ResultStats }) {
+function ResultStatsPanel({ title, stats, empty }: { title: string; stats: ResultStats; empty: string }) {
+  const settledCount = stats.wins + stats.losses;
   const maxCount = Math.max(1, stats.wins, stats.losses);
   const maxMoney = Math.max(1, stats.grossProfit, stats.grossLoss);
   return (
     <section className="result-chart-panel">
       <div className="result-chart-head">
         <strong>{title}</strong>
-        <span>{stats.wins + stats.losses} settled</span>
+        <span>{settledCount} settled</span>
       </div>
-      <div className="result-bars">
-        <ResultBar label="Wins" value={stats.wins} display={String(stats.wins)} max={maxCount} tone="good" />
-        <ResultBar label="Losses" value={stats.losses} display={String(stats.losses)} max={maxCount} tone="danger" />
-        <ResultBar label="Profit" value={stats.grossProfit} display={money(stats.grossProfit)} max={maxMoney} tone="good" />
-        <ResultBar label="Amount lost" value={stats.grossLoss} display={money(stats.grossLoss)} max={maxMoney} tone="danger" />
-      </div>
+      {settledCount > 0 ? (
+        <div className="result-bars">
+          <ResultBar label="Wins" value={stats.wins} display={String(stats.wins)} max={maxCount} tone="good" />
+          <ResultBar label="Losses" value={stats.losses} display={String(stats.losses)} max={maxCount} tone="danger" />
+          <ResultBar label="Profit" value={stats.grossProfit} display={money(stats.grossProfit)} max={maxMoney} tone="good" />
+          <ResultBar label="Amount lost" value={stats.grossLoss} display={money(stats.grossLoss)} max={maxMoney} tone="danger" />
+        </div>
+      ) : <EmptyState>{empty}</EmptyState>}
     </section>
   );
 }
