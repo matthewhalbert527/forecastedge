@@ -236,6 +236,7 @@ type ResearchData = {
 
 type View = "overview" | "decisions" | "learning" | "ledger";
 type BusyAction = "scan" | "settle" | null;
+type ManualAction = Exclude<BusyAction, null>;
 type Tone = "good" | "watch" | "danger" | "neutral";
 type MemoryStatus = { rssMb: number; maxRssMb: number | null };
 
@@ -299,7 +300,7 @@ export default function Page() {
     return request;
   }
 
-  async function runAction(action: BusyAction, endpoint: string) {
+  async function runAction(action: ManualAction, endpoint: string) {
     setBusyAction(action);
     setError(null);
     setNotice(null);
@@ -308,6 +309,7 @@ export default function Page() {
       if (!response.ok) throw new Error(`Request failed with ${response.status}`);
       await response.json().catch(() => null);
       await refresh({ force: true });
+      setNotice(actionNotice(action));
       if (action === "settle") setView("ledger");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown request error");
@@ -879,15 +881,6 @@ function primaryAction(data: DashboardData, model: DashboardModel, strategy: Str
     };
   }
 
-  if (settledExamples < minSettledExamples || optimizerStatus === "completed_no_settled_markets" || backtestStatus === "Rejected") {
-    return {
-      tone: "watch",
-      label: "Collecting",
-      title: "Keep collecting before changing the algorithm",
-      detail: `${settledExamples} settled training examples are available, and ${minSettledExamples} are required before threshold changes are trustworthy. The system can still paper-buy candidates, but algorithm edits should wait.`
-    };
-  }
-
   if (paper?.liveEdgeDegraded || warnings > 0) {
     return {
       tone: "watch",
@@ -896,6 +889,15 @@ function primaryAction(data: DashboardData, model: DashboardModel, strategy: Str
       detail: paper?.liveEdgeDegraded
         ? "Observed paper performance is trailing the expected edge, so the next improvement should come from reviewing fills, liquidity, and filters."
         : `${warnings} strategy warning${warnings === 1 ? "" : "s"} still need review before promoting a change.`
+    };
+  }
+
+  if (settledExamples < minSettledExamples || optimizerStatus === "completed_no_settled_markets" || backtestStatus === "Rejected") {
+    return {
+      tone: "watch",
+      label: "Collecting",
+      title: "Keep collecting before changing the algorithm",
+      detail: `${settledExamples} settled training examples are available, and ${minSettledExamples} are required before threshold changes are trustworthy. The system can still paper-buy candidates, but algorithm edits should wait.`
     };
   }
 
@@ -914,6 +916,11 @@ function primaryAction(data: DashboardData, model: DashboardModel, strategy: Str
     title: "No paper buy is ready right now",
     detail: `ForecastEdge is still checking every ${quote.intervalMinutes} minute${quote.intervalMinutes === 1 ? "" : "s"} and will surface a buy when edge, liquidity, and risk controls line up.`
   };
+}
+
+function actionNotice(action: ManualAction) {
+  if (action === "settle") return "Result check complete. Dashboard refreshed with the latest paper outcomes.";
+  return "Full scan complete. Dashboard refreshed with the latest markets and decisions.";
 }
 
 function bestPerformanceWindow(windows: PerformanceWindow[]) {
