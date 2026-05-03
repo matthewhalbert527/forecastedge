@@ -722,7 +722,7 @@ function recentScheduleEvents(data: DashboardData, strategy: StrategyDecisionDat
     events.push({
       title: "Strategy optimizer",
       time: dateTime(optimizer.completedAt),
-      outcome: optimizer.recommendation || optimizerStatusLabel(optimizer.status),
+      outcome: optimizerOutcomeLabel(optimizer),
       tone: optimizer.status.toLowerCase().includes("fail") ? "danger" : "good",
       sortMs: dateMs(optimizer.completedAt)
     });
@@ -816,6 +816,11 @@ function scheduledJobTone(job: NonNullable<DashboardData["scheduledJobs"]>[numbe
   if (status.includes("success") || status.includes("complete")) return "good";
   if (status.includes("disabled") || status.includes("skip")) return "watch";
   return "neutral";
+}
+
+function optimizerOutcomeLabel(optimizer: NonNullable<StrategyDecisionData["latestOptimizerReport"]>) {
+  if (optimizer.recommendation && optimizer.recommendation.length <= 64) return optimizer.recommendation;
+  return optimizerStatusLabel(optimizer.status);
 }
 
 function PerformanceScorePanel({ windows }: { windows: PerformanceWindow[] }) {
