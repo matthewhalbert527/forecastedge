@@ -11,7 +11,6 @@ import {
   Gauge,
   ListChecks,
   RefreshCw,
-  ShieldCheck,
   ThermometerSun
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -586,13 +585,16 @@ function DecisionsView({ model }: { model: DashboardModel }) {
 }
 
 function LearningView({ data, strategy, jobs, latest, learning }: { data: DashboardData; strategy: StrategyDecisionData | null; jobs: NonNullable<DashboardData["scheduledJobs"]>; latest: BacktestSummary | null; learning: DashboardData["learning"] | null }) {
-  const statuses = strategy?.statuses;
   const paper = strategy?.latestPaperTradingHealth;
   const settledExamples = learning?.collection.settledPaperTradeExamples ?? 0;
   const minSettledExamples = data.backgroundWorker?.learningCycle?.minSettledExamples ?? 10;
   const auditIssues = recentAuditIssues(data);
   const reviewBlockers = strategyReviewBlockers(strategy);
-  const latestReplayStatus = latestBacktestStatus(strategy?.latestBacktestHealth ?? latest);
+  const latestBacktest = strategy?.latestBacktestHealth ?? latest;
+  const latestReplayStatus = latestBacktestStatus(latestBacktest);
+  const latestReplayRoi = latestBacktestRoi(latestBacktest);
+  const dataQualityScore = latestBacktestDataQualityScore(latestBacktest);
+  const freshness = dataFreshnessStatus(strategy?.dataFreshness);
   const optimizerStatus = strategy?.latestOptimizerReport?.status ?? "";
   const evidenceGateActive = settledExamples < minSettledExamples || latestReplayStatus === "Rejected" || optimizerStatus.startsWith("completed_no_");
   const learningTone: Tone = paper?.liveEdgeDegraded || evidenceGateActive ? "watch" : settledExamples >= minSettledExamples ? "good" : "neutral";
@@ -605,12 +607,17 @@ function LearningView({ data, strategy, jobs, latest, learning }: { data: Dashbo
           <h3>Automatic learning</h3>
           <p>{learningNarrative(strategy, latest, learning, minSettledExamples)}</p>
         </div>
-        <ShieldCheck size={24} />
+        <div className="focus-facts">
+          <Fact label="Data quality" value={latestBacktestDataQuality(latestBacktest)} good={dataQualityScore !== null && dataQualityScore >= 80} danger={dataQualityScore !== null && dataQualityScore < 60} />
+          <Fact label="Freshness" value={freshness.label} good={freshness.tone === "good"} danger={freshness.tone === "watch" || freshness.tone === "danger"} />
+          <Fact label="Paper edge" value={paper?.liveEdgeDegraded ? "degraded" : paper ? "preserved" : "pending"} good={Boolean(paper && !paper.liveEdgeDegraded)} danger={Boolean(paper?.liveEdgeDegraded)} />
+          <Fact label="Optimizer" value={optimizerStatusLabel(optimizerStatus)} />
+        </div>
       </section>
       <section className="page-grid">
         <Metric label="Settled examples" value={`${settledExamples}/${minSettledExamples}`} detail="minimum before changing thresholds" />
-        <Metric label="Paper testing" value={(statuses?.paperTesting ?? 0) + (statuses?.walkForwardPassed ?? 0)} detail="strategy versions under validation" />
-        <Metric label="Latest replay" value={latestBacktestStatus(strategy?.latestBacktestHealth ?? latest)} detail={`${latestBacktestRoi(strategy?.latestBacktestHealth ?? latest) === null ? "n/a" : formatPct(latestBacktestRoi(strategy?.latestBacktestHealth ?? latest))} ROI`} />
+        <Metric label="Data quality" value={latestBacktestDataQuality(latestBacktest)} detail={freshness.label} />
+        <Metric label="Latest replay" value={latestReplayStatus} detail={`${latestReplayRoi === null ? "n/a" : formatPct(latestReplayRoi)} ROI`} />
         <Metric label="Review blockers" value={reviewBlockers.length} detail={`${strategy?.warningsRequiringReview.length ?? 0} total warning records`} />
       </section>
       <section className="learning-flow">
@@ -1831,8 +1838,15 @@ function latestBacktestRoi(value: StrategyDecisionData["latestBacktestHealth"] |
 }
 
 function latestBacktestDataQuality(value: StrategyDecisionData["latestBacktestHealth"] | BacktestSummary | null) {
+  const score = latestBacktestDataQualityScore(value);
+  if (score !== null) return `${score}/100`;
   if (!value) return "pending";
-  if ("dataQualityScore" in value && typeof value.dataQualityScore === "number") return `${value.dataQualityScore}/100`;
-  if ("dataQuality" in value && value.dataQuality) return `${value.dataQuality.score}/100`;
   return "not scored";
+}
+
+function latestBacktestDataQualityScore(value: StrategyDecisionData["latestBacktestHealth"] | BacktestSummary | null) {
+  if (!value) return null;
+  if ("dataQualityScore" in value && typeof value.dataQualityScore === "number" && Number.isFinite(value.dataQualityScore)) return value.dataQualityScore;
+  if ("dataQuality" in value && value.dataQuality && Number.isFinite(value.dataQuality.score)) return value.dataQuality.score;
+  return null;
 }
