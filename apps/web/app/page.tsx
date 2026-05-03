@@ -348,6 +348,7 @@ export default function Page() {
   const showInitialError = Boolean(error && !data);
   const auditIssues = recentAuditIssues(data);
   const freshnessVerdict = dataFreshnessStatus(strategy?.dataFreshness);
+  const optimizerDisplay = optimizerStatusDisplay(strategy?.latestOptimizerReport);
 
   return (
     <main className="app-shell" aria-busy={showInitialLoading || isRetrying || busyAction !== null}>
@@ -436,7 +437,7 @@ export default function Page() {
               <span>{latestScan ? `${labelForTrigger(latestScan.trigger)} at ${time(latestScan.startedAt)}` : "No scan yet"}</span>
               {view === "overview" ? (
                 <>
-                  <span>Optimizer {optimizerStatusLabel(strategy?.latestOptimizerReport?.status)}</span>
+                  <span>Optimizer {optimizerDisplay.label}</span>
                   <span>{latestBacktestStatus(strategy?.latestBacktestHealth ?? latestLearning)} replay</span>
                   <span>{data.learning?.collection.settledPaperTradeExamples ?? 0}/{worker?.learningCycle?.minSettledExamples ?? 10} settled examples</span>
                 </>
@@ -481,7 +482,7 @@ function OverviewView({ data, model, performance, performanceWindows, strategy, 
   const latestReplayRoi = latestBacktestRoi(latestBacktest);
   const dataQualityScore = latestBacktestDataQualityScore(latestBacktest);
   const dataQuality = latestBacktestDataQuality(latestBacktest);
-  const optimizerStatus = optimizerStatusLabel(strategy?.latestOptimizerReport?.status);
+  const optimizerDisplay = optimizerStatusDisplay(strategy?.latestOptimizerReport);
   const optimizerCompletedAt = strategy?.latestOptimizerReport?.completedAt;
   const analytics = resultAnalytics(model.results);
   const allTimeSettled = analytics.allTime.wins + analytics.allTime.losses + analytics.allTime.flats;
@@ -500,13 +501,13 @@ function OverviewView({ data, model, performance, performanceWindows, strategy, 
         </div>
         <div className="focus-facts">
           <Fact label="Last scan" value={latestScan ? dateTime(latestScan.startedAt) : "pending"} />
-          <Fact label="Optimizer" value={optimizerStatus} good={optimizerStatus === "Completed"} danger={optimizerStatus === "Failed"} />
+          <Fact label="Optimizer" value={optimizerDisplay.label} good={optimizerDisplay.tone === "good"} danger={optimizerDisplay.tone === "danger"} />
           <Fact label="Latest replay" value={latestReplayStatus} danger={latestReplayStatus === "Rejected"} />
           <Fact label="Data quality" value={dataQuality} good={dataQualityScore !== null && dataQualityScore >= 80} danger={dataQualityScore !== null && dataQualityScore < 60} />
         </div>
       </section>
       <section className="page-grid primary-grid">
-        <Metric label="Optimizer" value={optimizerStatus} detail={optimizerCompletedAt ? `last adjusted ${dateTime(optimizerCompletedAt)}` : "latest automatic adjustment state"} />
+        <Metric label="Optimizer" value={optimizerDisplay.label} detail={optimizerCompletedAt ? `last reviewed ${dateTime(optimizerCompletedAt)}` : "latest automatic adjustment state"} />
         <Metric label="Latest replay" value={latestReplayStatus} detail={`${latestReplayRoi === null ? "n/a" : formatPct(latestReplayRoi)} ROI`} />
         <Metric label="Best score" value={bestWindow ? scoreLabel(bestWindow.score) : "n/a"} detail={bestWindow ? `${bestWindow.label}, ${bestWindow.settledTrades} settled` : "waiting for settled outcomes"} />
         <Metric label="Settled evidence" value={`${settledExamples}/${minSettledExamples}`} detail={`${data.learning?.collection.paperTradeExamples ?? 0} paper examples stored`} />
@@ -701,6 +702,7 @@ function LearningView({ data, strategy, jobs, latest, learning }: { data: Dashbo
   const dataQualityScore = latestBacktestDataQualityScore(latestBacktest);
   const freshness = dataFreshnessStatus(strategy?.dataFreshness);
   const optimizerStatus = strategy?.latestOptimizerReport?.status ?? "";
+  const optimizerDisplay = optimizerStatusDisplay(strategy?.latestOptimizerReport);
   const evidenceGateActive = settledExamples < minSettledExamples || latestReplayStatus === "Rejected" || optimizerStatus.startsWith("completed_no_");
   const learningTone: Tone = paper?.liveEdgeDegraded || evidenceGateActive ? "watch" : settledExamples >= minSettledExamples ? "good" : "neutral";
   const learningLabel = paper?.liveEdgeDegraded ? "Needs review" : evidenceGateActive ? "Evidence gate" : "Learning loop";
@@ -716,7 +718,7 @@ function LearningView({ data, strategy, jobs, latest, learning }: { data: Dashbo
           <Fact label="Data quality" value={latestBacktestDataQuality(latestBacktest)} good={dataQualityScore !== null && dataQualityScore >= 80} danger={dataQualityScore !== null && dataQualityScore < 60} />
           <Fact label="Freshness" value={freshness.label} good={freshness.tone === "good"} danger={freshness.tone === "watch" || freshness.tone === "danger"} />
           <Fact label="Paper edge" value={paper?.liveEdgeDegraded ? "degraded" : paper ? "preserved" : "pending"} good={Boolean(paper && !paper.liveEdgeDegraded)} danger={Boolean(paper?.liveEdgeDegraded)} />
-          <Fact label="Optimizer" value={optimizerStatusLabel(optimizerStatus)} />
+          <Fact label="Optimizer" value={optimizerDisplay.label} good={optimizerDisplay.tone === "good"} danger={optimizerDisplay.tone === "danger"} />
         </div>
       </section>
       <section className="page-grid">
@@ -729,13 +731,13 @@ function LearningView({ data, strategy, jobs, latest, learning }: { data: Dashbo
         <FlowStep title="Collect" value={learning?.collection.quoteSnapshots ?? 0} detail="quote snapshots" />
         <FlowStep title="Decide" value={learning?.collection.candidateSnapshots ?? 0} detail="candidate decisions" />
         <FlowStep title="Paper trade" value={learning?.collection.paperTradeExamples ?? 0} detail="paper examples" />
-        <FlowStep title="Adjust" value={optimizerStatusLabel(strategy?.latestOptimizerReport?.status)} detail={strategy?.latestOptimizerReport?.completedAt ? dateTime(strategy.latestOptimizerReport.completedAt) : "waiting for optimizer"} />
+        <FlowStep title="Adjust" value={optimizerDisplay.label} detail={strategy?.latestOptimizerReport?.completedAt ? dateTime(strategy.latestOptimizerReport.completedAt) : "waiting for optimizer"} />
       </section>
       <Disclosure title="Optimizer details">
         <SimpleTable
           columns={["Signal", "Value"]}
           rows={[
-            ["Optimizer", optimizerStatusLabel(strategy?.latestOptimizerReport?.status)],
+            ["Optimizer", optimizerDisplay.label],
             ["Recommendation", strategy?.latestOptimizerReport?.recommendation ?? "No optimizer recommendation yet"],
             ["Best candidate", strategy?.latestOptimizerReport?.bestCandidate?.optimizerCandidateId ?? "none"],
             ["Hypothetical P/L", moneyOrPending(strategy?.latestOptimizerReport?.bestCandidate?.totalPnl ?? null)],
@@ -1008,10 +1010,11 @@ function ImprovementSnapshot({ strategy, latest, learning }: { strategy: Strateg
   const paper = strategy?.latestPaperTradingHealth;
   const settledExamples = learning?.collection.settledPaperTradeExamples ?? 0;
   const evidenceGateActive = optimizer?.status === "completed_no_settled_markets" || settledExamples === 0;
+  const optimizerDisplay = optimizerStatusDisplay(optimizer);
   return (
     <div className="improvement-copy">
-      <StatusPill tone={evidenceGateActive || paper?.liveEdgeDegraded ? "watch" : optimizer?.status === "completed" ? "good" : "neutral"}>
-        {evidenceGateActive ? "Evidence gate" : paper?.liveEdgeDegraded ? "Review" : optimizer ? optimizerStatusLabel(optimizer.status) : "Learning"}
+      <StatusPill tone={evidenceGateActive || paper?.liveEdgeDegraded ? "watch" : optimizerDisplay.tone}>
+        {evidenceGateActive ? "Evidence gate" : paper?.liveEdgeDegraded ? "Review" : optimizerDisplay.label}
       </StatusPill>
       <p>{evidenceGateActive ? evidenceGateMessage(settledExamples, optimizer?.recommendation) : optimizer?.recommendation ?? "Waiting for enough settled paper outcomes before changing thresholds."}</p>
       <div className="mini-facts">
@@ -1144,6 +1147,26 @@ function learningNarrative(strategy: StrategyDecisionData | null, latest: Backte
   if (optimizer?.status?.startsWith("completed_no_")) return optimizer.recommendation ?? "No optimizer challenger passed approval gates, so threshold changes stay blocked.";
   if (optimizer?.recommendation) return optimizer.recommendation;
   return `Latest automatic strategy status: ${status}.`;
+}
+
+function optimizerStatusDisplay(report: StrategyDecisionData["latestOptimizerReport"] | null | undefined): { label: string; tone: Tone } {
+  const label = optimizerStatusLabel(report?.status);
+  if (!report) return { label, tone: "neutral" };
+  if (report.status === "failed") return { label, tone: "danger" };
+  if (report.status === "running") return { label, tone: "neutral" };
+  if (report.status?.startsWith("completed_no_")) return { label, tone: "watch" };
+
+  if (report.status === "completed") {
+    const approvalStatus = typeof report.bestCandidate?.approvalStatus === "string" ? report.bestCandidate.approvalStatus.toLowerCase() : "";
+    const roi = numericValue(report.bestCandidate?.roi);
+    const totalPnl = numericValue(report.bestCandidate?.totalPnl);
+    if (approvalStatus.includes("rejected") || (roi !== null && roi <= 0) || (totalPnl !== null && totalPnl <= 0)) {
+      return { label: "No promotion", tone: "watch" };
+    }
+    return { label, tone: "good" };
+  }
+
+  return { label, tone: "neutral" };
 }
 
 function optimizerStatusLabel(status: string | null | undefined) {
