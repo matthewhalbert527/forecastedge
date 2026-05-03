@@ -567,12 +567,13 @@ function upcomingEventRows(data: DashboardData, strategy: StrategyDecisionData |
   const rows: Array<Array<ReactNode>> = [];
   const quoteRefresh = data.backgroundWorker?.quoteRefresh;
   const learningCycle = data.backgroundWorker?.learningCycle;
+  const latestQuoteRefreshAt = quoteRefresh?.lastRunAt ?? data.learning?.collection.latestQuoteRefreshAt ?? data.scanReports.find((scan) => scan.trigger === "quote_refresh")?.startedAt ?? null;
 
   if (quoteRefresh) {
     rows.push([
       "Quote refresh",
-      quoteRefresh.running ? "running now" : quoteRefresh.enabled ? nextIntervalRun(quoteRefresh.lastRunAt, quoteRefresh.intervalMinutes) : "paused",
-      quoteRefresh.running ? "running now" : quoteRefresh.lastRunAt ? `Refreshed ${dateTime(quoteRefresh.lastRunAt)}` : "Not run yet"
+      quoteRefresh.running ? "running now" : quoteRefresh.enabled ? nextIntervalRun(latestQuoteRefreshAt, quoteRefresh.intervalMinutes) : "paused",
+      quoteRefresh.running ? "running now" : latestQuoteRefreshAt ? `Refreshed ${dateTime(latestQuoteRefreshAt)}` : "Not run yet"
     ]);
   }
 
