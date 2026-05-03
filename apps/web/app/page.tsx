@@ -532,7 +532,7 @@ function OverviewView({ data, model, performance, performanceWindows, strategy, 
         </Panel>
       </section>
       <section className="single-column">
-        <Panel title="Schedule" action={<span className="panel-note">next + last 3</span>}>
+        <Panel title="Schedule" action={<span className="panel-note">{eventSchedule.upcomingCount} next, {eventSchedule.todayCount} today</span>}>
           <EventSchedulePanel schedule={eventSchedule} />
         </Panel>
       </section>
@@ -560,133 +560,167 @@ function OverviewView({ data, model, performance, performanceWindows, strategy, 
 }
 
 type ScheduleItem = {
+  id: string;
+  phase: "upcoming" | "today";
   title: string;
   time: string;
   outcome: string;
+  detail: string;
   tone: Tone;
   sortMs?: number;
 };
 
 type EventSchedule = {
-  next: ScheduleItem | null;
-  recent: ScheduleItem[];
+  items: ScheduleItem[];
+  upcomingCount: number;
+  todayCount: number;
 };
 
 function EventSchedulePanel({ schedule }: { schedule: EventSchedule }) {
-  if (!schedule.next && schedule.recent.length === 0) return <EmptyState>No scheduled events yet</EmptyState>;
+  if (schedule.items.length === 0) return <EmptyState>No schedule events yet</EmptyState>;
   return (
-    <div className="schedule-snapshot">
-      <article className="next-event-card">
-        <small>Next up</small>
-        {schedule.next ? (
-          <>
-            <div className="next-event-title">
-              <h4>{schedule.next.title}</h4>
-              <StatusPill tone={schedule.next.tone}>{schedule.next.time}</StatusPill>
-            </div>
-            <p>{schedule.next.outcome}</p>
-          </>
-        ) : (
-          <p>No upcoming event is configured.</p>
-        )}
-      </article>
-
-      <div className="recent-events-card">
-        <div className="schedule-card-head">
-          <h4>Last 3 events</h4>
-          <span>what happened</span>
-        </div>
-        {schedule.recent.length > 0 ? (
-          <div className="recent-events-list">
-            {schedule.recent.map((event, index) => (
-              <div className="recent-event-row" key={`${event.title}-${event.sortMs ?? index}`}>
-                <StatusDot tone={event.tone} label={event.title} />
-                <span className="event-time">{event.time}</span>
-                <b>{compactText(event.outcome, 96)}</b>
+    <div className="timeline-list schedule-event-list" aria-label="Today and upcoming schedule">
+      {schedule.items.map((event) => {
+        const phaseLabel = event.phase === "upcoming" ? "Upcoming" : "Today";
+        return (
+          <details className="timeline-row expandable-card schedule-event-row" key={event.id}>
+            <summary className="timeline-summary">
+              <div className={`timeline-dot ${event.tone}`} />
+              <div className="timeline-content">
+                <div className="row-title">
+                  <strong>{event.title}</strong>
+                  <StatusPill tone={event.phase === "upcoming" ? "neutral" : event.tone}>{phaseLabel}</StatusPill>
+                </div>
+                <span className="row-subtitle">{compactText(event.detail, 92)}</span>
               </div>
-            ))}
-          </div>
-        ) : (
-          <EmptyState>No completed events yet</EmptyState>
-        )}
-      </div>
+              <div className="bet-quick-facts">
+                <Fact label={event.phase === "upcoming" ? "Next" : "When"} value={event.time} />
+                <Fact
+                  label={event.phase === "upcoming" ? "Status" : "Outcome"}
+                  value={compactText(event.outcome, 34)}
+                  good={event.phase === "today" && event.tone === "good"}
+                  danger={event.phase === "today" && event.tone === "danger"}
+                />
+              </div>
+              <span className="row-expand-label" aria-hidden="true"><ChevronDown size={16} /></span>
+            </summary>
+            <div className="expandable-body">
+              <div className="fact-grid">
+                <Fact label="Type" value={phaseLabel} />
+                <Fact label="When" value={event.time} />
+                <Fact label={event.phase === "upcoming" ? "Expected" : "Outcome"} value={event.outcome} good={event.tone === "good"} danger={event.tone === "danger"} />
+              </div>
+              <p className="row-note">{event.detail}</p>
+            </div>
+          </details>
+        );
+      })}
     </div>
   );
 }
 
 function buildEventSchedule(data: DashboardData, strategy: StrategyDecisionData | null, latestBacktest: StrategyDecisionData["latestBacktestHealth"] | BacktestSummary | null): EventSchedule {
+  const upcoming = upcomingScheduleEvents(data, strategy).slice(0, 3);
+  const today = recentScheduleEvents(data, strategy, latestBacktest).filter(isTodayScheduleEvent).slice(0, 3);
   return {
-    next: nextScheduledEvent(data, strategy),
-    recent: recentScheduleEvents(data, strategy, latestBacktest).slice(0, 3)
+    items: [...upcoming, ...today],
+    upcomingCount: upcoming.length,
+    todayCount: today.length
   };
 }
 
-function nextScheduledEvent(data: DashboardData, strategy: StrategyDecisionData | null): ScheduleItem | null {
-  const candidates: Array<ScheduleItem & { nextMs: number }> = [];
+function upcomingScheduleEvents(data: DashboardData, strategy: StrategyDecisionData | null): ScheduleItem[] {
+  const events: Array<ScheduleItem & { order: number }> = [];
   const quoteRefresh = data.backgroundWorker?.quoteRefresh;
   const learningCycle = data.backgroundWorker?.learningCycle;
   const latestQuoteRefreshAt = quoteRefresh?.lastRunAt ?? data.learning?.collection.latestQuoteRefreshAt ?? data.scanReports.find((scan) => scan.trigger === "quote_refresh")?.startedAt ?? null;
 
   if (quoteRefresh) {
-    addIntervalCandidate(candidates, {
+    addIntervalScheduleEvent(events, {
       title: "Quote refresh",
       lastRunAt: latestQuoteRefreshAt,
       intervalMinutes: quoteRefresh.intervalMinutes,
       enabled: quoteRefresh.enabled,
       running: quoteRefresh.running,
-      outcome: "Refreshes market prices, quote snapshots, and freshness status."
+      detail: "Refreshes market prices, quote snapshots, and freshness status.",
+      order: 10
     });
   }
 
   if (learningCycle) {
-    addIntervalCandidate(candidates, {
+    addIntervalScheduleEvent(events, {
       title: "Learning cycle",
       lastRunAt: learningCycle.lastRunAt,
       intervalMinutes: learningCycle.intervalMinutes,
       enabled: learningCycle.enabled,
       running: learningCycle.running,
-      outcome: "Collects examples, runs replay checks, and evaluates whether the algorithm can adjust."
+      detail: "Collects examples, runs replay checks, and evaluates whether the algorithm can adjust.",
+      order: 20
     });
   }
 
-  for (const job of data.scheduledJobs ?? []) {
+  for (const [index, job] of (data.scheduledJobs ?? []).entries()) {
+    if (isScheduledJobDisabled(job)) continue;
     if (job.running) {
-      candidates.push({
+      events.push({
+        id: `upcoming-job-${job.id}`,
+        phase: "upcoming",
         title: job.label,
         time: "running now",
-        outcome: job.description || "Running scheduled work now.",
+        outcome: "Running now",
+        detail: job.description || "Running scheduled work now.",
         tone: "watch",
-        nextMs: Date.now() - 1
+        sortMs: Date.now(),
+        order: 0
       });
+      continue;
     }
+
+    const event: ScheduleItem & { order: number } = {
+      id: `upcoming-job-${job.id}`,
+      phase: "upcoming",
+      title: job.label,
+      time: inferScheduledJobNextRun(job, strategy),
+      outcome: "Scheduled",
+      detail: job.description || "Waiting for the next scheduled run.",
+      tone: "neutral",
+      order: 100 + index
+    };
+    if (job.lastRun) event.sortMs = dateMs(job.lastRun.completedAt);
+    events.push(event);
   }
 
-  candidates.sort((a, b) => a.nextMs - b.nextMs);
-  if (candidates.length > 0) return candidates[0] ?? null;
-
-  const fallbackJob = (data.scheduledJobs ?? []).find((job) => !job.lastRun?.status?.toLowerCase().includes("disabled"));
-  if (!fallbackJob) return null;
-  return {
-    title: fallbackJob.label,
-    time: inferScheduledJobNextRun(fallbackJob, strategy),
-    outcome: fallbackJob.description || "Waiting for the next scheduled run.",
-    tone: "neutral"
-  };
+  return dedupeScheduleEvents(events).sort((a, b) => a.order - b.order);
 }
 
-function addIntervalCandidate(candidates: Array<ScheduleItem & { nextMs: number }>, input: { title: string; lastRunAt: string | null; intervalMinutes: number; enabled: boolean; running: boolean; outcome: string }) {
+function addIntervalScheduleEvent(events: Array<ScheduleItem & { order: number }>, input: { title: string; lastRunAt: string | null; intervalMinutes: number; enabled: boolean; running: boolean; detail: string; order: number }) {
   if (!input.enabled) return;
   if (input.running) {
-    candidates.push({ title: input.title, time: "running now", outcome: input.outcome, tone: "watch", nextMs: Date.now() - 1 });
+    events.push({
+      id: `upcoming-${slugify(input.title)}`,
+      phase: "upcoming",
+      title: input.title,
+      time: "running now",
+      outcome: "Running now",
+      detail: input.detail,
+      tone: "watch",
+      sortMs: Date.now(),
+      order: input.order
+    });
     return;
   }
   const nextMs = nextIntervalMs(input.lastRunAt, input.intervalMinutes);
-  candidates.push({
+  const dueNow = nextMs <= Date.now();
+  events.push({
+    id: `upcoming-${slugify(input.title)}`,
+    phase: "upcoming",
     title: input.title,
-    time: nextMs <= Date.now() ? "due now" : dateTime(new Date(nextMs).toISOString()),
-    outcome: input.outcome,
-    tone: nextMs <= Date.now() ? "watch" : "neutral",
-    nextMs
+    time: dueNow ? "due now" : dateTime(new Date(nextMs).toISOString()),
+    outcome: dueNow ? "Due now" : "Scheduled",
+    detail: input.detail,
+    tone: dueNow ? "watch" : "neutral",
+    sortMs: nextMs,
+    order: input.order
   });
 }
 
@@ -699,9 +733,12 @@ function recentScheduleEvents(data: DashboardData, strategy: StrategyDecisionDat
 
   if (latestQuoteRefreshAt) {
     events.push({
+      id: `today-quote-${latestQuoteRefreshAt}`,
+      phase: "today",
       title: "Quote refresh",
       time: dateTime(latestQuoteRefreshAt),
       outcome: "Quotes refreshed",
+      detail: "Market prices and quote snapshots were refreshed.",
       tone: "good",
       sortMs: dateMs(latestQuoteRefreshAt)
     });
@@ -710,9 +747,12 @@ function recentScheduleEvents(data: DashboardData, strategy: StrategyDecisionDat
   if (latestScan && latestScan.trigger !== "quote_refresh") {
     const scanVerdict = scanHealth(latestScan);
     events.push({
+      id: `today-scan-${latestScan.id}`,
+      phase: "today",
       title: labelForTrigger(latestScan.trigger),
       time: dateTime(latestScan.startedAt),
       outcome: scanVerdict.label,
+      detail: `Scan checked markets and produced ${latestScan.counts.trainingCandidates ?? 0} candidate decisions.`,
       tone: scanVerdict.tone,
       sortMs: dateMs(latestScan.completedAt ?? latestScan.startedAt)
     });
@@ -721,9 +761,12 @@ function recentScheduleEvents(data: DashboardData, strategy: StrategyDecisionDat
   if (optimizer?.completedAt) {
     const optimizerDisplay = optimizerStatusDisplay(optimizer);
     events.push({
+      id: `today-optimizer-${optimizer.id}`,
+      phase: "today",
       title: "Strategy optimizer",
       time: dateTime(optimizer.completedAt),
       outcome: optimizerOutcomeLabel(optimizer, optimizerDisplay),
+      detail: optimizer.recommendation || "Strategy optimizer reviewed champion and challenger parameters.",
       tone: optimizerDisplay.tone,
       sortMs: dateMs(optimizer.completedAt)
     });
@@ -733,9 +776,12 @@ function recentScheduleEvents(data: DashboardData, strategy: StrategyDecisionDat
   if (latestBacktestCompletedAt) {
     const status = latestBacktestStatus(latestBacktest);
     events.push({
+      id: `today-replay-${latestBacktestCompletedAt}`,
+      phase: "today",
       title: "Replay check",
       time: dateTime(latestBacktestCompletedAt),
       outcome: `${status} replay`,
+      detail: "Replay checked whether the current or challenger algorithm should be trusted.",
       tone: status.toLowerCase().includes("reject") ? "danger" : "good",
       sortMs: dateMs(latestBacktestCompletedAt)
     });
@@ -743,9 +789,12 @@ function recentScheduleEvents(data: DashboardData, strategy: StrategyDecisionDat
 
   if (learningCycle?.lastRunAt) {
     events.push({
+      id: `today-learning-${learningCycle.lastRunAt}`,
+      phase: "today",
       title: "Learning cycle",
       time: dateTime(learningCycle.lastRunAt),
       outcome: learningCycle.lastError ? `Error: ${compactText(learningCycle.lastError)}` : "Learning cycle completed",
+      detail: learningCycle.lastError ? learningCycle.lastError : "Learning cycle collected evidence and checked replay/optimizer gates.",
       tone: learningCycle.lastError ? "danger" : "good",
       sortMs: dateMs(learningCycle.lastRunAt)
     });
@@ -754,9 +803,12 @@ function recentScheduleEvents(data: DashboardData, strategy: StrategyDecisionDat
   for (const job of data.scheduledJobs ?? []) {
     if (!job.lastRun) continue;
     events.push({
+      id: `today-job-${job.id}-${job.lastRun.completedAt}`,
+      phase: "today",
       title: job.label,
       time: dateTime(job.lastRun.completedAt),
       outcome: scheduledJobOutcome(job),
+      detail: job.description || "Scheduled job completed.",
       tone: scheduledJobTone(job),
       sortMs: dateMs(job.lastRun.completedAt)
     });
@@ -765,10 +817,15 @@ function recentScheduleEvents(data: DashboardData, strategy: StrategyDecisionDat
   return dedupeScheduleEvents(events).sort((a, b) => (b.sortMs ?? 0) - (a.sortMs ?? 0));
 }
 
-function dedupeScheduleEvents(events: ScheduleItem[]) {
+function isTodayScheduleEvent(event: ScheduleItem) {
+  if (event.sortMs === undefined || !Number.isFinite(event.sortMs)) return false;
+  return localDateKey(new Date(event.sortMs)) === localDateKey(new Date());
+}
+
+function dedupeScheduleEvents<T extends ScheduleItem>(events: T[]) {
   const seen = new Set<string>();
   return events.filter((event) => {
-    const key = `${event.title}-${event.sortMs ?? event.time}`;
+    const key = event.id;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -817,6 +874,10 @@ function scheduledJobTone(job: NonNullable<DashboardData["scheduledJobs"]>[numbe
   if (status.includes("success") || status.includes("complete")) return "good";
   if (status.includes("disabled") || status.includes("skip")) return "watch";
   return "neutral";
+}
+
+function isScheduledJobDisabled(job: NonNullable<DashboardData["scheduledJobs"]>[number]) {
+  return job.lastRun?.status.toLowerCase().includes("disabled") ?? false;
 }
 
 function optimizerOutcomeLabel(optimizer: NonNullable<StrategyDecisionData["latestOptimizerReport"]>, display = optimizerStatusDisplay(optimizer)) {
@@ -2114,6 +2175,10 @@ function sentenceCase(value: string) {
 function compactText(value: string, maxLength = 120) {
   const normalized = value.trim();
   return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength - 1).trim()}...`;
+}
+
+function slugify(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "item";
 }
 
 function valueForVariable(variable: string, value: number) {
