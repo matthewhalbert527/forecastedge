@@ -1690,15 +1690,24 @@ function memoryNearLimit(memory: MemoryStatus | undefined) {
 }
 
 function time(iso: string) {
-  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
+  const date = dateFromIso(iso);
+  return date ? new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date) : "time pending";
 }
 
 function shortDate(isoDate: string) {
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(`${isoDate}T12:00:00`));
+  const datePart = isoDate.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
+  const date = datePart ? dateFromIso(`${datePart}T12:00:00`) : dateFromIso(isoDate);
+  return date ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date) : "date pending";
 }
 
 function dateTime(iso: string) {
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
+  const date = dateFromIso(iso);
+  return date ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date) : "date pending";
+}
+
+function dateFromIso(iso: string) {
+  const date = new Date(iso);
+  return Number.isFinite(date.getTime()) ? date : null;
 }
 
 function dateTimeOrPending(iso: string | null) {
