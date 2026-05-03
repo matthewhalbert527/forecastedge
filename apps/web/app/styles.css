@@ -50,7 +50,7 @@ button {
 
 button:focus-visible,
 a.ghost-button:focus-visible,
-.disclosure summary:focus-visible,
+.disclosure > summary:focus-visible,
 .help-tip:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--blue) 58%, white);
   outline-offset: 3px;
@@ -805,16 +805,18 @@ a.ghost-button:focus-visible,
 
 .timeline-summary,
 .result-summary {
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+  grid-template-columns: minmax(280px, 1fr) minmax(190px, 360px) auto;
 }
 
 .timeline-summary {
-  grid-template-columns: auto minmax(0, 1.15fr) minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(280px, 1fr) minmax(190px, 340px) auto;
 }
 
 .bet-quick-facts {
   display: grid;
   grid-template-columns: repeat(2, minmax(82px, 1fr));
+  justify-self: end;
+  width: min(100%, 360px);
   gap: 6px;
   min-width: 0;
 }
@@ -901,6 +903,7 @@ a.ghost-button:focus-visible,
 .bet-summary .row-title,
 .timeline-summary .row-title,
 .result-summary .row-title {
+  justify-content: flex-start;
   margin-bottom: 3px;
 }
 
@@ -1280,7 +1283,7 @@ a.ghost-button:focus-visible,
   overflow: hidden;
 }
 
-.disclosure summary {
+.disclosure > summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1293,11 +1296,11 @@ a.ghost-button:focus-visible,
   font-weight: 900;
 }
 
-.disclosure summary::-webkit-details-marker {
+.disclosure > summary::-webkit-details-marker {
   display: none;
 }
 
-.disclosure[open] summary svg {
+.disclosure[open] > summary svg {
   transform: rotate(180deg);
 }
 
@@ -1319,7 +1322,7 @@ a.ghost-button:focus-visible,
   display: grid;
   grid-template-columns: repeat(var(--columns), minmax(150px, 1fr));
   gap: 12px;
-  align-items: start;
+  align-items: center;
   min-width: min(100%, calc(var(--columns) * 170px));
   padding: 12px 14px;
   border: 1px solid var(--border);
@@ -1348,9 +1351,13 @@ a.ghost-button:focus-visible,
   overflow-wrap: anywhere;
 }
 
+.readable-row {
+  align-items: center;
+}
+
 .readable-row span {
   display: grid;
-  gap: 5px;
+  gap: 2px;
 }
 
 .expandable-table-row {
@@ -1362,7 +1369,7 @@ a.ghost-button:focus-visible,
   display: grid;
   grid-template-columns: repeat(var(--summary-columns), minmax(150px, 1fr)) auto;
   gap: 12px;
-  align-items: start;
+  align-items: center;
   min-width: min(100%, calc(var(--summary-columns) * 170px));
   padding: 12px 14px;
   cursor: pointer;
@@ -1377,7 +1384,6 @@ a.ghost-button:focus-visible,
 }
 
 .readable-row small,
-.simple-row-summary small,
 .detail-pair small {
   color: var(--muted);
   font-size: 10.5px;
@@ -1385,6 +1391,14 @@ a.ghost-button:focus-visible,
   letter-spacing: 0.07em;
   line-height: 1.15;
   text-transform: uppercase;
+}
+
+.simple-row-summary small {
+  display: none;
+}
+
+.readable-row small {
+  display: none;
 }
 
 .readable-row b,
@@ -1395,6 +1409,12 @@ a.ghost-button:focus-visible,
   font-weight: 780;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.readable-row b,
+.simple-row-summary b {
+  font-size: 14px;
+  line-height: 1.35;
 }
 
 .table-expand {
@@ -1546,6 +1566,11 @@ a.ghost-button:focus-visible,
     justify-items: start;
   }
 
+  .bet-quick-facts {
+    justify-self: stretch;
+    width: 100%;
+  }
+
   .row-expand-label {
     justify-content: center;
   }
@@ -1666,6 +1691,11 @@ a.ghost-button:focus-visible,
   .simple-row-summary {
     grid-template-columns: 1fr;
     min-width: min(280px, 100%);
+  }
+
+  .readable-row small,
+  .simple-row-summary small {
+    display: block;
   }
 
   .simple-row,
