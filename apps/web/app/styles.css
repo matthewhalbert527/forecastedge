@@ -494,7 +494,7 @@ a.ghost-button:focus-visible,
 .next-event-card {
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 12px;
   padding: 18px;
   background:

@@ -602,7 +602,7 @@ function EventSchedulePanel({ schedule }: { schedule: EventSchedule }) {
               <div className="recent-event-row" key={`${event.title}-${event.sortMs ?? index}`}>
                 <StatusDot tone={event.tone} label={event.title} />
                 <span className="event-time">{event.time}</span>
-                <b>{event.outcome}</b>
+                <b>{compactText(event.outcome, 96)}</b>
               </div>
             ))}
           </div>
