@@ -74,6 +74,7 @@ type DashboardData = {
   };
   scheduledJobs?: Array<{ id: string; label: string; description: string; running: boolean; lastRun: { status: string; completedAt: string; message: string } | null }>;
   strategyDecisionEngine?: StrategyDecisionData;
+  auditLogs?: Array<{ id: string; timestamp: string; type: string; message: string }>;
 };
 
 type PerformanceWindow = {
@@ -345,6 +346,7 @@ export default function Page() {
   const strategy = data?.strategyDecisionEngine ?? null;
   const latestLearning = data?.learning?.backtest ?? null;
   const showInitialLoading = !data && !error;
+  const auditIssues = recentAuditIssues(data);
 
   return (
     <main className="app-shell" aria-busy={showInitialLoading || isRetrying || busyAction !== null}>
@@ -408,6 +410,7 @@ export default function Page() {
               <span>{latestScan ? `${labelForTrigger(latestScan.trigger)} at ${time(latestScan.startedAt)}` : "No scan yet"}</span>
               <span>{model.strong.length} buys ready</span>
               <span>{model.openPositions.length} open positions</span>
+              <span>{auditIssueLabel(auditIssues)}</span>
               <span>{worker?.memory ? memoryLabel(worker.memory) : data.paperLearningMode ? "learning mode" : "risk capped"}</span>
             </section>
 
@@ -559,6 +562,7 @@ function LearningView({ data, strategy, jobs, latest, learning }: { data: Dashbo
   const paper = strategy?.latestPaperTradingHealth;
   const settledExamples = learning?.collection.settledPaperTradeExamples ?? 0;
   const minSettledExamples = data.backgroundWorker?.learningCycle?.minSettledExamples ?? 10;
+  const auditIssues = recentAuditIssues(data);
   return (
     <section className="stack details-stack">
       <section className="focus-panel neutral">
@@ -636,6 +640,17 @@ function LearningView({ data, strategy, jobs, latest, learning }: { data: Dashbo
                 job.lastRun?.message ?? job.description
               ])}
               empty="No job registry"
+            />
+          </Panel>
+          <Panel title="Recent audit issues">
+            <SimpleTable
+              columns={["Time", "Type", "Message"]}
+              rows={auditIssues.slice(0, 6).map((log) => [
+                dateTime(log.timestamp),
+                labelize(log.type),
+                log.message
+              ])}
+              empty="No recent audit issues"
             />
           </Panel>
         </div>
@@ -963,6 +978,15 @@ function learningNarrative(strategy: StrategyDecisionData | null, latest: Backte
   if (settled < 10) return `Collecting settled paper outcomes before tightening selectivity. ${settled} settled examples are available.`;
   const status = latestBacktestStatus(strategy?.latestBacktestHealth ?? latest);
   return `Latest automatic strategy status: ${status}.`;
+}
+
+function recentAuditIssues(data: DashboardData | null) {
+  return (data?.auditLogs ?? []).filter((log) => log.type === "error" || log.type === "live_order_blocked");
+}
+
+function auditIssueLabel(issues: ReturnType<typeof recentAuditIssues>) {
+  if (issues.length === 0) return "No audit issues";
+  return `${issues.length} audit issue${issues.length === 1 ? "" : "s"}`;
 }
 
 function CandidateList({ candidates, empty, expanded = false, compact = false }: { candidates: CandidateView[]; empty: string; expanded?: boolean; compact?: boolean }) {
