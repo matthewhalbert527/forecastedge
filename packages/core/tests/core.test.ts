@@ -505,6 +505,30 @@ describe("strategy decision engine", () => {
     expect(metrics.fillAdjustedEdgeCaptureRatio).toBeGreaterThan(0);
   });
 
+  it("describes failed minimum-trade approval gates as blockers", () => {
+    const thresholds = { ...defaultStrategyApprovalThresholds, maxDrawdown: 100, minTrades: 10 };
+    const trades = strategyTrades.slice(0, 3);
+    const metrics = calculateExpectancyMetrics(trades, thresholds);
+    const dataQuality = scoreDataQuality({
+      totalMarkets: trades.length,
+      missingMarketPrices: 0,
+      missingForecastSnapshots: 0,
+      staleForecasts: 0,
+      settlementAmbiguities: 0,
+      lowLiquidityMarkets: 0,
+      suspiciousPriceGaps: 0,
+      duplicateMarketRows: 0,
+      incompleteMarketHistories: 0,
+      latestMarketDataAt: "2026-05-30T00:00:00Z",
+      latestForecastAt: "2026-05-30T00:00:00Z"
+    });
+    const overfitting = detectAntiOverfitting({ trades, candidateSnapshots: 3, eligibleSnapshots: 3, parameters: {}, thresholds });
+    const decision = evaluateStrategyApproval({ validationMode: "backtest", thresholds, metrics, dataQuality, overfitting });
+    const minimumTradesGate = decision.gates.find((gate) => gate.name === "minimum number of trades");
+    expect(minimumTradesGate?.passed).toBe(false);
+    expect(minimumTradesGate?.reason).toBe("test sample must include enough trades");
+  });
+
   it("rejects strategies where one long-shot win explains profitability", () => {
     const trades = [
       ...Array.from({ length: 35 }, (_, index) => ({

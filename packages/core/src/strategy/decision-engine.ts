@@ -479,7 +479,7 @@ export function evaluateStrategyApproval(input: {
 }): StrategyApprovalDecision {
   const thresholds = input.thresholds ?? defaultStrategyApprovalThresholds;
   const gates: ApprovalGateResult[] = [
-    gate("minimum number of trades", input.metrics.totalTrades >= thresholds.minTrades, input.metrics.totalTrades, thresholds.minTrades, "test sample is large enough"),
+    gate("minimum number of trades", input.metrics.totalTrades >= thresholds.minTrades, input.metrics.totalTrades, thresholds.minTrades, "test sample must include enough trades"),
     gate("positive test-period ROI", input.metrics.roi > thresholds.minTestPeriodRoi, input.metrics.roi, `>${thresholds.minTestPeriodRoi}`, "ROI after fees and slippage must be positive"),
     qualityGate("positive net EV after spread/slippage", input.metrics.positiveNetEdgeShare, thresholds.minPositiveNetEdgeShare, "most selected trades need positive net edge after execution costs", (actual, threshold) => actual >= threshold),
     qualityGate("calibration error", input.metrics.calibrationMeanAbsoluteError, thresholds.maxCalibrationError, "calibrated probabilities should be close to realized outcomes", (actual, threshold) => actual <= threshold),
