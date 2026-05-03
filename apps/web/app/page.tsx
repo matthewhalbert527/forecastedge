@@ -490,7 +490,7 @@ function OverviewView({ data, model, performance, performanceWindows, strategy, 
   const reviewBlockers = uniqueReviewBlockerCount(strategy);
   const settledExamples = data.learning?.collection.settledPaperTradeExamples ?? 0;
   const minSettledExamples = data.backgroundWorker?.learningCycle?.minSettledExamples ?? 10;
-  const scheduledEvents = upcomingEventRows(data, strategy);
+  const eventSchedule = buildEventSchedule(data, strategy, latestBacktest);
   return (
     <section className="overview-stack">
       <section className={`focus-panel ${action.tone}`}>
@@ -532,12 +532,8 @@ function OverviewView({ data, model, performance, performanceWindows, strategy, 
         </Panel>
       </section>
       <section className="single-column">
-        <Panel title="Upcoming event schedule" action={<span className="panel-note">{scheduledEvents.length} events</span>}>
-          <SimpleTable
-            columns={["Event", "Next", "Last outcome"]}
-            rows={scheduledEvents}
-            empty="No scheduled events configured"
-          />
+        <Panel title="Schedule" action={<span className="panel-note">next + last 3</span>}>
+          <EventSchedulePanel schedule={eventSchedule} />
         </Panel>
       </section>
       <Disclosure title="Learning and performance details">
@@ -563,44 +559,232 @@ function OverviewView({ data, model, performance, performanceWindows, strategy, 
   );
 }
 
-function upcomingEventRows(data: DashboardData, strategy: StrategyDecisionData | null): Array<Array<ReactNode>> {
-  const rows: Array<Array<ReactNode>> = [];
+type ScheduleItem = {
+  title: string;
+  time: string;
+  outcome: string;
+  tone: Tone;
+  sortMs?: number;
+};
+
+type EventSchedule = {
+  next: ScheduleItem | null;
+  recent: ScheduleItem[];
+};
+
+function EventSchedulePanel({ schedule }: { schedule: EventSchedule }) {
+  if (!schedule.next && schedule.recent.length === 0) return <EmptyState>No scheduled events yet</EmptyState>;
+  return (
+    <div className="schedule-snapshot">
+      <article className="next-event-card">
+        <small>Next up</small>
+        {schedule.next ? (
+          <>
+            <div className="next-event-title">
+              <h4>{schedule.next.title}</h4>
+              <StatusPill tone={schedule.next.tone}>{schedule.next.time}</StatusPill>
+            </div>
+            <p>{schedule.next.outcome}</p>
+          </>
+        ) : (
+          <p>No upcoming event is configured.</p>
+        )}
+      </article>
+
+      <div className="recent-events-card">
+        <div className="schedule-card-head">
+          <h4>Last 3 events</h4>
+          <span>what happened</span>
+        </div>
+        {schedule.recent.length > 0 ? (
+          <div className="recent-events-list">
+            {schedule.recent.map((event, index) => (
+              <div className="recent-event-row" key={`${event.title}-${event.sortMs ?? index}`}>
+                <StatusDot tone={event.tone} label={event.title} />
+                <span className="event-time">{event.time}</span>
+                <b>{event.outcome}</b>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <EmptyState>No completed events yet</EmptyState>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function buildEventSchedule(data: DashboardData, strategy: StrategyDecisionData | null, latestBacktest: StrategyDecisionData["latestBacktestHealth"] | BacktestSummary | null): EventSchedule {
+  return {
+    next: nextScheduledEvent(data, strategy),
+    recent: recentScheduleEvents(data, strategy, latestBacktest).slice(0, 3)
+  };
+}
+
+function nextScheduledEvent(data: DashboardData, strategy: StrategyDecisionData | null): ScheduleItem | null {
+  const candidates: Array<ScheduleItem & { nextMs: number }> = [];
   const quoteRefresh = data.backgroundWorker?.quoteRefresh;
   const learningCycle = data.backgroundWorker?.learningCycle;
   const latestQuoteRefreshAt = quoteRefresh?.lastRunAt ?? data.learning?.collection.latestQuoteRefreshAt ?? data.scanReports.find((scan) => scan.trigger === "quote_refresh")?.startedAt ?? null;
 
   if (quoteRefresh) {
-    rows.push([
-      "Quote refresh",
-      quoteRefresh.running ? "running now" : quoteRefresh.enabled ? nextIntervalRun(latestQuoteRefreshAt, quoteRefresh.intervalMinutes) : "paused",
-      quoteRefresh.running ? "running now" : latestQuoteRefreshAt ? `Refreshed ${dateTime(latestQuoteRefreshAt)}` : "Not run yet"
-    ]);
+    addIntervalCandidate(candidates, {
+      title: "Quote refresh",
+      lastRunAt: latestQuoteRefreshAt,
+      intervalMinutes: quoteRefresh.intervalMinutes,
+      enabled: quoteRefresh.enabled,
+      running: quoteRefresh.running,
+      outcome: "Refreshes market prices, quote snapshots, and freshness status."
+    });
   }
 
   if (learningCycle) {
-    rows.push([
-      "Learning cycle",
-      learningCycle.running ? "running now" : learningCycle.enabled ? nextIntervalRun(learningCycle.lastRunAt, learningCycle.intervalMinutes) : "paused",
-      learningCycle.running ? "running now" : learningCycle.lastError ? `Error: ${compactText(learningCycle.lastError)}` : learningCycle.lastRunAt ? `Completed ${dateTime(learningCycle.lastRunAt)}` : "Not run yet"
-    ]);
+    addIntervalCandidate(candidates, {
+      title: "Learning cycle",
+      lastRunAt: learningCycle.lastRunAt,
+      intervalMinutes: learningCycle.intervalMinutes,
+      enabled: learningCycle.enabled,
+      running: learningCycle.running,
+      outcome: "Collects examples, runs replay checks, and evaluates whether the algorithm can adjust."
+    });
   }
 
   for (const job of data.scheduledJobs ?? []) {
-    rows.push([
-      job.label,
-      job.running ? "running now" : inferScheduledJobNextRun(job, strategy),
-      scheduledJobOutcome(job)
-    ]);
+    if (job.running) {
+      candidates.push({
+        title: job.label,
+        time: "running now",
+        outcome: job.description || "Running scheduled work now.",
+        tone: "watch",
+        nextMs: Date.now() - 1
+      });
+    }
   }
 
-  return rows.slice(0, 12);
+  candidates.sort((a, b) => a.nextMs - b.nextMs);
+  if (candidates.length > 0) return candidates[0] ?? null;
+
+  const fallbackJob = (data.scheduledJobs ?? []).find((job) => !job.lastRun?.status?.toLowerCase().includes("disabled"));
+  if (!fallbackJob) return null;
+  return {
+    title: fallbackJob.label,
+    time: inferScheduledJobNextRun(fallbackJob, strategy),
+    outcome: fallbackJob.description || "Waiting for the next scheduled run.",
+    tone: "neutral"
+  };
 }
 
-function nextIntervalRun(lastRunAt: string | null, intervalMinutes: number) {
-  if (!lastRunAt) return intervalMinutes > 0 ? `within ${intervalMinutes} min` : "scheduled";
-  const next = addMinutes(new Date(lastRunAt), intervalMinutes);
-  if (!Number.isFinite(next.getTime())) return "scheduled";
-  return next.getTime() <= Date.now() ? "due now" : dateTime(next.toISOString());
+function addIntervalCandidate(candidates: Array<ScheduleItem & { nextMs: number }>, input: { title: string; lastRunAt: string | null; intervalMinutes: number; enabled: boolean; running: boolean; outcome: string }) {
+  if (!input.enabled) return;
+  if (input.running) {
+    candidates.push({ title: input.title, time: "running now", outcome: input.outcome, tone: "watch", nextMs: Date.now() - 1 });
+    return;
+  }
+  const nextMs = nextIntervalMs(input.lastRunAt, input.intervalMinutes);
+  candidates.push({
+    title: input.title,
+    time: nextMs <= Date.now() ? "due now" : dateTime(new Date(nextMs).toISOString()),
+    outcome: input.outcome,
+    tone: nextMs <= Date.now() ? "watch" : "neutral",
+    nextMs
+  });
+}
+
+function recentScheduleEvents(data: DashboardData, strategy: StrategyDecisionData | null, latestBacktest: StrategyDecisionData["latestBacktestHealth"] | BacktestSummary | null): ScheduleItem[] {
+  const events: ScheduleItem[] = [];
+  const latestScan = data.scanReports[0] ?? null;
+  const latestQuoteRefreshAt = data.backgroundWorker?.quoteRefresh?.lastRunAt ?? data.learning?.collection.latestQuoteRefreshAt ?? data.scanReports.find((scan) => scan.trigger === "quote_refresh")?.startedAt ?? null;
+  const learningCycle = data.backgroundWorker?.learningCycle;
+  const optimizer = strategy?.latestOptimizerReport;
+
+  if (latestQuoteRefreshAt) {
+    events.push({
+      title: "Quote refresh",
+      time: dateTime(latestQuoteRefreshAt),
+      outcome: "Quotes refreshed",
+      tone: "good",
+      sortMs: dateMs(latestQuoteRefreshAt)
+    });
+  }
+
+  if (latestScan && latestScan.trigger !== "quote_refresh") {
+    const scanVerdict = scanHealth(latestScan);
+    events.push({
+      title: labelForTrigger(latestScan.trigger),
+      time: dateTime(latestScan.startedAt),
+      outcome: scanVerdict.label,
+      tone: scanVerdict.tone,
+      sortMs: dateMs(latestScan.completedAt ?? latestScan.startedAt)
+    });
+  }
+
+  if (optimizer?.completedAt) {
+    events.push({
+      title: "Strategy optimizer",
+      time: dateTime(optimizer.completedAt),
+      outcome: optimizer.recommendation || optimizerStatusLabel(optimizer.status),
+      tone: optimizer.status.toLowerCase().includes("fail") ? "danger" : "good",
+      sortMs: dateMs(optimizer.completedAt)
+    });
+  }
+
+  const latestBacktestCompletedAt = latestBacktestCompletedAtValue(latestBacktest);
+  if (latestBacktestCompletedAt) {
+    const status = latestBacktestStatus(latestBacktest);
+    events.push({
+      title: "Replay check",
+      time: dateTime(latestBacktestCompletedAt),
+      outcome: `${status} replay`,
+      tone: status.toLowerCase().includes("reject") ? "danger" : "good",
+      sortMs: dateMs(latestBacktestCompletedAt)
+    });
+  }
+
+  if (learningCycle?.lastRunAt) {
+    events.push({
+      title: "Learning cycle",
+      time: dateTime(learningCycle.lastRunAt),
+      outcome: learningCycle.lastError ? `Error: ${compactText(learningCycle.lastError)}` : "Learning cycle completed",
+      tone: learningCycle.lastError ? "danger" : "good",
+      sortMs: dateMs(learningCycle.lastRunAt)
+    });
+  }
+
+  for (const job of data.scheduledJobs ?? []) {
+    if (!job.lastRun) continue;
+    events.push({
+      title: job.label,
+      time: dateTime(job.lastRun.completedAt),
+      outcome: scheduledJobOutcome(job),
+      tone: scheduledJobTone(job),
+      sortMs: dateMs(job.lastRun.completedAt)
+    });
+  }
+
+  return dedupeScheduleEvents(events).sort((a, b) => (b.sortMs ?? 0) - (a.sortMs ?? 0));
+}
+
+function dedupeScheduleEvents(events: ScheduleItem[]) {
+  const seen = new Set<string>();
+  return events.filter((event) => {
+    const key = `${event.title}-${event.sortMs ?? event.time}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function latestBacktestCompletedAtValue(value: StrategyDecisionData["latestBacktestHealth"] | BacktestSummary | null) {
+  if (!value) return null;
+  if ("completedAt" in value && value.completedAt) return value.completedAt;
+  return null;
+}
+
+function nextIntervalMs(lastRunAt: string | null, intervalMinutes: number) {
+  if (!lastRunAt) return Date.now() + Math.max(intervalMinutes, 1) * 60_000;
+  const lastRun = dateMs(lastRunAt);
+  if (!Number.isFinite(lastRun)) return Date.now() + Math.max(intervalMinutes, 1) * 60_000;
+  return lastRun + Math.max(intervalMinutes, 1) * 60_000;
 }
 
 function inferScheduledJobNextRun(job: NonNullable<DashboardData["scheduledJobs"]>[number], strategy: StrategyDecisionData | null) {
@@ -623,7 +807,15 @@ function scheduledJobOutcome(job: NonNullable<DashboardData["scheduledJobs"]>[nu
   if (!job.lastRun) return job.description || "Not run yet";
   const status = sentenceCase(labelize(job.lastRun.status.toLowerCase()));
   const message = compactText(job.lastRun.message);
-  return message ? `${status} ${dateTime(job.lastRun.completedAt)}: ${message}` : `${status} ${dateTime(job.lastRun.completedAt)}`;
+  return message ? `${status}: ${message}` : status;
+}
+
+function scheduledJobTone(job: NonNullable<DashboardData["scheduledJobs"]>[number]): Tone {
+  const status = job.lastRun?.status.toLowerCase() ?? "";
+  if (status.includes("fail") || status.includes("error")) return "danger";
+  if (status.includes("success") || status.includes("complete")) return "good";
+  if (status.includes("disabled") || status.includes("skip")) return "watch";
+  return "neutral";
 }
 
 function PerformanceScorePanel({ windows }: { windows: PerformanceWindow[] }) {
@@ -1804,12 +1996,6 @@ function addDays(date: Date, days: number) {
   return next;
 }
 
-function addMinutes(date: Date, minutes: number) {
-  const next = new Date(date);
-  next.setMinutes(next.getMinutes() + minutes);
-  return next;
-}
-
 function localDateKey(date: Date) {
   if (!Number.isFinite(date.getTime())) return "";
   const year = date.getFullYear();
@@ -1973,6 +2159,10 @@ function dateTime(iso: string) {
 function dateFromIso(iso: string) {
   const date = new Date(iso);
   return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function dateMs(iso: string) {
+  return dateFromIso(iso)?.getTime() ?? Number.NaN;
 }
 
 function dateTimeOrPending(iso: string | null) {
